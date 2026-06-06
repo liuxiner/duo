@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>宁波多多6月每日看板</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #6b7280;
+      --line: #dfe3ea;
+      --accent: #2563eb;
+      --green: #15803d;
+      --red: #dc2626;
+      --amber: #b45309;
+      --soft-blue: #eaf1ff;
+      --soft-red: #fff1f2;
+      --soft-amber: #fff7ed;
+      --soft-green: #ecfdf3;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      background: rgba(246, 247, 249, .94);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(10px);
+    }
+    .wrap { width: min(1480px, calc(100vw - 32px)); margin: 0 auto; }
+    .topbar {
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    h1 { margin: 0; font-size: 22px; letter-spacing: 0; }
+    .subtitle { color: var(--muted); font-size: 13px; margin-top: 2px; }
+    .controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    label { color: var(--muted); font-size: 12px; }
+    select, input {
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      padding: 0 10px;
+      font: inherit;
+    }
+    input[type="number"] { width: 76px; }
+    main { padding: 20px 0 28px; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(150px, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .card, .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .card { padding: 14px; min-height: 92px; }
+    .card .label { color: var(--muted); font-size: 12px; }
+    .card .value { margin-top: 6px; font-size: 25px; font-weight: 700; }
+    .card .hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .panel { padding: 14px; }
+    .panel h2 {
+      margin: 0 0 10px;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+    .chart {
+      width: 100%;
+      height: 260px;
+      display: block;
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .search { width: min(360px, 100%); }
+    .table-wrap {
+      overflow: auto;
+      max-height: calc(100vh - 290px);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      min-width: 1180px;
+      background: #fff;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 9px 10px;
+      text-align: right;
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: #f9fafb;
+      color: #374151;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    td:first-child, th:first-child,
+    td:nth-child(2), th:nth-child(2) { text-align: left; }
+    .name {
+      max-width: 360px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .ok { background: var(--soft-green); color: var(--green); }
+    .warn { background: var(--soft-amber); color: var(--amber); }
+    .bad { background: var(--soft-red); color: var(--red); }
+    .info { background: var(--soft-blue); color: var(--accent); }
+    .pos { color: var(--green); font-weight: 650; }
+    .neg { color: var(--red); font-weight: 650; }
+    .muted { color: var(--muted); }
+    @media (max-width: 1100px) {
+      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .grid { grid-template-columns: 1fr; }
+      .topbar { align-items: flex-start; flex-direction: column; padding: 14px 0; }
+      .controls { justify-content: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap topbar">
+      <div>
+        <h1>宁波多多6月每日看板</h1>
+        <div class="subtitle">销量变化、库存差异、周转天数和补货优先级</div>
+      </div>
+      <div class="controls">
+        <label>日期 <select id="dateSelect"></select></label>
+        <label>预期口径 <select id="basisSelect">
+          <option value="mayAverage">5月平均</option>
+          <option value="aprilMax">4月MAX</option>
+          <option value="selectedSales">当日销量</option>
+        </select></label>
+        <label>补货阈值 <input id="thresholdInput" type="number" min="1" step="1" value="7"> 天</label>
+      </div>
+    </div>
+  </header>
+  <main class="wrap">
+    <section class="cards">
+      <div class="card"><div class="label">当日销量</div><div id="kpiSales" class="value">-</div><div id="kpiSalesHint" class="hint">-</div></div>
+      <div class="card"><div class="label">剩余库存</div><div id="kpiStock" class="value">-</div><div class="hint">选中日期日末库存</div></div>
+      <div class="card"><div class="label">低于补货阈值</div><div id="kpiRisk" class="value">-</div><div id="kpiRiskHint" class="hint">-</div></div>
+      <div class="card"><div class="label">库存低于预期日销</div><div id="kpiShort" class="value">-</div><div class="hint">剩余库存 < 预期日销</div></div>
+      <div class="card"><div class="label">平均周转天数</div><div id="kpiTurnover" class="value">-</div><div class="hint">剩余库存 / 预期日销</div></div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>每日总销量趋势</h2>
+        <canvas id="salesTrend" class="chart"></canvas>
+      </div>
+      <div class="panel">
+        <h2>当日销量 TOP 10</h2>
+        <canvas id="topSales" class="chart"></canvas>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="toolbar">
+        <h2>商品明细</h2>
+        <input id="searchInput" class="search" placeholder="搜索商品名称 / ID / 条码">
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th data-sort="name">商品</th>
+              <th data-sort="id">ID</th>
+              <th data-sort="sales">当日销量</th>
+              <th data-sort="salesChange">销量变化</th>
+              <th data-sort="remaining">剩余库存</th>
+              <th data-sort="expected">预期日销</th>
+              <th data-sort="dailyGap">库存-预期</th>
+              <th data-sort="safetyGap">距补货线</th>
+              <th data-sort="turnoverDays">可周转</th>
+              <th data-sort="price">价格</th>
+              <th data-sort="cloudShortage">云仓少货</th>
+              <th data-sort="schedule">排期</th>
+              <th data-sort="note">备注</th>
+            </tr>
+          </thead>
+          <tbody id="productBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const products = [{"id":"797504111073","name":"清风欧院纯品柔韧抽纸100抽300张*24包/箱","barcode":"6922266470950","packSpec":"1","shelfLife":"3","cost":22,"quote":"23.8-23.6","schedule":"6/19","openingRemaining":587,"openingCloudStock":587,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":23.6,"sales":31,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":556,"cloudStock":556,"sharedStock":null},{"date":"2026-06-02","price":23.6,"sales":39,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":517,"cloudStock":517,"sharedStock":null},{"date":"2026-06-03","price":23.6,"sales":34,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":483,"cloudStock":483,"sharedStock":null},{"date":"2026-06-04","price":23.6,"sales":81,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":402,"cloudStock":402,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":40,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":362,"cloudStock":362,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":362,"cloudStock":362,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":362,"cloudStock":362,"sharedStock":null}],"turnoverEstimate":7,"mayAverage":44,"aprilMax":138,"finalCloudStock":572,"cloudShortage":-15,"note":""},{"id":"873320635008","name":"清风绿色马蹄莲无芯卷纸3层10卷1000g/提 10卷/提","barcode":"6922266438868","packSpec":"8","shelfLife":"3","cost":9,"quote":"10.8-10.6","schedule":"6/19","openingRemaining":1570,"openingCloudStock":1570,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":10.6,"sales":51,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1519,"cloudStock":1519,"sharedStock":null},{"date":"2026-06-02","price":10.6,"sales":19,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1500,"cloudStock":1500,"sharedStock":null},{"date":"2026-06-03","price":10.6,"sales":20,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1480,"cloudStock":1480,"sharedStock":null},{"date":"2026-06-04","price":10.6,"sales":35,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1445,"cloudStock":1445,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1445,"cloudStock":1445,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1445,"cloudStock":1445,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1445,"cloudStock":1445,"sharedStock":null}],"turnoverEstimate":14,"mayAverage":99,"aprilMax":329,"finalCloudStock":1566,"cloudShortage":-4,"note":""},{"id":"946973445373","name":"清风欧院100抽300张*8包/提","barcode":"6922266470943","packSpec":"8","shelfLife":"3","cost":7.3,"quote":"8.8-8.3","schedule":"6/19","openingRemaining":749,"openingCloudStock":749,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":8.3,"sales":19,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":730,"cloudStock":730,"sharedStock":null},{"date":"2026-06-02","price":8.313157895,"sales":38,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":692,"cloudStock":692,"sharedStock":null},{"date":"2026-06-03","price":8.327777778,"sales":54,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":638,"cloudStock":638,"sharedStock":null},{"date":"2026-06-04","price":8.312987013,"sales":77,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":561,"cloudStock":561,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":65,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":496,"cloudStock":496,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":496,"cloudStock":496,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":496,"cloudStock":496,"sharedStock":null}],"turnoverEstimate":10,"mayAverage":44,"aprilMax":51,"finalCloudStock":748,"cloudShortage":-1,"note":""},{"id":"946972277502","name":"清风纯柔系列4层250抽/包*1*6悬挂式抽纸","barcode":"6922266492709","packSpec":"1","shelfLife":"3","cost":15.27,"quote":"18.5-18","schedule":"6/3","openingRemaining":175,"openingCloudStock":175,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":18,"sales":10,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":165,"cloudStock":165,"sharedStock":null},{"date":"2026-06-02","price":18,"sales":16,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":149,"cloudStock":149,"sharedStock":null},{"date":"2026-06-03","price":18,"sales":10,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":139,"cloudStock":139,"sharedStock":null},{"date":"2026-06-04","price":18,"sales":13,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":126,"cloudStock":126,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":18,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":108,"cloudStock":108,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":108,"cloudStock":108,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":108,"cloudStock":108,"sharedStock":null}],"turnoverEstimate":5,"mayAverage":18,"aprilMax":0,"finalCloudStock":174,"cloudShortage":-1,"note":""},{"id":"943211418918","name":"苏菲超熟睡350柔棉感8片","barcode":"6934660561653","packSpec":"72","shelfLife":"3","cost":null,"quote":"8-7.6","schedule":"6/19","openingRemaining":593,"openingCloudStock":593,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":593,"cloudStock":593,"sharedStock":null},{"date":"2026-06-02","price":7.3,"sales":12,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":581,"cloudStock":581,"sharedStock":null},{"date":"2026-06-03","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":581,"cloudStock":581,"sharedStock":null},{"date":"2026-06-04","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":581,"cloudStock":581,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":581,"cloudStock":581,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":581,"cloudStock":581,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":581,"cloudStock":581,"sharedStock":null}],"turnoverEstimate":41,"mayAverage":14,"aprilMax":17,"finalCloudStock":591,"cloudShortage":-2,"note":""},{"id":"952290795788","name":"苏菲超熟睡柔棉感夜用卫生巾小420mm4片/包","barcode":"6934660561660","packSpec":"96","shelfLife":"3","cost":4,"quote":"4.8-4.7","schedule":"6/19","openingRemaining":801,"openingCloudStock":801,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":4.833333333,"sales":42,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":759,"cloudStock":759,"sharedStock":null},{"date":"2026-06-02","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":759,"cloudStock":759,"sharedStock":null},{"date":"2026-06-03","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":759,"cloudStock":759,"sharedStock":null},{"date":"2026-06-04","price":4.8125,"sales":16,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":743,"cloudStock":743,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":54,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":689,"cloudStock":689,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":689,"cloudStock":689,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":689,"cloudStock":689,"sharedStock":null}],"turnoverEstimate":20,"mayAverage":33,"aprilMax":0,"finalCloudStock":792,"cloudShortage":-9,"note":""},{"id":"789795660321","name":"苏菲裸感S棉柔日用卫生巾250mm13片/包","barcode":"6934660560878","packSpec":"24","shelfLife":"3","cost":8.8,"quote":"8.8-8.3","schedule":"6/19","openingRemaining":1301,"openingCloudStock":1301,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":8.8,"sales":39,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1262,"cloudStock":1262,"sharedStock":null},{"date":"2026-06-02","price":8.3,"sales":74,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1188,"cloudStock":1188,"sharedStock":null},{"date":"2026-06-03","price":8.8,"sales":53,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1135,"cloudStock":1135,"sharedStock":null},{"date":"2026-06-04","price":8.315384615,"sales":65,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1070,"cloudStock":1070,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":67,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1003,"cloudStock":1003,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":1,"inboundOrReturn":0,"remaining":1002,"cloudStock":1002,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1002,"cloudStock":1002,"sharedStock":null}],"turnoverEstimate":15,"mayAverage":62,"aprilMax":100,"finalCloudStock":1280,"cloudShortage":-21,"note":""},{"id":"920804432128","name":"苏菲超熟睡420柔棉感8片","barcode":"6934660561677","packSpec":"64","shelfLife":"3","cost":7.5,"quote":"9.3-8.8","schedule":"6/19","openingRemaining":1482,"openingCloudStock":1482,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":8.8,"sales":50,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1432,"cloudStock":1432,"sharedStock":null},{"date":"2026-06-02","price":8.8,"sales":38,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1394,"cloudStock":1394,"sharedStock":null},{"date":"2026-06-03","price":8.8,"sales":52,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1342,"cloudStock":1342,"sharedStock":null},{"date":"2026-06-04","price":8.8,"sales":45,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1297,"cloudStock":1297,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":50,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1247,"cloudStock":1247,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1247,"cloudStock":1247,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1247,"cloudStock":1247,"sharedStock":null}],"turnoverEstimate":34,"mayAverage":35,"aprilMax":51,"finalCloudStock":1477,"cloudShortage":-5,"note":""},{"id":"943210876452","name":"苏菲超熟睡290柔棉感10片+4片","barcode":"6934660528595","packSpec":"24","shelfLife":"3","cost":null,"quote":"9-8.5","schedule":"6/19","openingRemaining":902,"openingCloudStock":902,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":8.3,"sales":51,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":851,"cloudStock":851,"sharedStock":null},{"date":"2026-06-02","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":851,"cloudStock":851,"sharedStock":null},{"date":"2026-06-03","price":8.5,"sales":13,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":838,"cloudStock":838,"sharedStock":null},{"date":"2026-06-04","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":838,"cloudStock":838,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":838,"cloudStock":838,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":838,"cloudStock":838,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":838,"cloudStock":838,"sharedStock":null}],"turnoverEstimate":27,"mayAverage":30,"aprilMax":20,"finalCloudStock":900,"cloudShortage":-2,"note":""},{"id":"902021720584","name":"苏菲超熟睡290柔棉感10片","barcode":"6934660561592","packSpec":"64","shelfLife":"3","cost":5.04,"quote":"6.2-6","schedule":"6/19","openingRemaining":787,"openingCloudStock":787,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":6.009375,"sales":64,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":723,"cloudStock":723,"sharedStock":null},{"date":"2026-06-02","price":6.003448276,"sales":58,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":665,"cloudStock":665,"sharedStock":null},{"date":"2026-06-03","price":6.004761905,"sales":42,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":623,"cloudStock":623,"sharedStock":null},{"date":"2026-06-04","price":6.003448276,"sales":58,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":565,"cloudStock":565,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":86,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":479,"cloudStock":479,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":479,"cloudStock":479,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":479,"cloudStock":479,"sharedStock":null}],"turnoverEstimate":4,"mayAverage":89,"aprilMax":124,"finalCloudStock":764,"cloudShortage":-23,"note":"周五运货吧"},{"id":"861541484505","name":"苏菲弹力贴身小熊230 20P+柔棉感290 5+2P","barcode":"6934660506470","packSpec":"24","shelfLife":"","cost":null,"quote":"12.6-12.3","schedule":"6/19","openingRemaining":945,"openingCloudStock":945,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":12.3,"sales":23,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":922,"cloudStock":922,"sharedStock":null},{"date":"2026-06-02","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":922,"cloudStock":922,"sharedStock":null},{"date":"2026-06-03","price":12.3,"sales":19,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":903,"cloudStock":903,"sharedStock":null},{"date":"2026-06-04","price":12.3,"sales":39,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":864,"cloudStock":864,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":37,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":827,"cloudStock":827,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":827,"cloudStock":827,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":827,"cloudStock":827,"sharedStock":null}],"turnoverEstimate":17,"mayAverage":45,"aprilMax":null,"finalCloudStock":942,"cloudShortage":-3,"note":""},{"id":"956252771107","name":"苏菲超熟睡安心裤柔棉款M~L5P 超大箱 36包","barcode":"6934660550909","packSpec":"36","shelfLife":"","cost":null,"quote":"10.2-9.7","schedule":"6/19","openingRemaining":828,"openingCloudStock":828,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":828,"cloudStock":828,"sharedStock":null},{"date":"2026-06-02","price":9.7,"sales":20,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":808,"cloudStock":808,"sharedStock":null},{"date":"2026-06-03","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":808,"cloudStock":808,"sharedStock":null},{"date":"2026-06-04","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":808,"cloudStock":808,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":808,"cloudStock":808,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":808,"cloudStock":808,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":808,"cloudStock":808,"sharedStock":null}],"turnoverEstimate":39,"mayAverage":20,"aprilMax":null,"finalCloudStock":824,"cloudShortage":-4,"note":""},{"id":"943862609534","name":"苏菲日夜用卫生巾组合装25片230mm+420mm25片/袋","barcode":"6934660550237","packSpec":"24","shelfLife":"填27年12月","cost":10.1,"quote":"12.5-12.2","schedule":"6/3","openingRemaining":205,"openingCloudStock":205,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":12.2,"sales":14,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":191,"cloudStock":191,"sharedStock":null},{"date":"2026-06-02","price":12.2,"sales":24,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":167,"cloudStock":167,"sharedStock":null},{"date":"2026-06-03","price":12.2,"sales":21,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":146,"cloudStock":146,"sharedStock":null},{"date":"2026-06-04","price":12.5,"sales":14,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":132,"cloudStock":132,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":29,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":103,"cloudStock":103,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":103,"cloudStock":103,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":103,"cloudStock":103,"sharedStock":null}],"turnoverEstimate":3,"mayAverage":24,"aprilMax":38,"finalCloudStock":195,"cloudShortage":-10,"note":"淘汰品"},{"id":"940365531702","name":"六神清凉香皂（绿茶+甘草）108g*3","barcode":"6901294179561","packSpec":"24","shelfLife":"3","cost":null,"quote":"8.2-7.8","schedule":"6月19日","openingRemaining":542,"openingCloudStock":542,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":8.2,"sales":32,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":510,"cloudStock":510,"sharedStock":null},{"date":"2026-06-02","price":7.82,"sales":60,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":450,"cloudStock":450,"sharedStock":null},{"date":"2026-06-03","price":7.811764706,"sales":34,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":416,"cloudStock":416,"sharedStock":null},{"date":"2026-06-04","price":8.2,"sales":19,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":397,"cloudStock":397,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":86,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":311,"cloudStock":311,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":311,"cloudStock":311,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":240,"remaining":551,"cloudStock":551,"sharedStock":null}],"turnoverEstimate":5,"mayAverage":50,"aprilMax":52,"finalCloudStock":531,"cloudShortage":-11,"note":"下单10箱"},{"id":"930669388912","name":"六神驱蚊喷雾花露水花漾清新80mL/瓶","barcode":"6901294179592","packSpec":"48","shelfLife":"3","cost":11.1,"quote":"12.5-11.8","schedule":"6月19日","openingRemaining":508,"openingCloudStock":508,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":12.5,"sales":19,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":489,"cloudStock":489,"sharedStock":null},{"date":"2026-06-02","price":11.8,"sales":82,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":407,"cloudStock":407,"sharedStock":null},{"date":"2026-06-03","price":11.8,"sales":28,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":379,"cloudStock":379,"sharedStock":null},{"date":"2026-06-04","price":12.5,"sales":21,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":358,"cloudStock":358,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":96,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":262,"cloudStock":262,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":262,"cloudStock":262,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":240,"remaining":502,"cloudStock":502,"sharedStock":null}],"turnoverEstimate":6,"mayAverage":40,"aprilMax":73,"finalCloudStock":486,"cloudShortage":-22,"note":"下单5箱"},{"id":"930665759490","name":"六神驱蚊喷雾花露水清新花香180mL/瓶","barcode":"6901294179608","packSpec":"30","shelfLife":"3","cost":17.8,"quote":"18.8-18.6","schedule":"6月19日","openingRemaining":622,"openingCloudStock":622,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":18.8,"sales":54,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":568,"cloudStock":568,"sharedStock":null},{"date":"2026-06-02","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":568,"cloudStock":568,"sharedStock":null},{"date":"2026-06-03","price":18.8,"sales":28,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":540,"cloudStock":540,"sharedStock":null},{"date":"2026-06-04","price":18.8,"sales":38,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":502,"cloudStock":502,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":502,"cloudStock":502,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":502,"cloudStock":502,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":240,"remaining":742,"cloudStock":742,"sharedStock":null}],"turnoverEstimate":7,"mayAverage":60,"aprilMax":83,"finalCloudStock":617,"cloudShortage":-5,"note":"下单8箱"},{"id":"736375548426","name":"六神清凉沐浴露香型随机1500g/瓶","barcode":"1954/2173","packSpec":"8","shelfLife":"4","cost":28.6,"quote":"29.8-29.5","schedule":"6月19日","openingRemaining":516,"openingCloudStock":516,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":29.8,"sales":58,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":458,"cloudStock":458,"sharedStock":null},{"date":"2026-06-02","price":29.5,"sales":33,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":425,"cloudStock":425,"sharedStock":null},{"date":"2026-06-03","price":29.5,"sales":36,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":389,"cloudStock":389,"sharedStock":null},{"date":"2026-06-04","price":29.8,"sales":84,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":305,"cloudStock":305,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":41,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":264,"cloudStock":264,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":264,"cloudStock":264,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":240,"remaining":504,"cloudStock":504,"sharedStock":null}],"turnoverEstimate":5,"mayAverage":45,"aprilMax":91,"finalCloudStock":508,"cloudShortage":-8,"note":"下单30箱"},{"id":"916987341567","name":"六神清凉爽肤沐浴露（绿茶+甘草）650g/瓶","barcode":"6901294721128","packSpec":"8","shelfLife":"4","cost":16.4,"quote":"17-16.7","schedule":"6月19日","openingRemaining":358,"openingCloudStock":358,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":17,"sales":26,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":332,"cloudStock":332,"sharedStock":null},{"date":"2026-06-02","price":16.7,"sales":45,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":287,"cloudStock":287,"sharedStock":null},{"date":"2026-06-03","price":16.7,"sales":35,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":560,"remaining":812,"cloudStock":812,"sharedStock":null},{"date":"2026-06-04","price":17,"sales":28,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":784,"cloudStock":784,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":47,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":737,"cloudStock":737,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":737,"cloudStock":737,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":737,"cloudStock":737,"sharedStock":null}],"turnoverEstimate":11,"mayAverage":60,"aprilMax":37,"finalCloudStock":348,"cloudShortage":-10,"note":""},{"id":"916987542500","name":"美加净保湿香氛沐浴露活力柑橘木香850g/瓶","barcode":"6901294098336","packSpec":"","shelfLife":"3","cost":13.9,"quote":"14.5-14","schedule":"6月19日","openingRemaining":195,"openingCloudStock":195,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":14.5,"sales":15,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":180,"cloudStock":180,"sharedStock":null},{"date":"2026-06-02","price":14,"sales":5,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":175,"cloudStock":175,"sharedStock":null},{"date":"2026-06-03","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":175,"cloudStock":175,"sharedStock":null},{"date":"2026-06-04","price":14.5,"sales":14,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":161,"cloudStock":161,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":161,"cloudStock":161,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":161,"cloudStock":161,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":161,"cloudStock":161,"sharedStock":null}],"turnoverEstimate":20,"mayAverage":8,"aprilMax":2,"finalCloudStock":195,"cloudShortage":0,"note":""},{"id":"872958167028","name":"家安酵素净护洗衣皂-超凡净透190g*2","barcode":"6901294403031","packSpec":"18","shelfLife":"3","cost":null,"quote":"4.5","schedule":"6月19日","openingRemaining":254,"openingCloudStock":254,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":254,"cloudStock":254,"sharedStock":null},{"date":"2026-06-02","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":254,"cloudStock":254,"sharedStock":null},{"date":"2026-06-03","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":254,"cloudStock":254,"sharedStock":null},{"date":"2026-06-04","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":254,"cloudStock":254,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":254,"cloudStock":254,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":254,"cloudStock":254,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":254,"cloudStock":254,"sharedStock":null}],"turnoverEstimate":37,"mayAverage":7,"aprilMax":21,"finalCloudStock":252,"cloudShortage":-2,"note":""},{"id":"925932629275","name":"六神清凉沐浴露1L/瓶","barcode":"1954","packSpec":"8","shelfLife":"4","cost":28.6,"quote":"26.5","schedule":"6月10日","openingRemaining":158,"openingCloudStock":158,"openingSharedStock":null,"daily":[{"date":"2026-06-01","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":158,"cloudStock":158,"sharedStock":null},{"date":"2026-06-02","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":158,"cloudStock":158,"sharedStock":null},{"date":"2026-06-03","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":158,"cloudStock":158,"sharedStock":null},{"date":"2026-06-04","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":158,"cloudStock":158,"sharedStock":null},{"date":"2026-06-05","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":158,"cloudStock":158,"sharedStock":null},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":158,"cloudStock":158,"sharedStock":null},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":158,"cloudStock":158,"sharedStock":null}],"turnoverEstimate":17,"mayAverage":9,"aprilMax":0,"finalCloudStock":158,"cloudShortage":0,"note":""},{"id":"789838002697","name":"六神祛痱舒缓粉150g/盒","barcode":"6901294179639","packSpec":"36","shelfLife":"3","cost":7.2,"quote":"7.8-7.6","schedule":"6月19日","openingRemaining":535,"openingCloudStock":3,"openingSharedStock":532,"daily":[{"date":"2026-06-01","price":7.8,"sales":43,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":492,"cloudStock":3,"sharedStock":489},{"date":"2026-06-02","price":7.6,"sales":79,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":413,"cloudStock":3,"sharedStock":410},{"date":"2026-06-03","price":7.6,"sales":52,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":900,"remaining":1261,"cloudStock":903,"sharedStock":358},{"date":"2026-06-04","price":7.8,"sales":35,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1226,"cloudStock":903,"sharedStock":323},{"date":"2026-06-05","price":null,"sales":106,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1120,"cloudStock":903,"sharedStock":217},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1120,"cloudStock":903,"sharedStock":217},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1120,"cloudStock":903,"sharedStock":217}],"turnoverEstimate":10,"mayAverage":100,"aprilMax":23,"finalCloudStock":0,"cloudShortage":-3,"note":""},{"id":"928635146526","name":"六神经典原香花露水95mL/瓶","barcode":"6901294177024","packSpec":"40","shelfLife":"","cost":null,"quote":"8-7.8","schedule":"6月19日","openingRemaining":1594,"openingCloudStock":933,"openingSharedStock":661,"daily":[{"date":"2026-06-01","price":8,"sales":131,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1463,"cloudStock":933,"sharedStock":530},{"date":"2026-06-02","price":7.808974359,"sales":156,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":1307,"cloudStock":933,"sharedStock":374},{"date":"2026-06-03","price":8,"sales":61,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":1600,"remaining":2846,"cloudStock":2533,"sharedStock":313},{"date":"2026-06-04","price":8,"sales":150,"sendShared":400,"returnOrDamage":0,"inboundOrReturn":0,"remaining":2696,"cloudStock":2133,"sharedStock":563},{"date":"2026-06-05","price":null,"sales":192,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":2504,"cloudStock":2133,"sharedStock":371},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":2504,"cloudStock":2133,"sharedStock":371},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":2504,"cloudStock":2133,"sharedStock":371}],"turnoverEstimate":12,"mayAverage":200,"aprilMax":120,"finalCloudStock":886,"cloudShortage":-47,"note":""},{"id":"928636362770","name":"六神经典原香花露水195mL/瓶","barcode":"6901294177017","packSpec":"30","shelfLife":"","cost":null,"quote":"14.2-13.8","schedule":"6月19日","openingRemaining":4046,"openingCloudStock":3060,"openingSharedStock":986,"daily":[{"date":"2026-06-01","price":13.66,"sales":523,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":3523,"cloudStock":3060,"sharedStock":463},{"date":"2026-06-02","price":14.2,"sales":123,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":3400,"cloudStock":3060,"sharedStock":340},{"date":"2026-06-03","price":13.8,"sales":169,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":3231,"cloudStock":3060,"sharedStock":171},{"date":"2026-06-04","price":13.66,"sales":347,"sendShared":1500,"returnOrDamage":2,"inboundOrReturn":0,"remaining":2882,"cloudStock":1560,"sharedStock":1324},{"date":"2026-06-05","price":null,"sales":191,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":2691,"cloudStock":1560,"sharedStock":1133},{"date":"2026-06-06","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":2691,"cloudStock":1560,"sharedStock":1133},{"date":"2026-06-07","price":null,"sales":0,"sendShared":0,"returnOrDamage":0,"inboundOrReturn":0,"remaining":2691,"cloudStock":1560,"sharedStock":1133}],"turnoverEstimate":13,"mayAverage":192,"aprilMax":975,"finalCloudStock":3013,"cloudShortage":-47,"note":"65共享仓多28"}];
+    const dates = ["2026-06-01","2026-06-02","2026-06-03","2026-06-04","2026-06-05","2026-06-06","2026-06-07"];
+    const state = { date: dates[dates.length - 1], basis: 'mayAverage', threshold: 7, query: '', sort: 'safetyGap', dir: 'asc' };
+
+    const fmt = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 });
+    const money = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+
+    function num(value) { return Number.isFinite(value) ? value : 0; }
+    function formatNum(value) { return Number.isFinite(value) ? fmt.format(value) : '-'; }
+    function formatMoney(value) { return Number.isFinite(value) ? '￥' + money.format(value) : '-'; }
+    function dateText(iso) { return iso.replace('2026-', '6/').replace('-', '/'); }
+
+    function dailyOf(product, date) {
+      return product.daily.find(day => day.date === date) || {};
+    }
+
+    function previousDate(date) {
+      const index = dates.indexOf(date);
+      return index > 0 ? dates[index - 1] : null;
+    }
+
+    function expectedSales(product, selected) {
+      if (state.basis === 'aprilMax') return num(product.aprilMax);
+      if (state.basis === 'selectedSales') return num(selected.sales);
+      return num(product.mayAverage);
+    }
+
+    function enrichedRows() {
+      const prev = previousDate(state.date);
+      return products.map(product => {
+        const selected = dailyOf(product, state.date);
+        const previous = prev ? dailyOf(product, prev) : {};
+        const expected = expectedSales(product, selected);
+        const remaining = Number.isFinite(selected.remaining) ? selected.remaining : num(product.finalCloudStock);
+        const sales = num(selected.sales);
+        const salesChange = sales - num(previous.sales);
+        const dailyGap = remaining - expected;
+        const safetyStock = expected * state.threshold;
+        const safetyGap = remaining - safetyStock;
+        const turnoverDays = expected > 0 ? remaining / expected : null;
+        return {
+          product, selected, previous, expected, remaining, sales, salesChange,
+          dailyGap, safetyGap, turnoverDays,
+          risk: expected > 0 && turnoverDays <= state.threshold,
+        };
+      });
+    }
+
+    function riskClass(row) {
+      if (!Number.isFinite(row.turnoverDays)) return 'info';
+      if (row.turnoverDays <= Math.max(2, state.threshold / 2)) return 'bad';
+      if (row.turnoverDays <= state.threshold) return 'warn';
+      return 'ok';
+    }
+
+    function riskText(row) {
+      if (!Number.isFinite(row.turnoverDays)) return '无预期';
+      if (row.turnoverDays <= Math.max(2, state.threshold / 2)) return '立即补';
+      if (row.turnoverDays <= state.threshold) return '需关注';
+      return '充足';
+    }
+
+    function renderKpis(rows) {
+      const totalSales = rows.reduce((sum, row) => sum + row.sales, 0);
+      const previous = previousDate(state.date);
+      const previousTotal = previous ? products.reduce((sum, product) => sum + num(dailyOf(product, previous).sales), 0) : 0;
+      const totalStock = rows.reduce((sum, row) => sum + num(row.remaining), 0);
+      const riskRows = rows.filter(row => row.risk);
+      const shortRows = rows.filter(row => row.expected > 0 && row.dailyGap < 0);
+      const turnoverRows = rows.filter(row => Number.isFinite(row.turnoverDays));
+      const avgTurnover = turnoverRows.length ? turnoverRows.reduce((sum, row) => sum + row.turnoverDays, 0) / turnoverRows.length : null;
+
+      document.getElementById('kpiSales').textContent = formatNum(totalSales);
+      const diff = totalSales - previousTotal;
+      document.getElementById('kpiSalesHint').innerHTML = previous ? '较前日 ' + signed(diff) : '首日无前日对比';
+      document.getElementById('kpiStock').textContent = formatNum(totalStock);
+      document.getElementById('kpiRisk').textContent = riskRows.length;
+      document.getElementById('kpiRiskHint').textContent = '阈值：' + state.threshold + ' 天';
+      document.getElementById('kpiShort').textContent = shortRows.length;
+      document.getElementById('kpiTurnover').textContent = Number.isFinite(avgTurnover) ? formatNum(avgTurnover) + '天' : '-';
+    }
+
+    function signed(value) {
+      const cls = value >= 0 ? 'pos' : 'neg';
+      const prefix = value > 0 ? '+' : '';
+      return '<span class="' + cls + '">' + prefix + formatNum(value) + '</span>';
+    }
+
+    function renderTable(rows) {
+      const q = state.query.toLowerCase();
+      const filtered = rows.filter(({ product }) => {
+        return !q || product.name.toLowerCase().includes(q) || product.id.toLowerCase().includes(q) || product.barcode.toLowerCase().includes(q);
+      });
+      filtered.sort((a, b) => {
+        const av = sortValue(a, state.sort);
+        const bv = sortValue(b, state.sort);
+        const result = typeof av === 'string' ? av.localeCompare(String(bv), 'zh-CN') : num(av) - num(bv);
+        return state.dir === 'asc' ? result : -result;
+      });
+
+      document.getElementById('productBody').innerHTML = filtered.map(row => {
+        const product = row.product;
+        return '<tr>' +
+          '<td><div class="name" title="' + esc(product.name) + '">' + esc(product.name) + '</div></td>' +
+          '<td>' + esc(product.id) + '</td>' +
+          '<td>' + formatNum(row.sales) + '</td>' +
+          '<td>' + signed(row.salesChange) + '</td>' +
+          '<td>' + formatNum(row.remaining) + '</td>' +
+          '<td>' + formatNum(row.expected) + '</td>' +
+          '<td class="' + (row.dailyGap >= 0 ? 'pos' : 'neg') + '">' + formatNum(row.dailyGap) + '</td>' +
+          '<td class="' + (row.safetyGap >= 0 ? 'pos' : 'neg') + '">' + formatNum(row.safetyGap) + '</td>' +
+          '<td><span class="tag ' + riskClass(row) + '">' + (Number.isFinite(row.turnoverDays) ? formatNum(row.turnoverDays) + '天' : '-') + ' · ' + riskText(row) + '</span></td>' +
+          '<td>' + formatMoney(row.selected.price) + '</td>' +
+          '<td class="' + (num(product.cloudShortage) < 0 ? 'neg' : '') + '">' + formatNum(product.cloudShortage) + '</td>' +
+          '<td>' + esc(product.schedule) + '</td>' +
+          '<td class="muted">' + esc(product.note) + '</td>' +
+        '</tr>';
+      }).join('');
+    }
+
+    function sortValue(row, key) {
+      if (key in row) return row[key];
+      if (key === 'name') return row.product.name;
+      if (key === 'id') return row.product.id;
+      if (key === 'price') return row.selected.price;
+      if (key === 'cloudShortage') return row.product.cloudShortage;
+      if (key === 'schedule') return row.product.schedule;
+      if (key === 'note') return row.product.note;
+      return '';
+    }
+
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+    }
+
+    function setupCanvas(canvas) {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      return { ctx, w: rect.width, h: rect.height };
+    }
+
+    function drawSalesTrend() {
+      const canvas = document.getElementById('salesTrend');
+      const { ctx, w, h } = setupCanvas(canvas);
+      ctx.clearRect(0, 0, w, h);
+      const points = dates.map(date => products.reduce((sum, product) => sum + num(dailyOf(product, date).sales), 0));
+      drawAxes(ctx, w, h);
+      const max = Math.max(...points, 1);
+      const left = 42, right = 16, top = 18, bottom = 34;
+      ctx.strokeStyle = '#2563eb';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      points.forEach((value, index) => {
+        const x = left + (w - left - right) * (index / Math.max(1, points.length - 1));
+        const y = top + (h - top - bottom) * (1 - value / max);
+        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      points.forEach((value, index) => {
+        const x = left + (w - left - right) * (index / Math.max(1, points.length - 1));
+        const y = top + (h - top - bottom) * (1 - value / max);
+        ctx.fillStyle = dates[index] === state.date ? '#dc2626' : '#2563eb';
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#374151';
+        ctx.font = '12px sans-serif';
+        ctx.fillText(dateText(dates[index]), x - 14, h - 10);
+      });
+    }
+
+    function drawTopSales(rows) {
+      const canvas = document.getElementById('topSales');
+      const { ctx, w, h } = setupCanvas(canvas);
+      ctx.clearRect(0, 0, w, h);
+      const topRows = [...rows].sort((a, b) => b.sales - a.sales).slice(0, 10);
+      const max = Math.max(...topRows.map(row => row.sales), 1);
+      const left = 136, right = 40, top = 8;
+      const rowH = (h - top - 8) / Math.max(1, topRows.length);
+      ctx.font = '12px sans-serif';
+      topRows.forEach((row, index) => {
+        const y = top + index * rowH + 6;
+        const barW = (w - left - right) * (row.sales / max);
+        ctx.fillStyle = '#eef2ff';
+        ctx.fillRect(left, y, w - left - right, Math.max(14, rowH - 8));
+        ctx.fillStyle = '#2563eb';
+        ctx.fillRect(left, y, barW, Math.max(14, rowH - 8));
+        ctx.fillStyle = '#374151';
+        ctx.fillText(row.product.name.slice(0, 12), 4, y + 12);
+        ctx.fillText(formatNum(row.sales), left + barW + 6, y + 12);
+      });
+    }
+
+    function drawAxes(ctx, w, h) {
+      ctx.strokeStyle = '#dfe3ea';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(42, 18);
+      ctx.lineTo(42, h - 34);
+      ctx.lineTo(w - 16, h - 34);
+      ctx.stroke();
+    }
+
+    function render() {
+      const rows = enrichedRows();
+      renderKpis(rows);
+      renderTable(rows);
+      drawSalesTrend();
+      drawTopSales(rows);
+    }
+
+    function init() {
+      document.getElementById('dateSelect').innerHTML = dates.map(date => '<option value="' + date + '">' + date + '</option>').join('');
+      document.getElementById('dateSelect').value = state.date;
+      document.getElementById('dateSelect').addEventListener('change', event => { state.date = event.target.value; render(); });
+      document.getElementById('basisSelect').addEventListener('change', event => { state.basis = event.target.value; render(); });
+      document.getElementById('thresholdInput').addEventListener('input', event => { state.threshold = Number(event.target.value) || 1; render(); });
+      document.getElementById('searchInput').addEventListener('input', event => { state.query = event.target.value.trim(); render(); });
+      document.querySelectorAll('th[data-sort]').forEach(th => {
+        th.addEventListener('click', () => {
+          const key = th.dataset.sort;
+          if (state.sort === key) state.dir = state.dir === 'asc' ? 'desc' : 'asc';
+          else { state.sort = key; state.dir = key === 'safetyGap' ? 'asc' : 'desc'; }
+          render();
+        });
+      });
+      window.addEventListener('resize', render);
+      render();
+    }
+
+    init();
+  </script>
+</body>
+</html>
