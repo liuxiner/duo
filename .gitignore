@@ -1,0 +1,8 @@
+.env
+.cache/
+node_modules/
+data/pdd/*.json
+data/pdd/*.csv
+!data/pdd/.gitkeep
+
+data/*
