@@ -2,6 +2,15 @@ import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import {
+  closeBlockingModals,
+  disconnectPddBrowser,
+  getPddPageSize,
+  getUniqueServicePage,
+  installBlockingModalGuard,
+  PDD_PAGE_SIZE,
+  setPddPageSize,
+} from './pdd-page-tools.mjs';
 
 const ROOT = process.cwd();
 const RAW_HEADERS_PREFIX = ['采集时间', '销售日期', '页面', '商品名称', '商品ID'];
@@ -288,12 +297,14 @@ function calculatedRowsFromRecords(records, collectedAt, salesDate) {
 }
 
 async function waitForManualLogin(page, cfg) {
+  await closeBlockingModals(page);
   if (!cfg.waitForLogin) return;
 
   if (cfg.autoWaitForLogin) {
     console.log('Waiting for PDD login/verification in the opened browser...');
     const deadline = Date.now() + cfg.loginWaitMs;
     while (Date.now() < deadline) {
+      await closeBlockingModals(page);
       const hasTable = await page.locator('table, [data-testid="beast-core-table"]').first().count().catch(() => 0);
       if (hasTable > 0) {
         console.log('PDD table detected. Continuing sync.');
@@ -342,6 +353,7 @@ async function waitForManualLogin(page, cfg) {
 }
 
 async function collectCurrentPage(page) {
+  await closeBlockingModals(page);
   return page.evaluate(() => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
 
@@ -404,16 +416,6 @@ async function readTotalCount(page) {
   }).catch(() => null);
 }
 
-async function currentPageSize(page) {
-  return page.evaluate(() => {
-    const sizeChanger = document.querySelector('.PGT_sizeChanger_5-157-0');
-    const input = sizeChanger?.querySelector('input[data-testid="beast-core-select-htmlInput"], input');
-    const value = input?.value || '';
-    const match = value.match(/\d+/);
-    return match ? Number(match[0]) : null;
-  }).catch(() => null);
-}
-
 async function waitForQueryResults(page, salesDate, targetPageSize, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   let stableMatches = 0;
@@ -423,7 +425,7 @@ async function waitForQueryResults(page, salesDate, targetPageSize, timeoutMs = 
     const [result, total, selectedPageSize] = await Promise.all([
       collectCurrentPage(page),
       readTotalCount(page),
-      currentPageSize(page),
+      getPddPageSize(page),
     ]);
     const dates = Array.from(new Set(
       result.records.map((record) => normalizeText(record['销售日期'])).filter(Boolean)
@@ -451,6 +453,7 @@ async function waitForQueryResults(page, salesDate, targetPageSize, timeoutMs = 
 }
 
 async function setDateRangeTo(page, salesDate) {
+  await closeBlockingModals(page);
   const selector = 'input[data-testid="beast-core-rangePicker-htmlInput"]';
   const inputLocator = page.locator(selector).first();
   const previousTableText = await page.locator('[data-testid="beast-core-table-middle-body"]')
@@ -543,40 +546,6 @@ async function clickRangePickerDate(page, salesDate) {
   }
 }
 
-async function setPageSize(page, targetSize) {
-  if (!targetSize) return false;
-  const current = await currentPageSize(page);
-  if (current === targetSize) {
-    console.log(`Page size already ${targetSize}.`);
-    return true;
-  }
-
-  console.log(`Trying to set page size to ${targetSize}.`);
-  const sizeChanger = page.locator('.PGT_sizeChanger_5-157-0').first();
-  if (!(await sizeChanger.count().catch(() => 0))) {
-    console.log('Page size control not found; will paginate with current page size.');
-    return false;
-  }
-
-  await sizeChanger.click();
-  await page.waitForTimeout(500);
-
-  const exactOption = page.locator('[role="option"], li, div, span').filter({ hasText: new RegExp(`^\\s*${targetSize}\\s*$`) }).last();
-  if (await exactOption.count().catch(() => 0)) {
-    await exactOption.click();
-    await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(1500);
-    const updated = await currentPageSize(page);
-    if (updated === targetSize) {
-      console.log(`Page size set to ${targetSize}.`);
-      return true;
-    }
-  }
-
-  console.log(`Could not set page size to ${targetSize}; will paginate with current page size ${current || 'unknown'}.`);
-  return false;
-}
-
 async function clickNextPage(page) {
   const beforeText = await page.locator('[data-testid="beast-core-table-middle-body"]').innerText({ timeout: 3000 }).catch(() => '');
   const clicked = await page.evaluate(() => {
@@ -640,10 +609,12 @@ async function collectPddRows(cfg) {
     });
   }
 
-  const page = context.pages()[0] || await context.newPage();
+  const page = await getUniqueServicePage(context, cfg.pddUrl);
   try {
+    await installBlockingModalGuard(page);
     await page.goto(cfg.pddUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
     await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+    await closeBlockingModals(page);
     await waitForManualLogin(page, cfg);
 
     const collectedAt = formatBeijingTimestamp(new Date());
@@ -652,8 +623,9 @@ async function collectPddRows(cfg) {
     if (cfg.syncDate || cfg.selectYesterday) {
       await setDateRangeTo(page, salesDate);
     }
-    await setPageSize(page, cfg.targetPageSize);
-    const stableQuery = await waitForQueryResults(page, salesDate, cfg.targetPageSize);
+    await setPddPageSize(page, PDD_PAGE_SIZE);
+    console.log(`Page size set to ${PDD_PAGE_SIZE}.`);
+    const stableQuery = await waitForQueryResults(page, salesDate, PDD_PAGE_SIZE);
     const expectedTotal = stableQuery.total;
     console.log(`Query stabilized: ${stableQuery.result.records.length} visible rows, ${expectedTotal ?? 'unknown'} total.`);
 
@@ -696,7 +668,7 @@ async function collectPddRows(cfg) {
       expectedTotal,
     };
   } finally {
-    if (browser) await browser.close();
+    if (browser) disconnectPddBrowser(browser);
     else await context.close();
   }
 }

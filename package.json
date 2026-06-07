@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "sync:pdd": "node scripts/sync-pdd-to-feishu.mjs",
+    "report:pdd": "node scripts/report-pdd-to-feishu.mjs",
+    "report:pdd:once": "node scripts/report-pdd-to-feishu.mjs --once",
+    "report:pdd:dry-run": "node scripts/report-pdd-to-feishu.mjs --dry-run",
     "web": "node web/server.mjs",
     "dashboard:build": "node build-dashboard.mjs"
   },

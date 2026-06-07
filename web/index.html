@@ -3,46 +3,196 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>飞书数据同步</title>
+  <title>多多数字管家</title>
   <style>
-    :root { color-scheme: light; font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    :root {
+      color-scheme: light;
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: #182230;
+      background: #eef2f6;
+      font-size: 13px;
+    }
     * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; background: #f3f5f8; color: #182230; display: grid; place-items: center; padding: 24px; }
-    main { width: min(720px, 100%); background: #fff; border: 1px solid #e4e7ec; border-radius: 18px; padding: 32px; box-shadow: 0 16px 48px rgba(16, 24, 40, .08); }
-    h1 { margin: 0 0 8px; font-size: 28px; }
-    .sub { margin: 0 0 28px; color: #667085; line-height: 1.6; }
-    form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 14px; align-items: end; }
-    label { display: grid; gap: 8px; font-size: 14px; font-weight: 600; }
-    input, button { height: 44px; border-radius: 10px; font: inherit; }
-    input { width: 100%; border: 1px solid #d0d5dd; padding: 0 12px; color: #101828; }
-    input:focus { outline: 3px solid #dbeafe; border-color: #2563eb; }
-    button { border: 0; padding: 0 22px; background: #2563eb; color: white; font-weight: 700; cursor: pointer; }
-    button:disabled { opacity: .55; cursor: wait; }
-    .status { margin-top: 24px; padding: 14px 16px; border-radius: 10px; background: #f8fafc; color: #475467; }
-    .status strong { color: #101828; }
-    pre { min-height: 180px; max-height: 360px; overflow: auto; margin: 14px 0 0; padding: 16px; border-radius: 10px; background: #5f5f5f; color: #d1e9ff; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
-    @media (max-width: 640px) { main { padding: 22px; } form { grid-template-columns: 1fr; } button { width: 100%; } }
+    body { margin: 0; min-height: 100vh; }
+    .layout { display: grid; grid-template-columns: 216px minmax(0, 1fr); gap: 18px; width: min(1440px, 100%); margin: 0 auto; padding: 18px; }
+    aside { position: sticky; top: 18px; align-self: start; min-height: calc(100vh - 36px); border: 1px solid #d7dee8; border-radius: 12px; background: #fff; padding: 16px; box-shadow: 0 10px 30px rgba(16, 24, 40, .06); }
+    .brand { margin-bottom: 18px; }
+    .brand h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
+    .brand p { margin: 6px 0 0; color: #667085; line-height: 1.5; }
+    nav { display: grid; gap: 8px; }
+    nav a { color: #344054; text-decoration: none; padding: 9px 10px; border-radius: 8px; font-weight: 700; }
+    nav a:hover { background: #f2f4f7; }
+    main { display: grid; gap: 16px; min-width: 0; }
+    section { border: 1px solid #d7dee8; border-radius: 12px; background: #fff; padding: 18px; box-shadow: 0 10px 30px rgba(16, 24, 40, .05); }
+    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    h2 { margin: 0; font-size: 17px; }
+    .hint { color: #667085; line-height: 1.5; margin: 4px 0 0; }
+    .grid-form { display: grid; grid-template-columns: repeat(2, minmax(160px, 220px)) auto; gap: 10px; align-items: end; }
+    label { display: grid; gap: 6px; font-weight: 700; color: #344054; }
+    input, button, select { height: 36px; border-radius: 8px; font: inherit; }
+    input, select { width: 100%; border: 1px solid #cbd5e1; padding: 0 9px; background: #fff; color: #101828; }
+    input:focus, select:focus { outline: 3px solid #dbeafe; border-color: #2563eb; }
+    button { border: 0; padding: 0 13px; background: #2563eb; color: white; font-weight: 800; cursor: pointer; white-space: nowrap; }
+    button:hover { filter: brightness(.97); }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    button.secondary { background: #475467; }
+    button.light { background: #eef4ff; color: #1849a9; border: 1px solid #b2ccff; }
+    button.danger { background: #b42318; }
+    button.success { background: #067647; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .switch { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 999px; background: #f8fafc; font-weight: 800; }
+    .switch input { width: 16px; height: 16px; }
+    .status-card { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+    .metric { border: 1px solid #e4e7ec; border-radius: 10px; padding: 11px 12px; background: #f8fafc; }
+    .metric span { display: block; color: #667085; margin-bottom: 5px; }
+    .metric strong { font-size: 15px; }
+    .table-wrap { position: relative; overflow: auto; border: 1px solid #e4e7ec; border-radius: 10px; }
+    .table-wrap.locked::after {
+      content: "定时上报已开启，配置已锁定。关闭后可修改。";
+      position: sticky;
+      left: 0;
+      bottom: 0;
+      display: block;
+      padding: 10px 12px;
+      background: rgba(248, 250, 252, .9);
+      color: #344054;
+      border-top: 1px solid #e4e7ec;
+      font-weight: 800;
+      backdrop-filter: blur(2px);
+    }
+    table { width: 100%; border-collapse: collapse; min-width: 1260px; }
+    th, td { border-bottom: 1px solid #e4e7ec; padding: 8px; vertical-align: middle; }
+    th { position: sticky; top: 0; z-index: 1; background: #f8fafc; text-align: left; color: #475467; font-size: 12px; }
+    td input { height: 32px; min-width: 92px; }
+    td input[type="checkbox"] { width: 16px; min-width: 16px; height: 16px; }
+    .narrow { width: 64px; min-width: 64px; }
+    .wide { min-width: 180px; }
+    .times { min-width: 260px; }
+    .row-actions { display: flex; gap: 6px; }
+    .log-panel { border: 1px solid #dbe4f0; border-radius: 10px; background: #f8fbff; overflow: hidden; }
+    .log-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; }
+    .log-lines { display: grid; gap: 6px; padding: 0 12px 12px; color: #344054; }
+    .log-line { padding: 8px 10px; border-radius: 8px; background: #fff; border: 1px solid #e4e7ec; }
+    .log-full { display: none; max-height: 320px; overflow: auto; padding: 12px; border-top: 1px solid #dbe4f0; background: #fff; }
+    .log-full.open { display: grid; gap: 6px; }
+    .pill { display: inline-flex; align-items: center; height: 24px; border-radius: 999px; padding: 0 9px; font-weight: 800; background: #ecfdf3; color: #067647; }
+    .pill.off { background: #f2f4f7; color: #475467; }
+    .pill.fail { background: #fef3f2; color: #b42318; }
+    @media (max-width: 860px) {
+      .layout { grid-template-columns: 1fr; padding: 12px; }
+      aside { position: static; min-height: auto; }
+      .grid-form, .status-card { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
-  <main>
-    <h1>飞书数据同步</h1>
-    <p class="sub">选择销售日期范围。系统会逐日抓取数据，并按日期新建或覆盖对应的飞书 Sheet。</p>
-    <form id="sync-form">
-      <label>From<input id="from" name="from" type="date" required></label>
-      <label>To<input id="to" name="to" type="date" required></label>
-      <button id="submit" type="submit">开始同步</button>
-    </form>
-    <div class="status" id="status">状态：<strong>空闲</strong></div>
-    <pre id="logs">等待同步任务...</pre>
-  </main>
+  <div class="layout">
+    <aside>
+      <div class="brand">
+        <h1>多多数字管家</h1>
+        <p>数据同步、分仓库截图上报和定时任务管理。</p>
+      </div>
+      <nav>
+        <a href="#sync">飞书数据同步</a>
+        <a href="#report">分仓库上报</a>
+        <a href="#logs">运行日志</a>
+      </nav>
+    </aside>
+
+    <main>
+      <section id="sync">
+        <div class="section-head">
+          <div>
+            <h2>飞书数据同步</h2>
+            <p class="hint">选择销售日期范围，逐日抓取并写入飞书 Sheet。</p>
+          </div>
+        </div>
+        <form class="grid-form" id="sync-form">
+          <label>开始日期<input id="from" name="from" type="date" required></label>
+          <label>结束日期<input id="to" name="to" type="date" required></label>
+          <button id="submit" type="submit">开始同步</button>
+        </form>
+        <div class="status-card">
+          <div class="metric"><span>同步状态</span><strong id="sync-state">空闲</strong></div>
+          <div class="metric"><span>同步范围</span><strong id="sync-range">未选择</strong></div>
+          <div class="metric"><span>同步进度</span><strong id="sync-progress">等待任务</strong></div>
+        </div>
+      </section>
+
+      <section id="report">
+        <div class="section-head">
+          <div>
+            <h2>分仓库上报配置</h2>
+            <p class="hint">发送时间用英文逗号分隔，支持 HH:MM；@ 多人也用英文逗号分隔。</p>
+          </div>
+          <label class="switch"><input id="scheduler-enabled" type="checkbox">定时上报</label>
+        </div>
+        <div class="toolbar">
+          <button id="add-row" class="light" type="button">新增规则</button>
+          <button id="save-config" type="button">保存配置</button>
+          <button id="run-selected" class="success" type="button">多选立即上报</button>
+          <button id="dry-run-selected" class="secondary" type="button">多选测试截图</button>
+        </div>
+        <div id="config-table-wrap" class="table-wrap" style="margin-top: 12px;">
+          <table>
+            <thead>
+              <tr>
+                <th class="narrow">选择</th>
+                <th class="narrow">序号</th>
+                <th>区域</th>
+                <th>仓库</th>
+                <th>群名</th>
+                <th>发送群名</th>
+                <th>成员名</th>
+                <th>@群成员</th>
+                <th>发送时间</th>
+                <th>截单时间</th>
+                <th>整点</th>
+                <th>状态</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="config-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="logs">
+        <div class="section-head">
+          <div>
+            <h2>运行日志</h2>
+            <p class="hint">默认只展示最近几条，展开后查看完整日志。</p>
+          </div>
+        </div>
+        <div id="sync-log-panel" class="log-panel"></div>
+        <div id="report-log-panel" class="log-panel" style="margin-top: 12px;"></div>
+        <div id="scheduler-log-panel" class="log-panel" style="margin-top: 12px;"></div>
+      </section>
+    </main>
+  </div>
+
   <script>
     const form = document.querySelector('#sync-form');
     const fromInput = document.querySelector('#from');
     const toInput = document.querySelector('#to');
     const submit = document.querySelector('#submit');
-    const statusBox = document.querySelector('#status');
-    const logs = document.querySelector('#logs');
+    const syncState = document.querySelector('#sync-state');
+    const syncRange = document.querySelector('#sync-range');
+    const syncProgress = document.querySelector('#sync-progress');
+    const schedulerEnabled = document.querySelector('#scheduler-enabled');
+    const addRow = document.querySelector('#add-row');
+    const saveConfig = document.querySelector('#save-config');
+    const runSelected = document.querySelector('#run-selected');
+    const dryRunSelected = document.querySelector('#dry-run-selected');
+    const configBody = document.querySelector('#config-body');
+    const configTableWrap = document.querySelector('#config-table-wrap');
+    const syncLogPanel = document.querySelector('#sync-log-panel');
+    const reportLogPanel = document.querySelector('#report-log-panel');
+    const schedulerLogPanel = document.querySelector('#scheduler-log-panel');
+    let config = { schedulerEnabled: false, items: [] };
+    let expandedLogs = { sync: false, report: false, scheduler: false };
+    let reportRequestPending = false;
+
     const dateParts = new Intl.DateTimeFormat('en', {
       timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
     }).formatToParts(new Date(Date.now() - 86400000));
@@ -51,19 +201,158 @@
     fromInput.value = yesterday;
     toInput.value = yesterday;
 
-    const labels = { idle: '空闲', running: '同步中', completed: '已完成', failed: '失败' };
+    const statusText = { idle: '空闲', running: '运行中', completed: '成功', failed: '失败', stopped: '已暂停' };
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+    }
+    function nextId() {
+      const max = Math.max(0, ...config.items.map((item) => Number(item.id) || 0));
+      return String(max + 1);
+    }
+    function selectedIds() {
+      return Array.from(document.querySelectorAll('.select-rule:checked')).map((input) => input.dataset.id);
+    }
+    function syncItemFromRow(row, item) {
+      item.region = row.querySelector('[data-field="region"]').value.trim();
+      item.warehouse = row.querySelector('[data-field="warehouse"]').value.trim();
+      item.groupName = row.querySelector('[data-field="groupName"]').value.trim();
+      item.chatName = row.querySelector('[data-field="chatName"]').value.trim();
+      item.memberName = row.querySelector('[data-field="memberName"]').value.trim();
+      item.mentionNames = row.querySelector('[data-field="mentionNames"]').value.split(/[,，]/).map((value) => value.trim()).filter(Boolean);
+      item.sendTimes = row.querySelector('[data-field="sendTimes"]').value.split(',').map((value) => value.trim()).filter(Boolean);
+      item.cutoffTime = row.querySelector('[data-field="cutoffTime"]').value.trim();
+      item.topOfHour = row.querySelector('[data-field="topOfHour"]').checked;
+      item.enabled = row.querySelector('[data-field="enabled"]').checked;
+    }
+    function syncConfigFromTable() {
+      for (const row of configBody.querySelectorAll('tr')) {
+        const item = config.items.find((candidate) => candidate.id === row.dataset.id);
+        if (item) syncItemFromRow(row, item);
+      }
+      config.schedulerEnabled = schedulerEnabled.checked;
+    }
+    function renderConfig() {
+      const locked = Boolean(config.schedulerEnabled);
+      schedulerEnabled.checked = locked;
+      configTableWrap.classList.toggle('locked', locked);
+      saveConfig.disabled = locked;
+      addRow.disabled = locked;
+      configBody.innerHTML = config.items.map((item) => `
+        <tr data-id="${escapeHtml(item.id)}">
+          <td><input class="select-rule" data-id="${escapeHtml(item.id)}" type="checkbox"></td>
+          <td><strong>${escapeHtml(item.id)}</strong></td>
+          <td><input data-field="region" value="${escapeHtml(item.region)}" ${locked ? 'disabled' : ''}></td>
+          <td><input class="wide" data-field="warehouse" value="${escapeHtml(item.warehouse)}" ${locked ? 'disabled' : ''}></td>
+          <td><input class="wide" data-field="groupName" value="${escapeHtml(item.groupName)}" ${locked ? 'disabled' : ''}></td>
+          <td><input class="wide" data-field="chatName" value="${escapeHtml(item.chatName)}" ${locked ? 'disabled' : ''}></td>
+          <td><input data-field="memberName" value="${escapeHtml(item.memberName)}" ${locked ? 'disabled' : ''}></td>
+          <td><input class="wide" data-field="mentionNames" value="${escapeHtml((item.mentionNames || []).join(', '))}" ${locked ? 'disabled' : ''}></td>
+          <td><input class="times" data-field="sendTimes" value="${escapeHtml((item.sendTimes || []).join(', '))}" ${locked ? 'disabled' : ''}></td>
+          <td><input data-field="cutoffTime" value="${escapeHtml(item.cutoffTime)}" ${locked ? 'disabled' : ''}></td>
+          <td><input data-field="topOfHour" type="checkbox" ${item.topOfHour ? 'checked' : ''} ${locked ? 'disabled' : ''}></td>
+          <td><label class="switch"><input data-field="enabled" type="checkbox" ${item.enabled ? 'checked' : ''} ${locked ? 'disabled' : ''}>${item.enabled ? '启' : '停'}</label></td>
+          <td><div class="row-actions">
+            <button class="light run-one" data-id="${escapeHtml(item.id)}" type="button">立即上报</button>
+            <button class="secondary dry-one" data-id="${escapeHtml(item.id)}" type="button">测试</button>
+            <button class="danger delete-one" data-id="${escapeHtml(item.id)}" type="button" ${locked ? 'disabled' : ''}>删除</button>
+          </div></td>
+        </tr>
+      `).join('');
+    }
+    function renderLogPanel(panel, key, title, task) {
+      const logs = task.previewLogs || [];
+      const allLogs = task.logs || [];
+      const state = statusText[task.status] || task.status || '空闲';
+      const pillClass = task.status === 'failed' ? 'fail' : (task.status === 'idle' || task.status === 'stopped' ? 'off' : '');
+      const progress = task.lastDate ? `已处理到 ${task.lastDate}` : (task.status === 'running' ? '正在处理' : '暂无进度');
+      panel.innerHTML = `
+        <div class="log-summary">
+          <div><strong>${title}</strong> <span class="pill ${pillClass}">${state}</span><div class="hint">${progress}</div></div>
+          <button class="light toggle-log" data-key="${key}" type="button">${expandedLogs[key] ? '收起日志' : '展开日志'}</button>
+        </div>
+        <div class="log-lines">${logs.length ? logs.map((line) => `<div class="log-line">${escapeHtml(line)}</div>`).join('') : '<div class="log-line">暂无日志</div>'}</div>
+        <div class="log-full ${expandedLogs[key] ? 'open' : ''}">${allLogs.length ? allLogs.map((line) => `<div class="log-line">${escapeHtml(line)}</div>`).join('') : '<div class="log-line">暂无完整日志</div>'}</div>
+      `;
+    }
+    async function loadConfig() {
+      const response = await fetch('/api/report-config');
+      const body = await response.json();
+      config = body.config || { schedulerEnabled: false, items: [] };
+      renderConfig();
+    }
     async function refresh() {
       const response = await fetch('/api/status');
       const state = await response.json();
-      submit.disabled = state.status === 'running';
-      statusBox.innerHTML = `状态：<strong>${labels[state.status] || state.status}</strong>${state.from ? ` · ${state.from} 至 ${state.to}` : ''}`;
-      logs.textContent = state.logs?.length ? state.logs.join('\n') : '等待同步任务...';
-      logs.scrollTop = logs.scrollHeight;
+      const sync = state.sync || { status: 'idle', logs: [], previewLogs: [] };
+      const report = state.report || { status: 'idle', logs: [], previewLogs: [] };
+      const scheduler = state.scheduler || { status: 'idle', logs: [], previewLogs: [] };
+      submit.disabled = sync.status === 'running';
+      syncState.textContent = statusText[sync.status] || sync.status;
+      syncRange.textContent = sync.from ? `${sync.from} 至 ${sync.to}` : '未选择';
+      syncProgress.textContent = sync.lastDate ? `已处理到 ${sync.lastDate}` : (sync.status === 'running' ? '正在同步' : '等待任务');
+      renderLogPanel(syncLogPanel, 'sync', '同步日志', sync);
+      renderLogPanel(reportLogPanel, 'report', '立即上报日志', report);
+      renderLogPanel(schedulerLogPanel, 'scheduler', '定时上报日志', scheduler);
+    }
+    async function saveCurrentConfig() {
+      syncConfigFromTable();
+      const response = await fetch('/api/report-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || '保存配置失败');
+      config = body.config;
+      renderConfig();
+    }
+    async function setScheduler(enabled) {
+      if (!enabled) {
+        const response = await fetch('/api/report-scheduler', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: false }),
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || '关闭失败');
+        config = body.config;
+        renderConfig();
+        return;
+      }
+      await saveCurrentConfig();
+      const response = await fetch('/api/report-scheduler', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || '开启失败');
+      config = body.config;
+      renderConfig();
+    }
+    async function startReport(ids, dryRun = false) {
+      if (reportRequestPending) return;
+      if (!ids.length) {
+        alert('请先选择至少一条规则。');
+        return;
+      }
+      reportRequestPending = true;
+      try {
+        const response = await fetch('/api/report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids, dryRun }),
+        });
+        const body = await response.json();
+        if (!response.ok) alert(body.error || '启动上报失败');
+        await refresh();
+      } finally {
+        reportRequestPending = false;
+      }
     }
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
-      submit.disabled = true;
       const response = await fetch('/api/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -73,7 +362,51 @@
       if (!response.ok) alert(body.error || '启动同步失败');
       await refresh();
     });
+    schedulerEnabled.addEventListener('change', async () => {
+      try {
+        await setScheduler(schedulerEnabled.checked);
+      } catch (error) {
+        alert(error.message);
+        schedulerEnabled.checked = config.schedulerEnabled;
+      }
+      await refresh();
+    });
+    saveConfig.addEventListener('click', async () => {
+      try {
+        await saveCurrentConfig();
+        alert('配置已保存');
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+    addRow.addEventListener('click', () => {
+      syncConfigFromTable();
+      config.items.push({ id: nextId(), region: '', warehouse: '', groupName: '', chatName: '', memberName: '', mentionNames: [], sendTimes: ['08:30'], cutoffTime: '23:00', topOfHour: false, enabled: true });
+      renderConfig();
+    });
+    runSelected.addEventListener('click', () => startReport(selectedIds(), false));
+    dryRunSelected.addEventListener('click', () => startReport(selectedIds(), true));
+    document.addEventListener('click', (event) => {
+      const key = event.target.closest('.toggle-log')?.dataset.key;
+      if (key) {
+        expandedLogs[key] = !expandedLogs[key];
+        refresh();
+        return;
+      }
+      const deleteId = event.target.closest('.delete-one')?.dataset.id;
+      if (deleteId) {
+        syncConfigFromTable();
+        config.items = config.items.filter((item) => item.id !== deleteId);
+        renderConfig();
+        return;
+      }
+      const runId = event.target.closest('.run-one')?.dataset.id;
+      if (runId) startReport([runId], false);
+      const dryId = event.target.closest('.dry-one')?.dataset.id;
+      if (dryId) startReport([dryId], true);
+    });
 
+    loadConfig();
     refresh();
     setInterval(refresh, 1500);
   </script>

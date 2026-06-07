@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,7 +7,22 @@ import { fileURLToPath } from 'node:url';
 const WEB_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(WEB_DIR, '..');
 const PORT = Number(process.env.PORT || 4173);
+const REPORT_CONFIG_PATH = path.resolve(ROOT, process.env.PDD_REPORT_CONFIG_PATH || 'data/report-config.json');
 let activeSync = null;
+let activeReport = null;
+let activeScheduler = null;
+
+const DEFAULT_REPORT_CONFIG = {
+  schedulerEnabled: false,
+  items: [
+    { id: '1', region: '浙江省', warehouse: '杭州仓组', groupName: '杭州交仓', chatName: '杭州交仓', memberName: '翱翔巍澜', mentionNames: ['翱翔巍澜'], sendTimes: ['06:00', '07:00', '08:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
+    { id: '2', region: '浙江省', warehouse: '杭州仓组', groupName: '杭州交仓', chatName: '杭州交仓', memberName: '翱翔巍澜', mentionNames: ['翱翔巍澜'], sendTimes: ['12:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
+    { id: '3', region: '浙江省', warehouse: '宁波仓组', groupName: '安如山~宁波中泓北港云仓', chatName: '安如山~宁波中泓北港云仓', memberName: '8', mentionNames: ['8'], sendTimes: ['08:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
+    { id: '4', region: '浙江省', warehouse: '宁波仓组', groupName: '安如山~宁波中泓北港云仓', chatName: '安如山~宁波中泓北港云仓', memberName: '8', mentionNames: ['8'], sendTimes: ['12:00', '13:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
+    { id: '5', region: '浙江省', warehouse: '温州仓组', groupName: '杭州安如山—温州诚达云仓', chatName: '杭州安如山—温州诚达云仓', memberName: '诚达云仓王俊13339809298', mentionNames: ['诚达云仓王俊13339809298'], sendTimes: ['08:00', '09:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
+    { id: '6', region: '浙江省', warehouse: '温州仓组', groupName: '杭州安如山—温州诚达云仓', chatName: '杭州安如山—温州诚达云仓', memberName: '诚达云仓王俊13339809298', mentionNames: ['诚达云仓王俊13339809298'], sendTimes: ['12:00', '13:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
+  ],
+};
 
 function sendJson(response, status, body) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -18,13 +33,25 @@ async function readJson(request) {
   let body = '';
   for await (const chunk of request) {
     body += chunk;
-    if (body.length > 16_384) throw new Error('Request body is too large.');
+    if (body.length > 256_000) throw new Error('Request body is too large.');
   }
   return JSON.parse(body || '{}');
 }
 
 function validDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+}
+
+function compactLogs(logs = []) {
+  return logs.slice(-8);
+}
+
+function summarizeTask(task) {
+  if (!task) return { status: 'idle', logs: [], previewLogs: [] };
+  const previewLogs = compactLogs(task.logs);
+  const lastDate = [...task.logs].reverse().find((line) => /\d{4}-\d{2}-\d{2}/.test(line))?.match(/\d{4}-\d{2}-\d{2}/)?.[0] || '';
+  const { child, ...safeTask } = task;
+  return { ...safeTask, previewLogs, lastDate };
 }
 
 function startSync(from, to) {
@@ -60,6 +87,134 @@ function startSync(from, to) {
   });
 }
 
+async function readReportConfig() {
+  try {
+    const text = await readFile(REPORT_CONFIG_PATH, 'utf8');
+    return JSON.parse(text);
+  } catch {
+    return DEFAULT_REPORT_CONFIG;
+  }
+}
+
+function normalizeConfig(config) {
+  const items = Array.isArray(config?.items) ? config.items : [];
+  if (!items.length) throw new Error('至少需要一条上报规则。');
+  return {
+    schedulerEnabled: Boolean(config.schedulerEnabled),
+    items: items.map((item, index) => ({
+      id: String(item.id || index + 1),
+      region: String(item.region || '').trim(),
+      warehouse: String(item.warehouse || '').trim(),
+      groupName: String(item.groupName || '').trim(),
+      chatName: String(item.chatName || '').trim(),
+      memberName: String(item.memberName || '').trim(),
+      mentionNames: Array.isArray(item.mentionNames) ? item.mentionNames.map((name) => String(name).trim()).filter(Boolean) : [],
+      sendTimes: Array.isArray(item.sendTimes) ? item.sendTimes.map((time) => String(time).trim()).filter(Boolean) : [],
+      cutoffTime: String(item.cutoffTime || '').trim(),
+      topOfHour: Boolean(item.topOfHour),
+      enabled: Boolean(item.enabled),
+    })),
+  };
+}
+
+async function saveReportConfig(config) {
+  const normalized = normalizeConfig(config);
+  const previous = await readReportConfig();
+  if (previous.schedulerEnabled && normalized.schedulerEnabled) {
+    throw new Error('定时上报开启时不能修改配置，请先关闭定时上报。');
+  }
+  await mkdir(path.dirname(REPORT_CONFIG_PATH), { recursive: true });
+  await writeFile(REPORT_CONFIG_PATH, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
+  return normalized;
+}
+
+function appendLogs(target, chunk) {
+  const lines = String(chunk).split(/\r?\n/).filter(Boolean);
+  target.logs.push(...lines);
+  if (target.logs.length > 500) target.logs.splice(0, target.logs.length - 500);
+  if (target.status === 'running' && lines.some((line) => /已发送到|Sent hourly PDD report to/.test(line))) {
+    target.status = 'completed';
+    target.finishedAt = new Date().toISOString();
+    target.exitCode = 0;
+  }
+}
+
+function startReport({ all = false, dryRun = false, ids = [] } = {}) {
+  const logs = [];
+  const args = ['scripts/report-pdd-to-feishu.mjs', '--once'];
+  if (all) args.push('--all');
+  if (dryRun) args.push('--dry-run');
+  if (ids.length) args.push(`--ids=${ids.join(',')}`);
+  const child = spawn(process.execPath, args, {
+    cwd: ROOT,
+    env: process.env,
+    stdio: ['inherit', 'pipe', 'pipe'],
+  });
+
+  const task = { status: 'running', logs, startedAt: new Date().toISOString(), all, dryRun, ids, child };
+  activeReport = task;
+  child.stdout.on('data', (chunk) => appendLogs(task, chunk));
+  child.stderr.on('data', (chunk) => appendLogs(task, chunk));
+  child.on('error', (error) => {
+    appendLogs(task, error.message);
+    task.status = 'failed';
+    task.finishedAt = new Date().toISOString();
+  });
+  child.on('close', (code) => {
+    task.status = code === 0 ? 'completed' : 'failed';
+    task.exitCode = code;
+    task.finishedAt = new Date().toISOString();
+    delete task.child;
+  });
+}
+
+function startScheduler() {
+  if (activeScheduler?.status === 'running') return;
+  const child = spawn(process.execPath, ['scripts/report-pdd-to-feishu.mjs'], {
+    cwd: ROOT,
+    env: process.env,
+    stdio: ['inherit', 'pipe', 'pipe'],
+  });
+  activeScheduler = { status: 'running', logs: [], startedAt: new Date().toISOString() };
+  activeScheduler.child = child;
+  child.stdout.on('data', (chunk) => appendLogs(activeScheduler, chunk));
+  child.stderr.on('data', (chunk) => appendLogs(activeScheduler, chunk));
+  child.on('error', (error) => {
+    appendLogs(activeScheduler, error.message);
+    activeScheduler.status = 'failed';
+    activeScheduler.finishedAt = new Date().toISOString();
+  });
+  child.on('close', (code) => {
+    if (activeScheduler?.child === child) {
+      activeScheduler.status = code === 0 ? 'stopped' : 'failed';
+      activeScheduler.exitCode = code;
+      activeScheduler.finishedAt = new Date().toISOString();
+      delete activeScheduler.child;
+    }
+  });
+}
+
+function stopScheduler() {
+  if (activeScheduler?.child) {
+    activeScheduler.child.kill('SIGTERM');
+    activeScheduler.status = 'stopped';
+    activeScheduler.finishedAt = new Date().toISOString();
+    delete activeScheduler.child;
+  } else {
+    activeScheduler = { status: 'stopped', logs: activeScheduler?.logs || [], finishedAt: new Date().toISOString() };
+  }
+}
+
+async function setSchedulerEnabled(enabled) {
+  const config = await readReportConfig();
+  config.schedulerEnabled = Boolean(enabled);
+  await mkdir(path.dirname(REPORT_CONFIG_PATH), { recursive: true });
+  await writeFile(REPORT_CONFIG_PATH, `${JSON.stringify(normalizeConfig(config), null, 2)}\n`, 'utf8');
+  if (enabled) startScheduler();
+  else stopScheduler();
+  return config;
+}
+
 const server = createServer(async (request, response) => {
   try {
     if (request.method === 'GET' && request.url === '/') {
@@ -70,7 +225,41 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === 'GET' && request.url === '/api/status') {
-      sendJson(response, 200, activeSync || { status: 'idle', logs: [] });
+      sendJson(response, 200, {
+        sync: summarizeTask(activeSync),
+        report: summarizeTask(activeReport),
+        scheduler: summarizeTask(activeScheduler),
+      });
+      return;
+    }
+
+    if (request.method === 'GET' && request.url === '/api/report-config') {
+      sendJson(response, 200, { path: path.relative(ROOT, REPORT_CONFIG_PATH), config: await readReportConfig() });
+      return;
+    }
+
+    if (request.method === 'POST' && request.url === '/api/report-config') {
+      const { config } = await readJson(request);
+      const saved = await saveReportConfig(config);
+      sendJson(response, 200, { ok: true, path: path.relative(ROOT, REPORT_CONFIG_PATH), config: saved });
+      return;
+    }
+
+    if (request.method === 'POST' && request.url === '/api/report-scheduler') {
+      const { enabled } = await readJson(request);
+      const config = await setSchedulerEnabled(Boolean(enabled));
+      sendJson(response, 200, { ok: true, config });
+      return;
+    }
+
+    if (request.method === 'POST' && request.url === '/api/report') {
+      if (activeReport?.status === 'running') {
+        sendJson(response, 409, { error: '已有上报任务正在运行。' });
+        return;
+      }
+      const { all, dryRun, ids } = await readJson(request);
+      startReport({ all: Boolean(all), dryRun: Boolean(dryRun), ids: Array.isArray(ids) ? ids.map(String) : [] });
+      sendJson(response, 202, { status: 'running' });
       return;
     }
 
@@ -98,3 +287,11 @@ const server = createServer(async (request, response) => {
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`PDD Feishu Sync UI: http://127.0.0.1:${PORT}`);
 });
+
+readReportConfig()
+  .then((config) => {
+    if (config.schedulerEnabled) startScheduler();
+  })
+  .catch((error) => {
+    console.error(`读取上报配置失败：${error.message}`);
+  });

@@ -71,6 +71,18 @@ The same range can be run without the UI:
 PDD_DATE_FROM=2026-06-01 PDD_DATE_TO=2026-06-06 pnpm run sync:pdd
 ```
 
+## Hourly Group Screenshot Report
+
+The reporter opens the PDD order-management page according to the web-configured `HH:MM` schedule, filters rows by warehouse rule, uploads the screenshot, and sends one rich-text message to the configured Feishu group while mentioning one or more configured members.
+
+```bash
+pnpm run report:pdd:dry-run  # save screenshot without sending
+pnpm run report:pdd:once     # send one report now
+pnpm run report:pdd          # keep running and check configured times every minute
+```
+
+The Feishu app needs bot capability, permission to send messages, read group information/members, and `im:resource:upload` (or `im:resource`) for screenshot upload. It must already be a member of the target group. After adding permissions, publish a new app version and complete enterprise administrator authorization. Keep `pnpm run report:pdd` running inside the current app process to execute the hourly schedule.
+
 ## Login Debugging
 
 If PDD shows browser warnings such as `--no-sandbox`, keep this enabled:
