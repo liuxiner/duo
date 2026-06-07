@@ -3,7 +3,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   closeBlockingModals,
-  disconnectPddBrowser,
   getUniqueServicePage,
   installBlockingModalGuard,
   PDD_PAGE_SIZE,
@@ -14,6 +13,10 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REPORT_URL = 'https://mc.pinduoduo.com/ddmc-mms/order/management';
 const DEFAULT_REPORT_CONFIG_PATH = 'data/report-config.json';
 const REPORT_ROWS_PER_IMAGE = 8;
+const REPORT_MAX_ATTEMPTS = 3;
+const REPORT_RETRY_DELAY_MS = 2000;
+let reportBrowser = null;
+let reportContext = null;
 const REQUIRED_COLUMNS = [
   '商品信息', '销售区域', '仓库信息', '委托属性', '销售日期', '销售规格',
   '仓库销售库存', '仓库总库存', '仓库预估总销售数',
@@ -539,14 +542,14 @@ async function showReportRowChunk(page, start, end) {
 
 async function captureScreenshot(cfg, reportItem = null) {
   const { chromium } = await import('playwright');
-  let browser;
-  let context;
   if (cfg.cdpUrl) {
-    browser = await chromium.connectOverCDP(cfg.cdpUrl);
-    context = browser.contexts()[0];
-    if (!context) throw new Error(`No browser context found at ${cfg.cdpUrl}.`);
-  } else {
-    context = await chromium.launchPersistentContext(cfg.profileDir, {
+    if (!reportBrowser?.isConnected() || !reportContext) {
+      reportBrowser = await chromium.connectOverCDP(cfg.cdpUrl);
+      reportContext = reportBrowser.contexts()[0];
+      if (!reportContext) throw new Error(`No browser context found at ${cfg.cdpUrl}.`);
+    }
+  } else if (!reportContext) {
+    reportContext = await chromium.launchPersistentContext(cfg.profileDir, {
       headless: cfg.headless,
       channel: cfg.browserChannel || undefined,
       chromiumSandbox: cfg.chromiumSandbox,
@@ -554,7 +557,7 @@ async function captureScreenshot(cfg, reportItem = null) {
       locale: 'zh-CN',
     });
   }
-  const page = await getUniqueServicePage(context, REPORT_URL);
+  const page = await getUniqueServicePage(reportContext, REPORT_URL);
   try {
     await installBlockingModalGuard(page);
     await page.goto(REPORT_URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
@@ -592,8 +595,6 @@ async function captureScreenshot(cfg, reportItem = null) {
     return { screenshots: outputs, warnings, total: tableState.total };
   } finally {
     await page.bringToFront().catch(() => {});
-    if (browser) disconnectPddBrowser(browser);
-    else await context.close();
   }
 }
 
@@ -667,20 +668,47 @@ async function runConfiguredReports(cfg, token, configs, { dryRun = false, all =
     return;
   }
 
-  for (const item of due) {
+  console.log(`本轮共有 ${due.length} 个仓库上报任务，按顺序排队执行。`);
+  const failures = [];
+  for (let queueIndex = 0; queueIndex < due.length; queueIndex += 1) {
+    const item = due[queueIndex];
     const ruleLabel = item.sourceIds.map((id) => `#${id}`).join(', ');
     if (item.sourceIds.length > 1) console.log(`合并重复上报规则 ${ruleLabel}，本轮只发送一次。`);
-    console.log(`开始上报规则 ${ruleLabel}: ${item.warehouse || item.groupName} -> ${item.chatName}, @${item.mentionNames.join(', ')}.`);
-    const chat = dryRun ? { name: item.chatName, chat_id: '' } : await findChat(token, cfg, item.chatName);
-    const members = dryRun ? item.mentionNames.map((name) => ({ name, member_id: '' })) : await findMentionMembers(token, chat.chat_id, cfg, item.mentionNames);
-    const report = await captureScreenshot(cfg, item);
-    console.log(`截图已生成（${report.screenshots.length} 张）：${report.screenshots.join(', ')}`);
-    if (dryRun) continue;
-    const imageKeys = [];
-    for (const screenshot of report.screenshots) imageKeys.push(await uploadImage(token, screenshot));
-    await sendReport(token, chat.chat_id, members, imageKeys, report.warnings, item);
-    console.log(`规则 #${item.id} 已发送到 ${chat.name}.`);
+    console.log(`队列 ${queueIndex + 1}/${due.length}：${item.warehouse || item.groupName} -> ${item.chatName}.`);
+    let completed = false;
+    let lastError;
+    for (let attempt = 1; attempt <= REPORT_MAX_ATTEMPTS && !completed; attempt += 1) {
+      try {
+        console.log(`开始上报规则 ${ruleLabel}（第 ${attempt}/${REPORT_MAX_ATTEMPTS} 次）：@${item.mentionNames.join(', ')}.`);
+        const chat = dryRun ? { name: item.chatName, chat_id: '' } : await findChat(token, cfg, item.chatName);
+        const members = dryRun ? item.mentionNames.map((name) => ({ name, member_id: '' })) : await findMentionMembers(token, chat.chat_id, cfg, item.mentionNames);
+        const report = await captureScreenshot(cfg, item);
+        console.log(`截图已生成（${report.screenshots.length} 张）：${report.screenshots.join(', ')}`);
+        if (!dryRun) {
+          const imageKeys = [];
+          for (const screenshot of report.screenshots) imageKeys.push(await uploadImage(token, screenshot));
+          await sendReport(token, chat.chat_id, members, imageKeys, report.warnings, item);
+          console.log(`规则 #${item.id} 已发送到 ${chat.name}.`);
+        }
+        completed = true;
+      } catch (error) {
+        lastError = error;
+        console.error(`规则 ${ruleLabel} 第 ${attempt} 次失败：${error.message}`);
+        if (attempt < REPORT_MAX_ATTEMPTS) {
+          console.log(`${REPORT_RETRY_DELAY_MS / 1000} 秒后重试规则 ${ruleLabel}。`);
+          await new Promise((resolve) => setTimeout(resolve, REPORT_RETRY_DELAY_MS));
+        }
+      }
+    }
+    if (!completed) {
+      failures.push(`${ruleLabel} ${item.warehouse || item.groupName}: ${lastError?.message || '未知错误'}`);
+      console.error(`规则 ${ruleLabel} 已达到最大重试次数，继续下一个仓库。`);
+    }
   }
+  if (failures.length) {
+    throw new Error(`本轮 ${due.length} 个任务完成，${failures.length} 个最终失败：${failures.join('；')}`);
+  }
+  console.log(`本轮 ${due.length} 个仓库上报任务全部完成。`);
 }
 
 async function runOnce({ dryRun = false, all = false, ids = [] } = {}) {

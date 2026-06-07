@@ -132,11 +132,6 @@ function appendLogs(target, chunk) {
   const lines = String(chunk).split(/\r?\n/).filter(Boolean);
   target.logs.push(...lines);
   if (target.logs.length > 500) target.logs.splice(0, target.logs.length - 500);
-  if (target.status === 'running' && lines.some((line) => /已发送到|Sent hourly PDD report to/.test(line))) {
-    target.status = 'completed';
-    target.finishedAt = new Date().toISOString();
-    target.exitCode = 0;
-  }
 }
 
 function startReport({ all = false, dryRun = false, ids = [] } = {}) {
