@@ -12,7 +12,10 @@
     "dashboard:build": "node build-dashboard.mjs"
   },
   "dependencies": {
-    "playwright": "^1.52.0"
-  },
-  "devDependencies": {}
+    "file-box": "1.4.15",
+    "playwright": "^1.52.0",
+    "qrcode": "^1.5.4",
+    "wechaty": "^1.20.2",
+    "wechaty-puppet-wechat": "^1.18.4"
+  }
 }

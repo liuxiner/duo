@@ -139,6 +139,11 @@ function normalizeReportItem(item, index = 0) {
     chatName: item.chatName || item['发送群名'] || item.groupName || item['群名'] || '',
     memberName: item.memberName || item['成员名'] || '',
     mentionNames: mentionNames.flatMap((name) => String(name).split(/[,，]/)).map((name) => name.trim()).filter(Boolean),
+    wechatEnabled: typeof item.wechatEnabled === 'boolean' ? item.wechatEnabled : Boolean(item.wechatRoomName),
+    wechatRoomName: String(item.wechatRoomName || '').trim(),
+    wechatMentionNames: Array.isArray(item.wechatMentionNames)
+      ? item.wechatMentionNames.map((name) => String(name).trim()).filter(Boolean)
+      : String(item.wechatMentionNames || '').split(/[,，]/).map((name) => name.trim()).filter(Boolean),
     sendTimes: normalizeTimeList(item.sendTimes || item['发送时间']),
     cutoffTime: normalizeTime(item.cutoffTime || item['截单时间']) || String(item.cutoffTime || item['截单时间'] || ''),
     topOfHour: typeof item.topOfHour === 'boolean' ? item.topOfHour : ['是', 'true', '1', 'yes'].includes(String(item.topOfHour || item['是否整点'] || '').toLowerCase()),
@@ -188,14 +193,20 @@ function mergeDuplicateReports(items) {
   const merged = new Map();
   for (const item of items) {
     const warehouseKey = reportFilterKeywords(item)[0] || String(item.warehouse || '').trim();
-    const key = `${warehouseKey}::${String(item.chatName || '').trim()}`;
+    const key = `${warehouseKey}::${String(item.chatName || '').trim()}::${String(item.wechatRoomName || '').trim()}`;
     const existing = merged.get(key);
     if (!existing) {
-      merged.set(key, { ...item, sourceIds: [item.id], mentionNames: [...item.mentionNames] });
+      merged.set(key, {
+        ...item,
+        sourceIds: [item.id],
+        mentionNames: [...item.mentionNames],
+        wechatMentionNames: [...item.wechatMentionNames],
+      });
       continue;
     }
     existing.sourceIds.push(item.id);
     existing.mentionNames = [...new Set([...existing.mentionNames, ...item.mentionNames])];
+    existing.wechatMentionNames = [...new Set([...existing.wechatMentionNames, ...item.wechatMentionNames])];
   }
   return [...merged.values()];
 }
@@ -660,12 +671,70 @@ async function runLegacyReport(cfg, token, { dryRun = false } = {}) {
   console.log(`Sent hourly PDD report to ${chat.name}.`);
 }
 
-async function runConfiguredReports(cfg, token, configs, { dryRun = false, all = false, ids = [] } = {}) {
+function formatWechatText(reportItem, warnings, total, imageCount, timestamp) {
+  const parts = [];
+  const titleParts = ['多多订单管理上报'];
+  if (reportItem?.warehouse) titleParts.push(reportItem.warehouse);
+  if (reportItem?.groupName && reportItem.groupName !== reportItem.warehouse) titleParts.push(reportItem.groupName);
+  if (reportItem?.cutoffTime) titleParts.push(`截单 ${reportItem.cutoffTime}`);
+  parts.push(titleParts.join(' - '));
+  parts.push(`${timestamp} 数据截图，共 ${imageCount} 张，总计 ${total} 条商品`);
+
+  if (warnings.length > 0) {
+    parts.push(`\n紧急补货预警（${warnings.length} 项）：仓库总库存低于预估总销售数的 80%`);
+    for (const w of warnings) {
+      parts.push(`- ${w.productName}｜${w.warehouse}｜库存 ${w.stock}｜预估 ${w.estimatedSales}｜80%安全线 ${Number(w.safetyStock.toFixed(2))}`);
+    }
+  } else {
+    parts.push('\n暂无紧急补货预警');
+  }
+  return parts.join('\n');
+}
+
+async function sendToWechat(reportItem, text, imagePaths) {
+  if (!reportItem.wechatRoomName) return false;
+
+  const bridgeUrl = process.env.WECHAT_BRIDGE_URL || 'http://127.0.0.1:4173';
+  const response = await fetch(`${bridgeUrl}/api/wechat/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      roomName: reportItem.wechatRoomName,
+      text,
+      imagePaths,
+      mentionNames: reportItem.wechatMentionNames || [],
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const error = new Error(`WeChat send failed: ${body.error || response.statusText}`);
+    error.code = 'WECHAT_SEND_FAILED';
+    throw error;
+  }
+
+  console.log(`已发送到微信群 ${reportItem.wechatRoomName}`);
+  return true;
+}
+
+async function runConfiguredReports(cfg, token, configs, {
+  dryRun = false,
+  all = false,
+  ids = [],
+  channel = 'both',
+} = {}) {
   const active = enabledReportConfigs(configs);
   const due = mergeDuplicateReports(active.filter((item) => reportIsDue(item, { all, ids })));
   if (!due.length) {
     console.log(`当前 ${currentBeijingTime()} 没有需要上报的启用规则。`);
     return;
+  }
+  if (channel === 'wechat') {
+    const invalid = due.filter((item) => !item.wechatEnabled || !item.wechatRoomName);
+    if (invalid.length) {
+      const labels = invalid.map((item) => `#${item.id} ${item.warehouse || item.groupName}`);
+      throw new Error(`以下规则未启用微信上报或未配置微信群名：${labels.join('、')}`);
+    }
   }
 
   console.log(`本轮共有 ${due.length} 个仓库上报任务，按顺序排队执行。`);
@@ -674,26 +743,46 @@ async function runConfiguredReports(cfg, token, configs, { dryRun = false, all =
     const item = due[queueIndex];
     const ruleLabel = item.sourceIds.map((id) => `#${id}`).join(', ');
     if (item.sourceIds.length > 1) console.log(`合并重复上报规则 ${ruleLabel}，本轮只发送一次。`);
-    console.log(`队列 ${queueIndex + 1}/${due.length}：${item.warehouse || item.groupName} -> ${item.chatName}.`);
+    const targets = [];
+    if (channel !== 'wechat') targets.push(`飞书 ${item.chatName}`);
+    if (channel !== 'feishu' && item.wechatEnabled && item.wechatRoomName) targets.push(`微信 ${item.wechatRoomName}`);
+    console.log(`队列 ${queueIndex + 1}/${due.length}：${item.warehouse || item.groupName} -> ${targets.join('、') || '未配置目标群'}.`);
     let completed = false;
     let lastError;
     for (let attempt = 1; attempt <= REPORT_MAX_ATTEMPTS && !completed; attempt += 1) {
       try {
         console.log(`开始上报规则 ${ruleLabel}（第 ${attempt}/${REPORT_MAX_ATTEMPTS} 次）：@${item.mentionNames.join(', ')}.`);
-        const chat = dryRun ? { name: item.chatName, chat_id: '' } : await findChat(token, cfg, item.chatName);
-        const members = dryRun ? item.mentionNames.map((name) => ({ name, member_id: '' })) : await findMentionMembers(token, chat.chat_id, cfg, item.mentionNames);
+        const sendFeishu = channel !== 'wechat';
+        const sendWechat = channel !== 'feishu' && item.wechatEnabled && item.wechatRoomName;
+        const chat = !sendFeishu || dryRun
+          ? { name: item.chatName, chat_id: '' }
+          : await findChat(token, cfg, item.chatName);
+        const members = !sendFeishu || dryRun
+          ? item.mentionNames.map((name) => ({ name, member_id: '' }))
+          : await findMentionMembers(token, chat.chat_id, cfg, item.mentionNames);
         const report = await captureScreenshot(cfg, item);
         console.log(`截图已生成（${report.screenshots.length} 张）：${report.screenshots.join(', ')}`);
-        if (!dryRun) {
+        if (!dryRun && sendFeishu) {
           const imageKeys = [];
           for (const screenshot of report.screenshots) imageKeys.push(await uploadImage(token, screenshot));
           await sendReport(token, chat.chat_id, members, imageKeys, report.warnings, item);
-          console.log(`规则 #${item.id} 已发送到 ${chat.name}.`);
+          console.log(`规则 #${item.id} 已发送到飞书 ${chat.name}.`);
+        }
+        // WeChat send (if configured)
+        if (!dryRun && sendWechat) {
+          const wechatText = formatWechatText(item, report.warnings, report.total, report.screenshots.length, beijingTimestamp());
+          await sendToWechat(item, wechatText, report.screenshots);
+        } else if (dryRun && sendWechat) {
+          console.log(`微信测试目标：${item.wechatRoomName}，@${item.wechatMentionNames.join(', ') || '无'}。`);
         }
         completed = true;
       } catch (error) {
         lastError = error;
         console.error(`规则 ${ruleLabel} 第 ${attempt} 次失败：${error.message}`);
+        if (error.code === 'WECHAT_SEND_FAILED') {
+          console.error(`规则 ${ruleLabel} 微信发送失败，不自动重试，避免重复发送。`);
+          break;
+        }
         if (attempt < REPORT_MAX_ATTEMPTS) {
           console.log(`${REPORT_RETRY_DELAY_MS / 1000} 秒后重试规则 ${ruleLabel}。`);
           await new Promise((resolve) => setTimeout(resolve, REPORT_RETRY_DELAY_MS));
@@ -711,12 +800,12 @@ async function runConfiguredReports(cfg, token, configs, { dryRun = false, all =
   console.log(`本轮 ${due.length} 个仓库上报任务全部完成。`);
 }
 
-async function runOnce({ dryRun = false, all = false, ids = [] } = {}) {
+async function runOnce({ dryRun = false, all = false, ids = [], channel = 'both' } = {}) {
   const cfg = config();
-  const token = dryRun ? null : await tenantToken(cfg);
+  const token = dryRun || channel === 'wechat' ? null : await tenantToken(cfg);
   const reportConfigs = await loadReportConfigs(cfg);
   if (reportConfigs.length) {
-    await runConfiguredReports(cfg, token, reportConfigs, { dryRun, all, ids });
+    await runConfiguredReports(cfg, token, reportConfigs, { dryRun, all, ids, channel });
   } else if (dryRun) {
     const report = await captureScreenshot(cfg);
     console.log(`Saved screenshots: ${report.screenshots.join(', ')}`);
@@ -755,9 +844,12 @@ await loadDotEnv();
 const args = new Set(process.argv.slice(2));
 const idsArg = process.argv.slice(2).find((arg) => arg.startsWith('--ids='));
 const ids = idsArg ? idsArg.slice('--ids='.length).split(',').map((id) => id.trim()).filter(Boolean) : [];
+const channelArg = process.argv.slice(2).find((arg) => arg.startsWith('--channel='));
+const requestedChannel = channelArg ? channelArg.slice('--channel='.length) : 'both';
+const channel = ['both', 'feishu', 'wechat'].includes(requestedChannel) ? requestedChannel : 'both';
 if (args.has('--once') || args.has('--dry-run')) {
   let exitCode = 0;
-  await runOnce({ dryRun: args.has('--dry-run'), all: args.has('--all'), ids }).catch((error) => {
+  await runOnce({ dryRun: args.has('--dry-run'), all: args.has('--all'), ids, channel }).catch((error) => {
     printRunError(error);
     exitCode = 1;
   });

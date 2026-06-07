@@ -61,6 +61,7 @@
       backdrop-filter: blur(2px);
     }
     table { width: 100%; border-collapse: collapse; min-width: 1260px; }
+    table.wechat-config-table { min-width: 980px; }
     th, td { border-bottom: 1px solid #e4e7ec; padding: 8px; vertical-align: middle; }
     th { position: sticky; top: 0; z-index: 1; background: #f8fafc; text-align: left; color: #475467; font-size: 12px; }
     td input { height: 32px; min-width: 92px; }
@@ -95,6 +96,7 @@
       <nav>
         <a href="#sync">飞书数据同步</a>
         <a href="#report">分仓库上报</a>
+        <a href="#wechat">微信群上报</a>
         <a href="#logs">运行日志</a>
       </nav>
     </aside>
@@ -157,6 +159,56 @@
         </div>
       </section>
 
+      <section id="wechat">
+        <div class="section-head">
+          <div>
+            <h2>微信群上报</h2>
+            <p class="hint">管理 Wechaty 机器人，扫码登录后即可向微信群发送上报消息。</p>
+          </div>
+          <div class="toolbar">
+            <button id="wechat-start" class="success" type="button">启动机器人</button>
+            <button id="wechat-stop" class="danger" type="button">停止机器人</button>
+          </div>
+        </div>
+        <div class="status-card">
+          <div class="metric"><span>机器人状态</span><strong id="wechat-status">未启动</strong></div>
+          <div class="metric"><span>登录用户</span><strong id="wechat-user">-</strong></div>
+          <div class="metric"><span>说明</span><strong id="wechat-hint" style="font-size:12px;">点击"启动机器人"后扫码登录</strong></div>
+        </div>
+        <div id="wechat-qr-container" style="margin-top:12px;text-align:center;display:none;">
+          <p class="hint">请用微信扫描以下二维码登录：</p>
+          <img id="wechat-qr-image" style="border:1px solid #e4e7ec;border-radius:10px;max-width:300px;" alt="WeChat QR Code" />
+        </div>
+        <div class="section-head" style="margin-top:18px;">
+          <div>
+            <h2>微信群规则配置</h2>
+            <p class="hint">仓库、发送时间和截单时间沿用飞书规则；微信群名和微信 @成员独立配置。</p>
+          </div>
+          <div class="toolbar">
+            <button id="wechat-save-config" type="button">保存微信配置</button>
+            <button id="wechat-run-selected" class="success" type="button">多仓库微信上报</button>
+            <button id="wechat-dry-run-selected" class="secondary" type="button">多仓库微信测试</button>
+          </div>
+        </div>
+        <div id="wechat-config-table-wrap" class="table-wrap">
+          <table class="wechat-config-table">
+            <thead>
+              <tr>
+                <th class="narrow">选择</th>
+                <th class="narrow">序号</th>
+                <th>仓库</th>
+                <th>发送时间</th>
+                <th>启用</th>
+                <th>微信群名</th>
+                <th>微信 @成员</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="wechat-config-body"></tbody>
+          </table>
+        </div>
+      </section>
+
       <section id="logs">
         <div class="section-head">
           <div>
@@ -188,10 +240,78 @@
     const configTableWrap = document.querySelector('#config-table-wrap');
     const syncLogPanel = document.querySelector('#sync-log-panel');
     const reportLogPanel = document.querySelector('#report-log-panel');
+    const wechatRunSelected = document.querySelector('#wechat-run-selected');
+    const wechatDryRunSelected = document.querySelector('#wechat-dry-run-selected');
+    const wechatSaveConfig = document.querySelector('#wechat-save-config');
+    const wechatConfigBody = document.querySelector('#wechat-config-body');
+    const wechatConfigTableWrap = document.querySelector('#wechat-config-table-wrap');
     const schedulerLogPanel = document.querySelector('#scheduler-log-panel');
     let config = { schedulerEnabled: false, items: [] };
     let expandedLogs = { sync: false, report: false, scheduler: false };
     let reportRequestPending = false;
+    let wechatEventSource = null;
+
+    const wechatStatusEl = document.querySelector('#wechat-status');
+    const wechatUserEl = document.querySelector('#wechat-user');
+    const wechatHintEl = document.querySelector('#wechat-hint');
+    const wechatStartBtn = document.querySelector('#wechat-start');
+    const wechatStopBtn = document.querySelector('#wechat-stop');
+    const wechatQrContainer = document.querySelector('#wechat-qr-container');
+    const wechatQrImage = document.querySelector('#wechat-qr-image');
+
+    const wechatStatusText = { disconnected: '未连接', scanning: '等待扫码', 'logged-in': '已登录', starting: '启动中', error: '启动失败' };
+
+    function updateWechatUI(wechat) {
+      const status = wechat || { status: 'disconnected' };
+      wechatStatusEl.textContent = wechatStatusText[status.status] || status.status || '未知';
+      wechatUserEl.textContent = status.loggedInUser || '-';
+      if (status.status === 'logged-in') {
+        wechatHintEl.textContent = '已登录，可向配置的微信群发送上报';
+        wechatQrContainer.style.display = 'none';
+      } else if (status.status === 'scanning') {
+        wechatHintEl.textContent = '请用微信扫描二维码';
+      } else if (status.status === 'error') {
+        wechatHintEl.textContent = status.error || 'Wechaty 启动失败，请重试';
+        wechatQrContainer.style.display = 'none';
+      } else {
+        wechatHintEl.textContent = '点击"启动机器人"后扫码登录';
+        wechatQrContainer.style.display = 'none';
+      }
+    }
+
+    wechatStartBtn.addEventListener('click', async () => {
+      wechatStartBtn.disabled = true;
+      try {
+        await fetch('/api/wechat/start', { method: 'POST' });
+        if (wechatEventSource) wechatEventSource.close();
+        wechatEventSource = new EventSource('/api/wechat/qr');
+        wechatEventSource.addEventListener('scan', () => {
+          wechatQrImage.src = `/api/wechat/qr-image?t=${Date.now()}`;
+          wechatQrContainer.style.display = 'block';
+          updateWechatUI({ status: 'scanning' });
+        });
+        wechatEventSource.addEventListener('login', (event) => {
+          const data = JSON.parse(event.data);
+          wechatQrContainer.style.display = 'none';
+          updateWechatUI({ status: 'logged-in', loggedInUser: data.user });
+          wechatEventSource.close();
+          wechatEventSource = null;
+        });
+        wechatEventSource.addEventListener('logout', () => {
+          updateWechatUI({ status: 'disconnected' });
+          wechatQrContainer.style.display = 'none';
+        });
+      } finally {
+        wechatStartBtn.disabled = false;
+      }
+    });
+
+    wechatStopBtn.addEventListener('click', async () => {
+      if (wechatEventSource) { wechatEventSource.close(); wechatEventSource = null; }
+      await fetch('/api/wechat/stop', { method: 'POST' });
+      wechatQrContainer.style.display = 'none';
+      refresh();
+    });
 
     const dateParts = new Intl.DateTimeFormat('en', {
       timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
@@ -212,6 +332,9 @@
     function selectedIds() {
       return Array.from(document.querySelectorAll('.select-rule:checked')).map((input) => input.dataset.id);
     }
+    function selectedWechatIds() {
+      return Array.from(document.querySelectorAll('.select-wechat-rule:checked')).map((input) => input.dataset.id);
+    }
     function syncItemFromRow(row, item) {
       item.region = row.querySelector('[data-field="region"]').value.trim();
       item.warehouse = row.querySelector('[data-field="warehouse"]').value.trim();
@@ -230,6 +353,36 @@
         if (item) syncItemFromRow(row, item);
       }
       config.schedulerEnabled = schedulerEnabled.checked;
+    }
+    function syncWechatConfigFromTable() {
+      for (const row of wechatConfigBody.querySelectorAll('tr')) {
+        const item = config.items.find((candidate) => candidate.id === row.dataset.id);
+        if (!item) continue;
+        item.wechatEnabled = row.querySelector('[data-wechat-field="enabled"]').checked;
+        item.wechatRoomName = row.querySelector('[data-wechat-field="roomName"]').value.trim();
+        item.wechatMentionNames = row.querySelector('[data-wechat-field="mentionNames"]').value
+          .split(/[,，]/).map((value) => value.trim()).filter(Boolean);
+      }
+    }
+    function renderWechatConfig() {
+      const locked = Boolean(config.schedulerEnabled);
+      wechatConfigTableWrap.classList.toggle('locked', locked);
+      wechatSaveConfig.disabled = locked;
+      wechatConfigBody.innerHTML = config.items.map((item) => `
+        <tr data-id="${escapeHtml(item.id)}">
+          <td><input class="select-wechat-rule" data-id="${escapeHtml(item.id)}" type="checkbox"></td>
+          <td><strong>${escapeHtml(item.id)}</strong></td>
+          <td><strong>${escapeHtml(item.warehouse || item.groupName)}</strong></td>
+          <td>${escapeHtml((item.sendTimes || []).join(', '))}</td>
+          <td><label class="switch"><input data-wechat-field="enabled" type="checkbox" ${item.wechatEnabled ? 'checked' : ''} ${locked ? 'disabled' : ''}>${item.wechatEnabled ? '启' : '停'}</label></td>
+          <td><input class="wide" data-wechat-field="roomName" value="${escapeHtml(item.wechatRoomName || '')}" placeholder="微信群名" ${locked ? 'disabled' : ''}></td>
+          <td><input class="wide" data-wechat-field="mentionNames" value="${escapeHtml((item.wechatMentionNames || []).join(', '))}" placeholder="多人用逗号分隔" ${locked ? 'disabled' : ''}></td>
+          <td><div class="row-actions">
+            <button class="secondary wechat-test-one" data-id="${escapeHtml(item.id)}" type="button">微信测试</button>
+            <button class="success wechat-run-one" data-id="${escapeHtml(item.id)}" type="button">微信上报</button>
+          </div></td>
+        </tr>
+      `).join('');
     }
     function renderConfig() {
       const locked = Boolean(config.schedulerEnabled);
@@ -258,6 +411,7 @@
           </div></td>
         </tr>
       `).join('');
+      renderWechatConfig();
     }
     function renderLogPanel(panel, key, title, task) {
       const logs = task.previewLogs || [];
@@ -293,9 +447,11 @@
       renderLogPanel(syncLogPanel, 'sync', '同步日志', sync);
       renderLogPanel(reportLogPanel, 'report', '立即上报日志', report);
       renderLogPanel(schedulerLogPanel, 'scheduler', '定时上报日志', scheduler);
+      updateWechatUI(state.wechat);
     }
     async function saveCurrentConfig() {
       syncConfigFromTable();
+      syncWechatConfigFromTable();
       const response = await fetch('/api/report-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -330,7 +486,7 @@
       config = body.config;
       renderConfig();
     }
-    async function startReport(ids, dryRun = false) {
+    async function startReport(ids, dryRun = false, channel = 'both') {
       if (reportRequestPending) return;
       if (!ids.length) {
         alert('请先选择至少一条规则。');
@@ -341,7 +497,7 @@
         const response = await fetch('/api/report', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids, dryRun }),
+          body: JSON.stringify({ ids, dryRun, channel }),
         });
         const body = await response.json();
         if (!response.ok) alert(body.error || '启动上报失败');
@@ -349,6 +505,19 @@
       } finally {
         reportRequestPending = false;
       }
+    }
+    async function startWechatReport(ids, dryRun = false) {
+      syncWechatConfigFromTable();
+      const invalid = ids
+        .map((id) => config.items.find((item) => item.id === id))
+        .filter((item) => !item || !item.wechatEnabled || !item.wechatRoomName);
+      if (invalid.length) {
+        const labels = invalid.map((item) => item ? `#${item.id} ${item.warehouse || item.groupName}` : '未知规则');
+        alert(`以下规则未启用微信上报或未填写微信群名：${labels.join('、')}`);
+        return;
+      }
+      if (!config.schedulerEnabled) await saveCurrentConfig();
+      await startReport(ids, dryRun, 'wechat');
     }
 
     form.addEventListener('submit', async (event) => {
@@ -381,11 +550,21 @@
     });
     addRow.addEventListener('click', () => {
       syncConfigFromTable();
-      config.items.push({ id: nextId(), region: '', warehouse: '', groupName: '', chatName: '', memberName: '', mentionNames: [], sendTimes: ['08:30'], cutoffTime: '23:00', topOfHour: false, enabled: true });
+      config.items.push({ id: nextId(), region: '', warehouse: '', groupName: '', chatName: '', memberName: '', mentionNames: [], wechatEnabled: false, wechatRoomName: '', wechatMentionNames: [], sendTimes: ['08:30'], cutoffTime: '23:00', topOfHour: false, enabled: true });
       renderConfig();
     });
     runSelected.addEventListener('click', () => startReport(selectedIds(), false));
+    wechatRunSelected.addEventListener('click', () => startWechatReport(selectedWechatIds(), false));
     dryRunSelected.addEventListener('click', () => startReport(selectedIds(), true));
+    wechatDryRunSelected.addEventListener('click', () => startWechatReport(selectedWechatIds(), true));
+    wechatSaveConfig.addEventListener('click', async () => {
+      try {
+        await saveCurrentConfig();
+        alert('微信配置已保存');
+      } catch (error) {
+        alert(error.message);
+      }
+    });
     document.addEventListener('click', (event) => {
       const key = event.target.closest('.toggle-log')?.dataset.key;
       if (key) {
@@ -402,6 +581,10 @@
       }
       const runId = event.target.closest('.run-one')?.dataset.id;
       if (runId) startReport([runId], false);
+      const wechatRunId = event.target.closest('.wechat-run-one')?.dataset.id;
+      if (wechatRunId) startWechatReport([wechatRunId], false);
+      const wechatTestId = event.target.closest('.wechat-test-one')?.dataset.id;
+      if (wechatTestId) startWechatReport([wechatTestId], true);
       const dryId = event.target.closest('.dry-one')?.dataset.id;
       if (dryId) startReport([dryId], true);
     });

@@ -3,10 +3,35 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import QRCode from 'qrcode';
 import { WechatyBot } from '../scripts/wechaty-bot.mjs';
 
 const WEB_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(WEB_DIR, '..');
+
+async function loadDotEnv(file = '.env') {
+  let text;
+  try {
+    text = await readFile(path.resolve(ROOT, file), 'utf8');
+  } catch {
+    return;
+  }
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const index = trimmed.indexOf('=');
+    if (index < 0) continue;
+    const key = trimmed.slice(0, index).trim();
+    let value = trimmed.slice(index + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (!(key in process.env)) process.env[key] = value;
+  }
+}
+
+await loadDotEnv();
+
 const PORT = Number(process.env.PORT || 4173);
 const REPORT_CONFIG_PATH = path.resolve(ROOT, process.env.PDD_REPORT_CONFIG_PATH || 'data/report-config.json');
 let activeSync = null;
@@ -128,7 +153,7 @@ function normalizeConfig(config) {
       cutoffTime: String(item.cutoffTime || '').trim(),
       topOfHour: Boolean(item.topOfHour),
       enabled: Boolean(item.enabled),
-      wechatEnabled: Boolean(item.wechatEnabled),
+      wechatEnabled: typeof item.wechatEnabled === 'boolean' ? item.wechatEnabled : Boolean(item.wechatRoomName),
       wechatRoomName: String(item.wechatRoomName || '').trim(),
       wechatMentionNames: Array.isArray(item.wechatMentionNames) ? item.wechatMentionNames.map((name) => String(name).trim()).filter(Boolean) : [],
     })),
@@ -152,19 +177,20 @@ function appendLogs(target, chunk) {
   if (target.logs.length > 500) target.logs.splice(0, target.logs.length - 500);
 }
 
-function startReport({ all = false, dryRun = false, ids = [] } = {}) {
+function startReport({ all = false, dryRun = false, ids = [], channel = 'both' } = {}) {
   const logs = [];
   const args = ['scripts/report-pdd-to-feishu.mjs', '--once'];
   if (all) args.push('--all');
   if (dryRun) args.push('--dry-run');
   if (ids.length) args.push(`--ids=${ids.join(',')}`);
+  args.push(`--channel=${channel}`);
   const child = spawn(process.execPath, args, {
     cwd: ROOT,
     env: process.env,
     stdio: ['inherit', 'pipe', 'pipe'],
   });
 
-  const task = { status: 'running', logs, startedAt: new Date().toISOString(), all, dryRun, ids, child };
+  const task = { status: 'running', logs, startedAt: new Date().toISOString(), all, dryRun, ids, channel, child };
   activeReport = task;
   child.stdout.on('data', (chunk) => appendLogs(task, chunk));
   child.stderr.on('data', (chunk) => appendLogs(task, chunk));
@@ -235,8 +261,8 @@ function broadcastSSE(event, data) {
   }
 }
 
-wechatyBot.onScan((qrcode, status) => {
-  broadcastSSE('scan', { qrcode, status });
+wechatyBot.onScan((_qrcode, status) => {
+  broadcastSSE('scan', { status });
 });
 
 wechatyBot.onLogin((user) => {
@@ -251,7 +277,10 @@ const server = createServer(async (request, response) => {
   try {
     if (request.method === 'GET' && request.url === '/') {
       const html = await readFile(path.join(WEB_DIR, 'index.html'));
-      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      response.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+      });
       response.end(html);
       return;
     }
@@ -290,8 +319,29 @@ const server = createServer(async (request, response) => {
         sendJson(response, 409, { error: '已有上报任务正在运行。' });
         return;
       }
-      const { all, dryRun, ids } = await readJson(request);
-      startReport({ all: Boolean(all), dryRun: Boolean(dryRun), ids: Array.isArray(ids) ? ids.map(String) : [] });
+      const { all, dryRun, ids, channel } = await readJson(request);
+      const normalizedChannel = ['both', 'feishu', 'wechat'].includes(channel) ? channel : 'both';
+      const normalizedIds = Array.isArray(ids) ? ids.map(String) : [];
+      if (normalizedChannel === 'wechat') {
+        const reportConfig = await readReportConfig();
+        const selected = (reportConfig.items || []).filter((item) => normalizedIds.includes(String(item.id)));
+        const invalid = selected.filter((item) => !item.wechatEnabled || !String(item.wechatRoomName || '').trim());
+        if (!selected.length || invalid.length) {
+          const labels = invalid.map((item) => `#${item.id} ${item.warehouse || item.groupName || ''}`.trim());
+          sendJson(response, 400, {
+            error: labels.length
+              ? `以下规则未启用微信上报或未填写微信群名：${labels.join('、')}`
+              : '未找到要执行的微信上报规则。',
+          });
+          return;
+        }
+      }
+      startReport({
+        all: Boolean(all),
+        dryRun: Boolean(dryRun),
+        ids: normalizedIds,
+        channel: normalizedChannel,
+      });
       sendJson(response, 202, { status: 'running' });
       return;
     }
@@ -318,6 +368,26 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === 'GET' && request.url.startsWith('/api/wechat/qr-image')) {
+      if (!wechatyBot.qrData) {
+        sendJson(response, 404, { error: 'WeChat QR code is not available' });
+        return;
+      }
+      const image = await QRCode.toBuffer(wechatyBot.qrData, {
+        type: 'png',
+        width: 300,
+        margin: 2,
+        errorCorrectionLevel: 'M',
+      });
+      response.writeHead(200, {
+        'Content-Type': 'image/png',
+        'Cache-Control': 'no-store',
+        'Content-Length': image.length,
+      });
+      response.end(image);
+      return;
+    }
+
     if (request.method === 'GET' && request.url === '/api/wechat/qr') {
       response.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -328,7 +398,7 @@ const server = createServer(async (request, response) => {
 
       const current = wechatyBot.getStatus();
       if (current.qrAvailable && wechatyBot.qrData) {
-        response.write(`event: scan\ndata: ${JSON.stringify({ qrcode: wechatyBot.qrData, status: 'scanning' })}\n\n`);
+        response.write(`event: scan\ndata: ${JSON.stringify({ status: 'scanning' })}\n\n`);
       } else if (current.status === 'logged-in') {
         response.write(`event: login\ndata: ${JSON.stringify({ user: current.loggedInUser })}\n\n`);
       }
@@ -344,6 +414,7 @@ const server = createServer(async (request, response) => {
         sendJson(response, 200, { ok: true, status: current.status });
         return;
       }
+      if (current.status === 'error') await wechatyBot.stop();
       await wechatyBot.start();
       sendJson(response, 200, { ok: true, status: wechatyBot.getStatus().status });
       return;

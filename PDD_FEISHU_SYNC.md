@@ -43,6 +43,13 @@ This pipeline collects product table data from the 多多买菜商家后台, wri
 
    If the browser stops at a QR code, SMS, captcha, or other security verification page, complete it directly in the opened browser. The script will wait in the terminal and continue only after you press Enter.
 
+## Start Chrome listener port
+```bash
+   /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+    --remote-debugging-port=9222 \
+    --user-data-dir=/tmp/pdd-debug-profile
+```
+
 ## Daily 8:30 Schedule
 
 macOS/Linux cron example:
@@ -82,6 +89,14 @@ pnpm run report:pdd          # keep running and check configured times every min
 ```
 
 The Feishu app needs bot capability, permission to send messages, read group information/members, and `im:resource:upload` (or `im:resource`) for screenshot upload. It must already be a member of the target group. After adding permissions, publish a new app version and complete enterprise administrator authorization. Keep `pnpm run report:pdd` running inside the current app process to execute the hourly schedule.
+
+Each warehouse rule can also define an independent WeChat target with `微信启用 / 微信群名 / 微信@成员`. The warehouse filter, send times, and cutoff time are shared with the Feishu rule, while group and member names are resolved separately. The web UI supports a single-row WeChat report and selected multi-warehouse WeChat report. The corresponding CLI forms are:
+
+```bash
+node scripts/report-pdd-to-feishu.mjs --once --channel=wechat --ids=1
+node scripts/report-pdd-to-feishu.mjs --once --channel=wechat --ids=1,3,5
+node scripts/report-pdd-to-feishu.mjs --dry-run --channel=wechat --ids=1,3,5
+```
 
 ## Login Debugging
 
