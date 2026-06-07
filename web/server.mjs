@@ -172,7 +172,10 @@ async function saveReportConfig(config) {
 }
 
 function appendLogs(target, chunk) {
-  const lines = String(chunk).split(/\r?\n/).filter(Boolean);
+  const lines = String(chunk)
+    .replace(/\u001b\[[0-?]*[ -\/]*[@-~]/g, '')
+    .split(/\r?\n/)
+    .filter(Boolean);
   target.logs.push(...lines);
   if (target.logs.length > 500) target.logs.splice(0, target.logs.length - 500);
 }

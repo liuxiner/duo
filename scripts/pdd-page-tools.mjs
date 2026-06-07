@@ -93,7 +93,13 @@ export async function setPddPageSize(page, targetSize = PDD_PAGE_SIZE) {
   const pagination = page.locator('[data-testid="beast-core-pagination"]').first();
   const sizeChanger = pagination.locator('.PGT_sizeChanger_5-157-0').first();
   await sizeChanger.waitFor({ state: 'visible', timeout: 10000 });
-  await sizeChanger.locator('[data-testid="beast-core-select-header"]').click();
+  await closeBlockingModals(page);
+  const header = sizeChanger.locator('[data-testid="beast-core-select-header"]').first();
+  try {
+    await header.click({ timeout: 3000 });
+  } catch {
+    await header.dispatchEvent('click');
+  }
 
   const dropdown = page.locator('[data-testid="beast-core-portal"]:visible')
     .filter({ has: page.locator('[role="option"]') })
@@ -108,7 +114,11 @@ export async function setPddPageSize(page, targetSize = PDD_PAGE_SIZE) {
     throw new Error(`分页器没有每页 ${targetSize} 条选项；可选项：${available}`);
   }
 
-  await option.click();
+  try {
+    await option.click({ timeout: 3000 });
+  } catch {
+    await option.dispatchEvent('click');
+  }
   await page.waitForFunction((size) => {
     const paginationRoot = document.querySelector('[data-testid="beast-core-pagination"]');
     const input = paginationRoot?.querySelector('.PGT_sizeChanger_5-157-0 input[data-testid="beast-core-select-htmlInput"]');

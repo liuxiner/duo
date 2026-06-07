@@ -14,6 +14,9 @@ importers:
       playwright:
         specifier: ^1.52.0
         version: 1.60.0
+      puppeteer:
+        specifier: 13.7.0
+        version: 13.7.0
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
@@ -2158,7 +2161,7 @@ snapshots:
 
   agent-base@6.0.2:
     dependencies:
-      debug: 4.3.4
+      debug: 4.4.3
     transitivePeerDependencies:
       - supports-color
 
@@ -2497,7 +2500,7 @@ snapshots:
 
   extract-zip@2.0.1:
     dependencies:
-      debug: 4.3.4
+      debug: 4.4.3
       get-stream: 5.2.0
       yauzl: 2.10.0
     optionalDependencies:
@@ -2711,7 +2714,7 @@ snapshots:
   https-proxy-agent@5.0.1:
     dependencies:
       agent-base: 6.0.2
-      debug: 4.3.4
+      debug: 4.4.3
     transitivePeerDependencies:
       - supports-color
 

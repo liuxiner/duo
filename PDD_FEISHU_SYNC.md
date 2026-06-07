@@ -98,6 +98,16 @@ node scripts/report-pdd-to-feishu.mjs --once --channel=wechat --ids=1,3,5
 node scripts/report-pdd-to-feishu.mjs --dry-run --channel=wechat --ids=1,3,5
 ```
 
+Wechaty must use a dedicated Chrome debugging profile and must not share the PDD `9222` session:
+
+```bash
+open -na "Google Chrome" --args \
+  --remote-debugging-port=9333 \
+  --user-data-dir=/tmp/wechaty-debug-profile
+```
+
+Set `WECHATY_CDP_URL=http://127.0.0.1:9333`. Wechaty reuses an existing WeChat tab or blank tab in that browser and never launches or closes Chrome itself.
+
 ## Login Debugging
 
 If PDD shows browser warnings such as `--no-sandbox`, keep this enabled:

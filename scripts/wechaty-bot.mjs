@@ -1,43 +1,46 @@
 import path from 'node:path';
 import { existsSync } from 'node:fs';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { FileBox } from 'file-box';
+import puppeteer from 'puppeteer';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_NAVIGATION_TIMEOUT_MS = 30_000;
 
-function findChromeExecutable() {
-  const configured = process.env.WECHATY_CHROME_EXECUTABLE_PATH
-    || process.env.PUPPETEER_EXECUTABLE_PATH;
-  if (configured) return configured;
-
-  const candidates = [
-    path.join(
-      os.homedir(),
-      '.cache/puppeteer/chrome/mac_arm-133.0.6943.126/chrome-mac-arm64',
-      'Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
-    ),
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium-browser',
-  ];
-  return candidates.find((candidate) => existsSync(candidate)) || '';
+function wechatPageScore(page) {
+  const url = page.url();
+  if (/^https:\/\/(wx\.qq\.com|web\.wechat\.com)/.test(url)) return 2;
+  if (url === 'chrome://newtab/' || url === 'chrome://new-tab-page/' || url === 'about:blank') return 1;
+  return 0;
 }
 
-function installNavigationCompatibility(puppet, timeout = DEFAULT_NAVIGATION_TIMEOUT_MS) {
+function installNavigationCompatibility(puppet, {
+  cdpUrl = '',
+  timeout = DEFAULT_NAVIGATION_TIMEOUT_MS,
+} = {}) {
   const bridge = puppet.bridge;
-  const originalInitBrowser = bridge.initBrowser.bind(bridge);
-
   bridge.prependListener('scan', (payload) => {
     if (payload?.code === 400 && payload.url) payload.code = 0;
   });
 
   bridge.initBrowser = async () => {
-    const browser = await originalInitBrowser();
+    const browser = await puppeteer.connect({ browserURL: cdpUrl });
     const originalNewPage = browser.newPage.bind(browser);
+    let reusablePage = null;
+
+    const pages = await browser.pages();
+    reusablePage = pages
+      .map((page) => ({ page, score: wechatPageScore(page) }))
+      .filter(({ score }) => score > 0)
+      .sort((left, right) => right.score - left.score)[0]?.page || null;
+    const disconnect = browser.disconnect.bind(browser);
+    browser.close = async () => disconnect();
+    console.log(`[Wechaty] connected to Chrome at ${cdpUrl}${reusablePage ? `, reusing tab ${reusablePage.url()}` : ''}`);
+
     browser.newPage = async (...args) => {
-      const page = await originalNewPage(...args);
+      const page = reusablePage || await originalNewPage(...args);
+      reusablePage = null;
+      page.close = async () => {};
       const originalGoto = page.goto.bind(page);
       const originalReload = page.reload.bind(page);
 
@@ -88,20 +91,19 @@ export class WechatyBot {
   async start() {
     if (this.bot) return;
 
-    const executablePath = findChromeExecutable();
-    if (!executablePath) throw new Error('No compatible Chrome executable found for Wechaty');
-    process.env.PUPPETEER_EXECUTABLE_PATH = executablePath;
-    console.log(`[Wechaty] using Chrome at ${executablePath}`);
+    const cdpUrl = process.env.WECHATY_CDP_URL || '';
+    if (!cdpUrl) {
+      throw new Error('WECHATY_CDP_URL is required. Start a dedicated Chrome debugging session for Wechaty.');
+    }
 
     const { WechatyBuilder } = await import('wechaty');
     const { PuppetWeChat } = await import('wechaty-puppet-wechat');
     const puppet = new PuppetWeChat({
-      endpoint: executablePath,
       stealthless: true,
       uos: true,
       head: process.env.WECHATY_BROWSER_HEAD !== 'false',
     });
-    installNavigationCompatibility(puppet);
+    installNavigationCompatibility(puppet, { cdpUrl });
 
     this.bot = WechatyBuilder.build({
       name: path.resolve(ROOT, `.cache/${this.name}`),
@@ -141,6 +143,10 @@ export class WechatyBot {
     });
 
     this.bot.on('error', (error) => {
+      if (/return this\._type|No dialog is showing/.test(error.message)) {
+        console.warn(`[Wechaty] ignored transient page dialog error: ${error.message}`);
+        return;
+      }
       this.status = 'error';
       this.qrData = null;
       this.lastError = error.message;
