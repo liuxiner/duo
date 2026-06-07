@@ -53,6 +53,24 @@ macOS/Linux cron example:
 
 Keep `PDD_HEADLESS=false` while testing locally. For a server, switch to `PDD_HEADLESS=true` after the profile/session is proven stable, or run with a browser-capable environment.
 
+## Web Date Range Sync
+
+Start the local UI:
+
+```bash
+pnpm run web
+```
+
+Then open `http://127.0.0.1:4173`, select the From/To dates, and start the sync. The range is processed one day at a time. Each date creates a new Feishu worksheet when missing, or rewrites the existing worksheet with the same date title.
+
+If PDD requires login or security verification, finish it in the browser window opened by Playwright. Web mode waits up to five minutes and continues automatically after the data table appears.
+
+The same range can be run without the UI:
+
+```bash
+PDD_DATE_FROM=2026-06-01 PDD_DATE_TO=2026-06-06 pnpm run sync:pdd
+```
+
 ## Login Debugging
 
 If PDD shows browser warnings such as `--no-sandbox`, keep this enabled:
@@ -137,7 +155,7 @@ For order-management syncs, the script now:
 - Selects yesterday's date range by default with `PDD_SELECT_YESTERDAY=true`.
 - Attempts to set the page size to `PDD_TARGET_PAGE_SIZE=100`.
 - Collects all pages until the page total is reached.
-- Validates collected raw row count against `共有 N 条` or `PDD_EXPECTED_TOTAL`.
+- Validates collected raw row count against the current query's `共有 N 条`.
 - Writes the calculated template to Feishu:
   `采集时间 / 销售日期 / 商品名称 / 商品ID / 仓库信息 / 仓库总库存 / 仓库预估总销售数 / 销售数(份) / 商家报价 / 实际均价`.
 - Saves raw rows separately under `data/pdd/pdd-orders-raw-*.csv`.

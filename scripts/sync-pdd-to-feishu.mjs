@@ -49,8 +49,12 @@ function config() {
     headless: envBool(process.env.PDD_HEADLESS, false),
     maxPages: envInt(process.env.PDD_MAX_PAGES, 20),
     targetPageSize: envInt(process.env.PDD_TARGET_PAGE_SIZE, 100),
-    expectedTotal: envInt(process.env.PDD_EXPECTED_TOTAL, 0),
     selectYesterday: envBool(process.env.PDD_SELECT_YESTERDAY, true),
+    syncDate: process.env.PDD_SYNC_DATE || '',
+    dateFrom: process.env.PDD_DATE_FROM || '',
+    dateTo: process.env.PDD_DATE_TO || '',
+    autoWaitForLogin: envBool(process.env.PDD_AUTO_WAIT_FOR_LOGIN, false),
+    loginWaitMs: envInt(process.env.PDD_LOGIN_WAIT_MS, 5 * 60 * 1000),
     waitForLogin: envBool(process.env.PDD_WAIT_FOR_LOGIN, true),
     outputDir: path.resolve(ROOT, process.env.PDD_OUTPUT_DIR || 'data/pdd'),
     latestJson: path.resolve(ROOT, process.env.PDD_LATEST_JSON || 'data/latest.json'),
@@ -100,6 +104,29 @@ function dateFromYmd(value) {
 
 function yesterdayBeijingDate() {
   return formatBeijingDate(new Date(Date.now() - 24 * 60 * 60 * 1000));
+}
+
+function validateYmd(value, name) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) {
+    throw new Error(`${name} must use YYYY-MM-DD format.`);
+  }
+  const date = dateFromYmd(value);
+  if (formatBeijingDate(date) !== value) throw new Error(`${name} is not a valid date: ${value}`);
+  return value;
+}
+
+function datesBetween(from, to) {
+  validateYmd(from, 'PDD_DATE_FROM');
+  validateYmd(to, 'PDD_DATE_TO');
+  const start = dateFromYmd(from);
+  const end = dateFromYmd(to);
+  if (start > end) throw new Error('PDD_DATE_FROM cannot be later than PDD_DATE_TO.');
+
+  const dates = [];
+  for (const cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
+    dates.push(formatBeijingDate(cursor));
+  }
+  return dates;
 }
 
 function timestampForFile(date = new Date()) {
@@ -263,6 +290,20 @@ function calculatedRowsFromRecords(records, collectedAt, salesDate) {
 async function waitForManualLogin(page, cfg) {
   if (!cfg.waitForLogin) return;
 
+  if (cfg.autoWaitForLogin) {
+    console.log('Waiting for PDD login/verification in the opened browser...');
+    const deadline = Date.now() + cfg.loginWaitMs;
+    while (Date.now() < deadline) {
+      const hasTable = await page.locator('table, [data-testid="beast-core-table"]').first().count().catch(() => 0);
+      if (hasTable > 0) {
+        console.log('PDD table detected. Continuing sync.');
+        return;
+      }
+      await page.waitForTimeout(1500);
+    }
+    throw new Error(`Timed out after ${Math.round(cfg.loginWaitMs / 1000)} seconds waiting for PDD login.`);
+  }
+
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const hasTable = await page.locator('table, [data-testid="beast-core-table"]').first().count().catch(() => 0);
     if (hasTable > 0) return;
@@ -373,9 +414,47 @@ async function currentPageSize(page) {
   }).catch(() => null);
 }
 
+async function waitForQueryResults(page, salesDate, targetPageSize, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  let stableMatches = 0;
+  let lastState = { rowCount: 0, total: null, pageSize: null, dates: [] };
+
+  while (Date.now() < deadline) {
+    const [result, total, selectedPageSize] = await Promise.all([
+      collectCurrentPage(page),
+      readTotalCount(page),
+      currentPageSize(page),
+    ]);
+    const dates = Array.from(new Set(
+      result.records.map((record) => normalizeText(record['销售日期'])).filter(Boolean)
+    ));
+    const pageSize = selectedPageSize || targetPageSize || result.records.length;
+    const expectedRows = Number.isFinite(total) ? Math.min(total, pageSize) : null;
+    const dateMatches = dates.length === 0 || dates.every((date) => date === salesDate);
+    const countMatches = expectedRows == null ? result.records.length > 0 : result.records.length === expectedRows;
+
+    lastState = { rowCount: result.records.length, total, pageSize, dates };
+    if (dateMatches && countMatches) {
+      stableMatches += 1;
+      if (stableMatches >= 2) return { result, total, pageSize };
+    } else {
+      stableMatches = 0;
+    }
+    await page.waitForTimeout(750);
+  }
+
+  throw new Error(
+    `PDD query did not stabilize for ${salesDate}: `
+    + `visible rows ${lastState.rowCount}, total ${lastState.total ?? 'unknown'}, `
+    + `page size ${lastState.pageSize ?? 'unknown'}, dates ${lastState.dates.join(', ') || 'unknown'}.`
+  );
+}
+
 async function setDateRangeTo(page, salesDate) {
   const selector = 'input[data-testid="beast-core-rangePicker-htmlInput"]';
   const inputLocator = page.locator(selector).first();
+  const previousTableText = await page.locator('[data-testid="beast-core-table-middle-body"]')
+    .innerText({ timeout: 3000 }).catch(() => '');
   const count = await inputLocator.count().catch(() => 0);
   if (!count) {
     console.log('Date range input not found; continuing with current page date.');
@@ -419,7 +498,13 @@ async function setDateRangeTo(page, salesDate) {
   if (await queryButton.count().catch(() => 0)) {
     await queryButton.click();
     await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(1500);
+    if (previousTableText) {
+      await page.waitForFunction((previous) => {
+        const body = document.querySelector('[data-testid="beast-core-table-middle-body"]');
+        return body && body.innerText !== previous;
+      }, previousTableText, { timeout: 30000 }).catch(() => {});
+    }
+    await page.waitForTimeout(500);
   } else {
     console.log('Query button not found after date update.');
   }
@@ -483,8 +568,7 @@ async function setPageSize(page, targetSize) {
     await page.waitForTimeout(1500);
     const updated = await currentPageSize(page);
     if (updated === targetSize) {
-      const visibleRows = await page.locator('[data-testid="beast-core-table-middle-body"] tbody tr').count().catch(() => 0);
-      console.log(`Page size set to ${targetSize}; visible rows now ${visibleRows}.`);
+      console.log(`Page size set to ${targetSize}.`);
       return true;
     }
   }
@@ -563,20 +647,21 @@ async function collectPddRows(cfg) {
     await waitForManualLogin(page, cfg);
 
     const collectedAt = formatBeijingTimestamp(new Date());
-    const salesDate = cfg.selectYesterday ? yesterdayBeijingDate() : formatBeijingDate(new Date());
-    if (cfg.selectYesterday) {
+    const salesDate = cfg.syncDate || (cfg.selectYesterday ? yesterdayBeijingDate() : formatBeijingDate(new Date()));
+    if (cfg.syncDate) validateYmd(cfg.syncDate, 'PDD_SYNC_DATE');
+    if (cfg.syncDate || cfg.selectYesterday) {
       await setDateRangeTo(page, salesDate);
     }
     await setPageSize(page, cfg.targetPageSize);
-    const expectedTotal = cfg.expectedTotal || await readTotalCount(page);
-    if (expectedTotal) console.log(`Page reports total rows: ${expectedTotal}.`);
+    const stableQuery = await waitForQueryResults(page, salesDate, cfg.targetPageSize);
+    const expectedTotal = stableQuery.total;
+    console.log(`Query stabilized: ${stableQuery.result.records.length} visible rows, ${expectedTotal ?? 'unknown'} total.`);
 
     const allRecords = [];
     let headers = [];
 
     for (let pageIndex = 1; pageIndex <= cfg.maxPages; pageIndex += 1) {
-      await page.waitForTimeout(1000);
-      const result = await collectCurrentPage(page);
+      const result = pageIndex === 1 ? stableQuery.result : await collectCurrentPage(page);
       if (!headers.length && result.headers.length) headers = result.headers;
       allRecords.push(...result.records);
       console.log(`Collected page ${pageIndex}: ${result.records.length} rows.`);
@@ -588,7 +673,7 @@ async function collectPddRows(cfg) {
 
     const tableDates = Array.from(new Set(allRecords.map((record) => normalizeText(record['销售日期'])).filter(Boolean)));
     const mismatchedDates = tableDates.filter((date) => date !== salesDate);
-    if (cfg.selectYesterday && mismatchedDates.length) {
+    if ((cfg.syncDate || cfg.selectYesterday) && mismatchedDates.length) {
       throw new Error(`Sales date validation failed: expected ${salesDate}, table has ${tableDates.join(', ')}.`);
     }
 
@@ -842,9 +927,17 @@ async function writeLocalFiles(cfg, payload) {
 async function main() {
   await loadDotEnv();
   const cfg = config();
-  const payload = await collectPddRows(cfg);
-  await writeLocalFiles(cfg, payload);
-  await writeToFeishu(cfg, payload.headers, payload.rows);
+  const dates = cfg.dateFrom || cfg.dateTo
+    ? datesBetween(cfg.dateFrom || cfg.dateTo, cfg.dateTo || cfg.dateFrom)
+    : [cfg.syncDate || (cfg.selectYesterday ? yesterdayBeijingDate() : formatBeijingDate(new Date()))];
+
+  console.log(`Syncing ${dates.length} date(s): ${dates[0]} -> ${dates[dates.length - 1]}`);
+  for (const date of dates) {
+    console.log(`\n=== Sync ${date} ===`);
+    const payload = await collectPddRows({ ...cfg, syncDate: date });
+    await writeLocalFiles(cfg, payload);
+    await writeToFeishu(cfg, payload.headers, payload.rows);
+  }
 }
 
 main().catch((error) => {

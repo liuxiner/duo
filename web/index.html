@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>飞书数据同步</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #f3f5f8; color: #182230; display: grid; place-items: center; padding: 24px; }
+    main { width: min(720px, 100%); background: #fff; border: 1px solid #e4e7ec; border-radius: 18px; padding: 32px; box-shadow: 0 16px 48px rgba(16, 24, 40, .08); }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    .sub { margin: 0 0 28px; color: #667085; line-height: 1.6; }
+    form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 14px; align-items: end; }
+    label { display: grid; gap: 8px; font-size: 14px; font-weight: 600; }
+    input, button { height: 44px; border-radius: 10px; font: inherit; }
+    input { width: 100%; border: 1px solid #d0d5dd; padding: 0 12px; color: #101828; }
+    input:focus { outline: 3px solid #dbeafe; border-color: #2563eb; }
+    button { border: 0; padding: 0 22px; background: #2563eb; color: white; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .status { margin-top: 24px; padding: 14px 16px; border-radius: 10px; background: #f8fafc; color: #475467; }
+    .status strong { color: #101828; }
+    pre { min-height: 180px; max-height: 360px; overflow: auto; margin: 14px 0 0; padding: 16px; border-radius: 10px; background: #5f5f5f; color: #d1e9ff; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+    @media (max-width: 640px) { main { padding: 22px; } form { grid-template-columns: 1fr; } button { width: 100%; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>飞书数据同步</h1>
+    <p class="sub">选择销售日期范围。系统会逐日抓取数据，并按日期新建或覆盖对应的飞书 Sheet。</p>
+    <form id="sync-form">
+      <label>From<input id="from" name="from" type="date" required></label>
+      <label>To<input id="to" name="to" type="date" required></label>
+      <button id="submit" type="submit">开始同步</button>
+    </form>
+    <div class="status" id="status">状态：<strong>空闲</strong></div>
+    <pre id="logs">等待同步任务...</pre>
+  </main>
+  <script>
+    const form = document.querySelector('#sync-form');
+    const fromInput = document.querySelector('#from');
+    const toInput = document.querySelector('#to');
+    const submit = document.querySelector('#submit');
+    const statusBox = document.querySelector('#status');
+    const logs = document.querySelector('#logs');
+    const dateParts = new Intl.DateTimeFormat('en', {
+      timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
+    }).formatToParts(new Date(Date.now() - 86400000));
+    const dateMap = Object.fromEntries(dateParts.map((part) => [part.type, part.value]));
+    const yesterday = `${dateMap.year}-${dateMap.month}-${dateMap.day}`;
+    fromInput.value = yesterday;
+    toInput.value = yesterday;
+
+    const labels = { idle: '空闲', running: '同步中', completed: '已完成', failed: '失败' };
+    async function refresh() {
+      const response = await fetch('/api/status');
+      const state = await response.json();
+      submit.disabled = state.status === 'running';
+      statusBox.innerHTML = `状态：<strong>${labels[state.status] || state.status}</strong>${state.from ? ` · ${state.from} 至 ${state.to}` : ''}`;
+      logs.textContent = state.logs?.length ? state.logs.join('\n') : '等待同步任务...';
+      logs.scrollTop = logs.scrollHeight;
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      submit.disabled = true;
+      const response = await fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: fromInput.value, to: toInput.value }),
+      });
+      const body = await response.json();
+      if (!response.ok) alert(body.error || '启动同步失败');
+      await refresh();
+    });
+
+    refresh();
+    setInterval(refresh, 1500);
+  </script>
+</body>
+</html>

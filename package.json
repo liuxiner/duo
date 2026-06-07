@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "sync:pdd": "node scripts/sync-pdd-to-feishu.mjs",
+    "web": "node web/server.mjs",
     "dashboard:build": "node build-dashboard.mjs"
   },
   "dependencies": {
