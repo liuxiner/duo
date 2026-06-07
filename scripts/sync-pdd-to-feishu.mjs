@@ -668,8 +668,12 @@ async function collectPddRows(cfg) {
       expectedTotal,
     };
   } finally {
-    if (browser) disconnectPddBrowser(browser);
-    else await context.close();
+    try {
+      if (browser) disconnectPddBrowser(browser);
+      else await context.close();
+    } catch (cleanupErr) {
+      console.error('Browser cleanup error (safe to ignore):', cleanupErr.message || cleanupErr);
+    }
   }
 }
 
@@ -896,6 +900,9 @@ async function writeLocalFiles(cfg, payload) {
   console.log(`Wrote JSON to ${cfg.latestJson}`);
 }
 
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 10_000;
+
 async function main() {
   await loadDotEnv();
   const cfg = config();
@@ -904,11 +911,32 @@ async function main() {
     : [cfg.syncDate || (cfg.selectYesterday ? yesterdayBeijingDate() : formatBeijingDate(new Date()))];
 
   console.log(`Syncing ${dates.length} date(s): ${dates[0]} -> ${dates[dates.length - 1]}`);
+  const failedDates = [];
   for (const date of dates) {
-    console.log(`\n=== Sync ${date} ===`);
-    const payload = await collectPddRows({ ...cfg, syncDate: date });
-    await writeLocalFiles(cfg, payload);
-    await writeToFeishu(cfg, payload.headers, payload.rows);
+    let succeeded = false;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
+      console.log(`\n=== Sync ${date} (attempt ${attempt}/${MAX_RETRIES}) ===`);
+      try {
+        const payload = await collectPddRows({ ...cfg, syncDate: date });
+        await writeLocalFiles(cfg, payload);
+        await writeToFeishu(cfg, payload.headers, payload.rows);
+        succeeded = true;
+        break;
+      } catch (err) {
+        console.error(`Sync ${date} attempt ${attempt} failed:`, err.message || err);
+        if (attempt < MAX_RETRIES) {
+          console.log(`Retrying in ${RETRY_DELAY_MS / 1000}s...`);
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        }
+      }
+    }
+    if (!succeeded) {
+      console.error(`Sync ${date} failed after ${MAX_RETRIES} attempts, skipping.`);
+      failedDates.push(date);
+    }
+  }
+  if (failedDates.length) {
+    throw new Error(`Failed dates: ${failedDates.join(', ')}`);
   }
 }
 

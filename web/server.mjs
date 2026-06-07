@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { WechatyBot } from '../scripts/wechaty-bot.mjs';
 
 const WEB_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(WEB_DIR, '..');
@@ -11,6 +12,8 @@ const REPORT_CONFIG_PATH = path.resolve(ROOT, process.env.PDD_REPORT_CONFIG_PATH
 let activeSync = null;
 let activeReport = null;
 let activeScheduler = null;
+const wechatyBot = new WechatyBot({ name: 'pdd-wechaty-bot' });
+const wechatSSEClients = new Set();
 
 const DEFAULT_REPORT_CONFIG = {
   schedulerEnabled: false,
@@ -54,6 +57,8 @@ function summarizeTask(task) {
   return { ...safeTask, previewLogs, lastDate };
 }
 
+const SYNC_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
 function startSync(from, to) {
   const logs = [];
   const child = spawn(process.execPath, ['scripts/sync-pdd-to-feishu.mjs'], {
@@ -68,19 +73,29 @@ function startSync(from, to) {
     stdio: ['inherit', 'pipe', 'pipe'],
   });
 
-  activeSync = { from, to, status: 'running', logs, startedAt: new Date().toISOString() };
+  activeSync = { from, to, status: 'running', logs, startedAt: new Date().toISOString(), child };
   const append = (chunk) => {
     logs.push(...String(chunk).split(/\r?\n/).filter(Boolean));
     if (logs.length > 500) logs.splice(0, logs.length - 500);
   };
   child.stdout.on('data', append);
   child.stderr.on('data', append);
+
+  const timeout = setTimeout(() => {
+    append(`[server] Sync timed out after ${SYNC_TIMEOUT_MS / 1000}s, killing process.`);
+    child.kill('SIGKILL');
+  }, SYNC_TIMEOUT_MS);
+
+  const cleanup = () => clearTimeout(timeout);
+
   child.on('error', (error) => {
+    cleanup();
     append(error.message);
     activeSync.status = 'failed';
     activeSync.finishedAt = new Date().toISOString();
   });
   child.on('close', (code) => {
+    cleanup();
     activeSync.status = code === 0 ? 'completed' : 'failed';
     activeSync.exitCode = code;
     activeSync.finishedAt = new Date().toISOString();
@@ -113,6 +128,9 @@ function normalizeConfig(config) {
       cutoffTime: String(item.cutoffTime || '').trim(),
       topOfHour: Boolean(item.topOfHour),
       enabled: Boolean(item.enabled),
+      wechatEnabled: Boolean(item.wechatEnabled),
+      wechatRoomName: String(item.wechatRoomName || '').trim(),
+      wechatMentionNames: Array.isArray(item.wechatMentionNames) ? item.wechatMentionNames.map((name) => String(name).trim()).filter(Boolean) : [],
     })),
   };
 }
@@ -210,6 +228,25 @@ async function setSchedulerEnabled(enabled) {
   return config;
 }
 
+function broadcastSSE(event, data) {
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const res of wechatSSEClients) {
+    try { res.write(payload); } catch {}
+  }
+}
+
+wechatyBot.onScan((qrcode, status) => {
+  broadcastSSE('scan', { qrcode, status });
+});
+
+wechatyBot.onLogin((user) => {
+  broadcastSSE('login', { user: user.name() });
+});
+
+wechatyBot.onLogout(() => {
+  broadcastSSE('logout', {});
+});
+
 const server = createServer(async (request, response) => {
   try {
     if (request.method === 'GET' && request.url === '/') {
@@ -224,6 +261,7 @@ const server = createServer(async (request, response) => {
         sync: summarizeTask(activeSync),
         report: summarizeTask(activeReport),
         scheduler: summarizeTask(activeScheduler),
+        wechat: wechatyBot.getStatus(),
       });
       return;
     }
@@ -273,6 +311,66 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    // WeChat (Wechaty) API endpoints
+
+    if (request.method === 'GET' && request.url === '/api/wechat/status') {
+      sendJson(response, 200, wechatyBot.getStatus());
+      return;
+    }
+
+    if (request.method === 'GET' && request.url === '/api/wechat/qr') {
+      response.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      response.write(':\n\n');
+
+      const current = wechatyBot.getStatus();
+      if (current.qrAvailable && wechatyBot.qrData) {
+        response.write(`event: scan\ndata: ${JSON.stringify({ qrcode: wechatyBot.qrData, status: 'scanning' })}\n\n`);
+      } else if (current.status === 'logged-in') {
+        response.write(`event: login\ndata: ${JSON.stringify({ user: current.loggedInUser })}\n\n`);
+      }
+
+      wechatSSEClients.add(response);
+      request.on('close', () => wechatSSEClients.delete(response));
+      return;
+    }
+
+    if (request.method === 'POST' && request.url === '/api/wechat/start') {
+      const current = wechatyBot.getStatus();
+      if (current.status === 'logged-in' || current.status === 'scanning' || current.status === 'starting') {
+        sendJson(response, 200, { ok: true, status: current.status });
+        return;
+      }
+      await wechatyBot.start();
+      sendJson(response, 200, { ok: true, status: wechatyBot.getStatus().status });
+      return;
+    }
+
+    if (request.method === 'POST' && request.url === '/api/wechat/stop') {
+      await wechatyBot.stop();
+      sendJson(response, 200, { ok: true, status: wechatyBot.getStatus().status });
+      return;
+    }
+
+    if (request.method === 'POST' && request.url === '/api/wechat/send') {
+      const { roomName, text, imagePaths, mentionNames } = await readJson(request);
+      if (!roomName) {
+        sendJson(response, 400, { error: 'roomName is required' });
+        return;
+      }
+      await wechatyBot.sendToRoom(
+        roomName,
+        text || '',
+        Array.isArray(imagePaths) ? imagePaths : [],
+        Array.isArray(mentionNames) ? mentionNames : [],
+      );
+      sendJson(response, 200, { ok: true });
+      return;
+    }
+
     sendJson(response, 404, { error: 'Not found' });
   } catch (error) {
     sendJson(response, 500, { error: error.message });
@@ -290,3 +388,11 @@ readReportConfig()
   .catch((error) => {
     console.error(`读取上报配置失败：${error.message}`);
   });
+
+if (process.env.WECHATY_AUTO_START === 'true') {
+  wechatyBot.start().then(() => {
+    console.log('Wechaty bot starting... scan QR code in the web UI.');
+  }).catch((error) => {
+    console.error(`Wechaty bot start failed: ${error.message}`);
+  });
+}
