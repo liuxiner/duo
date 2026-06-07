@@ -594,12 +594,18 @@ async function collectPddRows(cfg) {
   let context;
 
   if (cfg.cdpUrl) {
-    browser = await chromium.connectOverCDP(cfg.cdpUrl);
-    context = browser.contexts()[0] || await browser.newContext({
-      viewport: { width: 1440, height: 960 },
-      locale: 'zh-CN',
-    });
-  } else {
+    try {
+      browser = await chromium.connectOverCDP(cfg.cdpUrl);
+      context = browser.contexts()[0] || await browser.newContext({
+        viewport: { width: 1440, height: 960 },
+        locale: 'zh-CN',
+      });
+    } catch (cdpErr) {
+      console.error(`CDP connection failed (${cdpErr.message || cdpErr}), falling back to persistent context.`);
+      browser = null;
+    }
+  }
+  if (!context) {
     context = await chromium.launchPersistentContext(cfg.profileDir, {
       headless: cfg.headless,
       channel: cfg.browserChannel || undefined,
