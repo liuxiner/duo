@@ -9,7 +9,8 @@ import {
   setPddPageSize,
 } from './pdd-page-tools.mjs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = path.resolve(process.env.MAO_WORKSPACE_PATH || APP_ROOT);
 const REPORT_URL = 'https://mc.pinduoduo.com/ddmc-mms/order/management';
 const DEFAULT_REPORT_CONFIG_PATH = 'data/report-config.json';
 const REPORT_ROWS_PER_IMAGE = 8;

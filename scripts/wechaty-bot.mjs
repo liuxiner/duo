@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { FileBox } from 'file-box';
 import puppeteer from 'puppeteer';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = path.resolve(process.env.MAO_WORKSPACE_PATH || APP_ROOT);
 const DEFAULT_NAVIGATION_TIMEOUT_MS = 30_000;
 
 function wechatPageScore(page) {

@@ -11,11 +11,17 @@
       color: #182230;
       background: #eef2f6;
       font-size: 13px;
+      --app-height: 100vh;
+      --table-max-height: 560px;
+      --log-max-height: 320px;
+      --log-preview-max-height: 160px;
+      --modal-max-height: calc(100vh - 40px);
     }
     * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; }
+    body { margin: 0; min-height: var(--app-height); }
+    body.preflight-blocked { overflow: hidden; }
     .layout { display: grid; grid-template-columns: 216px minmax(0, 1fr); gap: 18px; width: min(1440px, 100%); margin: 0 auto; padding: 18px; }
-    aside { position: sticky; top: 18px; align-self: start; min-height: calc(100vh - 36px); border: 1px solid #d7dee8; border-radius: 12px; background: #fff; padding: 16px; box-shadow: 0 10px 30px rgba(16, 24, 40, .06); }
+    aside { position: sticky; top: 18px; align-self: start; min-width: 0; min-height: calc(var(--app-height) - 36px); border: 1px solid #d7dee8; border-radius: 12px; background: #fff; padding: 16px; box-shadow: 0 10px 30px rgba(16, 24, 40, .06); }
     .brand { margin-bottom: 18px; }
     .brand h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
     .brand p { margin: 6px 0 0; color: #667085; line-height: 1.5; }
@@ -23,8 +29,9 @@
     nav a { color: #344054; text-decoration: none; padding: 9px 10px; border-radius: 8px; font-weight: 700; }
     nav a:hover { background: #f2f4f7; }
     main { display: grid; gap: 16px; min-width: 0; }
-    section { border: 1px solid #d7dee8; border-radius: 12px; background: #fff; padding: 18px; box-shadow: 0 10px 30px rgba(16, 24, 40, .05); }
+    section { min-width: 0; border: 1px solid #d7dee8; border-radius: 12px; background: #fff; padding: 18px; box-shadow: 0 10px 30px rgba(16, 24, 40, .05); }
     .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .section-head > div { min-width: 0; }
     h2 { margin: 0; font-size: 17px; }
     .hint { color: #667085; line-height: 1.5; margin: 4px 0 0; }
     .grid-form { display: grid; grid-template-columns: repeat(2, minmax(160px, 220px)) auto; gap: 10px; align-items: end; }
@@ -46,7 +53,7 @@
     .metric { border: 1px solid #e4e7ec; border-radius: 10px; padding: 11px 12px; background: #f8fafc; }
     .metric span { display: block; color: #667085; margin-bottom: 5px; }
     .metric strong { font-size: 15px; }
-    .table-wrap { position: relative; overflow: auto; border: 1px solid #e4e7ec; border-radius: 10px; }
+    .table-wrap { position: relative; overflow: auto; max-height: var(--table-max-height); border: 1px solid #e4e7ec; border-radius: 10px; }
     .table-wrap.locked::after {
       content: "定时上报已开启，配置已锁定。关闭后可修改。";
       position: sticky;
@@ -72,21 +79,111 @@
     .row-actions { display: flex; gap: 6px; }
     .log-panel { border: 1px solid #dbe4f0; border-radius: 10px; background: #f8fbff; overflow: hidden; }
     .log-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; }
-    .log-lines { display: grid; gap: 6px; padding: 0 12px 12px; color: #344054; }
+    .log-lines { display: grid; gap: 6px; max-height: var(--log-preview-max-height); overflow: auto; padding: 0 12px 12px; color: #344054; }
     .log-line { padding: 8px 10px; border-radius: 8px; background: #fff; border: 1px solid #e4e7ec; }
-    .log-full { display: none; max-height: 320px; overflow: auto; padding: 12px; border-top: 1px solid #dbe4f0; background: #fff; }
+    .log-full { display: none; max-height: var(--log-max-height); overflow: auto; padding: 12px; border-top: 1px solid #dbe4f0; background: #fff; }
     .log-full.open { display: grid; gap: 6px; }
     .pill { display: inline-flex; align-items: center; height: 24px; border-radius: 999px; padding: 0 9px; font-weight: 800; background: #ecfdf3; color: #067647; }
     .pill.off { background: #f2f4f7; color: #475467; }
     .pill.fail { background: #fef3f2; color: #b42318; }
+    .preflight-overlay { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 20px; background: rgba(16, 24, 40, .72); }
+    .preflight-overlay[hidden] { display: none; }
+    .preflight-modal { width: min(620px, 100%); max-height: var(--modal-max-height); overflow: auto; border-radius: 8px; background: #fff; box-shadow: 0 24px 64px rgba(16, 24, 40, .28); }
+    .preflight-head { padding: 20px 22px 14px; border-bottom: 1px solid #e4e7ec; }
+    .preflight-head h2 { font-size: 20px; }
+    .preflight-list { display: grid; gap: 8px; padding: 16px 22px; }
+    .preflight-item { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 11px 12px; border: 1px solid #e4e7ec; border-radius: 8px; }
+    .preflight-icon { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: #fef3f2; color: #b42318; font-weight: 900; }
+    .preflight-item.ok .preflight-icon { background: #ecfdf3; color: #067647; }
+    .preflight-detail { min-width: 0; }
+    .preflight-detail strong, .preflight-detail span { display: block; overflow-wrap: anywhere; }
+    .preflight-detail span { margin-top: 3px; color: #667085; font-size: 12px; line-height: 1.4; }
+    .preflight-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 0 22px 20px; }
+    .config-overlay { position: fixed; inset: 0; z-index: 1100; display: grid; place-items: center; padding: 20px; background: rgba(16, 24, 40, .78); }
+    .config-overlay[hidden] { display: none; }
+    .config-modal { width: min(680px, 100%); max-height: var(--modal-max-height); overflow: auto; border-radius: 8px; background: #fff; box-shadow: 0 24px 64px rgba(16, 24, 40, .32); }
+    .config-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 18px 22px; }
+    .config-form .full { grid-column: 1 / -1; }
+    .config-form small { color: #667085; font-weight: 400; line-height: 1.4; }
+    body[data-width-tier="stacked"] .row-actions,
+    body[data-width-tier="mobile"] .row-actions { flex-wrap: wrap; }
+    @media (max-width: 1120px) {
+      .layout { grid-template-columns: 180px minmax(0, 1fr); gap: 12px; padding: 12px; }
+      aside { top: 12px; min-height: calc(var(--app-height) - 24px); padding: 12px; }
+      section { padding: 14px; }
+      .grid-form { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+      .grid-form button { grid-column: 1 / -1; }
+    }
     @media (max-width: 860px) {
       .layout { grid-template-columns: 1fr; padding: 12px; }
       aside { position: static; min-height: auto; }
+      .brand { margin-bottom: 10px; }
+      nav { display: flex; overflow-x: auto; gap: 6px; padding-bottom: 2px; }
+      nav a { flex: 0 0 auto; }
+      .section-head { align-items: flex-start; flex-direction: column; }
+      .status-card { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 680px) {
+      .layout { padding: 8px; gap: 8px; }
+      section { padding: 12px; }
       .grid-form, .status-card { grid-template-columns: 1fr; }
+      .toolbar { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+      .toolbar button { width: 100%; min-width: 0; padding-inline: 8px; white-space: normal; line-height: 1.2; }
+      .log-summary { align-items: flex-start; flex-direction: column; }
+      .preflight-overlay { padding: 8px; }
+      .preflight-item { grid-template-columns: 24px minmax(0, 1fr); }
+      .preflight-item button { grid-column: 2; width: 100%; }
+      .preflight-actions { display: grid; grid-template-columns: 1fr; }
+      .preflight-actions button { width: 100%; }
+      .config-overlay { padding: 8px; }
+      .config-form { grid-template-columns: 1fr; padding: 14px; }
+      .config-form .full { grid-column: auto; }
     }
   </style>
 </head>
 <body>
+  <div id="preflight-overlay" class="preflight-overlay" role="dialog" aria-modal="true" aria-labelledby="preflight-title" hidden>
+    <div class="preflight-modal">
+      <div class="preflight-head">
+        <h2 id="preflight-title">启动检查</h2>
+        <p class="hint">完成以下前置条件后才能使用同步和上报功能。</p>
+      </div>
+      <div id="preflight-list" class="preflight-list"></div>
+      <div class="preflight-actions">
+        <button id="preflight-open-config" class="light" type="button">配置服务</button>
+        <button id="preflight-retry" type="button">重新检查</button>
+      </div>
+    </div>
+  </div>
+  <div id="config-overlay" class="config-overlay" role="dialog" aria-modal="true" aria-labelledby="config-title" hidden>
+    <div class="config-modal">
+      <div class="preflight-head">
+        <h2 id="config-title">服务配置</h2>
+        <p class="hint">配置保存在当前用户的数据目录中。</p>
+      </div>
+      <form id="app-config-form" class="config-form">
+        <label>飞书 App ID<input name="FEISHU_APP_ID" autocomplete="off" required></label>
+        <label>飞书 App Secret<input name="FEISHU_APP_SECRET" type="password" autocomplete="new-password" required></label>
+        <label class="full">飞书 Wiki 地址<input name="FEISHU_WIKI_URL" placeholder="https://example.feishu.cn/wiki/..."> <small>Wiki 地址和 Spreadsheet Token 至少填写一项。</small></label>
+        <label>Spreadsheet Token<input name="FEISHU_SPREADSHEET_TOKEN" autocomplete="off"></label>
+        <label>Sheet ID<input name="FEISHU_SHEET_ID" autocomplete="off"></label>
+        <label>PDD Chrome 地址
+          <input name="PDD_CDP_URL" value="http://127.0.0.1:9222" list="pdd-cdp-options" required>
+          <small>优先使用 `9222`，不可用时会自动切到附近可用端口。</small>
+        </label>
+        <label>微信 Chrome 地址
+          <input name="WECHATY_CDP_URL" value="http://127.0.0.1:9333" list="wechat-cdp-options" required>
+          <small>优先使用 `9333`，不可用时会自动切到附近可用端口，且不能与 PDD 共用。</small>
+        </label>
+        <datalist id="pdd-cdp-options"><option value="http://127.0.0.1:9222">本机 PDD Chrome</option></datalist>
+        <datalist id="wechat-cdp-options"><option value="http://127.0.0.1:9333">本机微信 Chrome</option></datalist>
+      </form>
+      <div class="preflight-actions">
+        <button id="config-cancel" class="secondary" type="button">取消</button>
+        <button id="config-save" type="submit" form="app-config-form">保存并检查</button>
+      </div>
+    </div>
+  </div>
   <div class="layout">
     <aside>
       <div class="brand">
@@ -98,6 +195,7 @@
         <a href="#report">分仓库上报</a>
         <a href="#wechat">微信群上报</a>
         <a href="#logs">运行日志</a>
+        <a id="desktop-nav" href="#desktop" hidden>桌面客户端</a>
       </nav>
     </aside>
 
@@ -220,10 +318,32 @@
         <div id="report-log-panel" class="log-panel" style="margin-top: 12px;"></div>
         <div id="scheduler-log-panel" class="log-panel" style="margin-top: 12px;"></div>
       </section>
+
+      <section id="desktop" hidden>
+        <div class="section-head">
+          <div>
+            <h2>桌面客户端</h2>
+            <p class="hint" id="desktop-path">正在读取客户端信息</p>
+          </div>
+          <div class="toolbar">
+            <button id="desktop-open-workspace" class="light" type="button">打开数据目录</button>
+            <button id="desktop-check-update" type="button">检查更新</button>
+            <button id="desktop-download-update" class="success" type="button" hidden>下载更新</button>
+            <button id="desktop-apply-update" class="success" type="button" hidden>立即应用</button>
+          </div>
+        </div>
+        <div class="status-card">
+          <div class="metric"><span>桌面壳版本</span><strong id="desktop-shell-version">-</strong></div>
+          <div class="metric"><span>业务版本</span><strong id="desktop-runtime-version">-</strong></div>
+          <div class="metric"><span>更新状态</span><strong id="desktop-update-status">未检查</strong></div>
+        </div>
+      </section>
     </main>
   </div>
 
-  <script>
+  <script type="module">
+    import { createResponsiveLayoutController } from '/responsive-layout.mjs';
+
     const form = document.querySelector('#sync-form');
     const fromInput = document.querySelector('#from');
     const toInput = document.querySelector('#to');
@@ -250,6 +370,164 @@
     let expandedLogs = { sync: false, report: false, scheduler: false };
     let reportRequestPending = false;
     let wechatEventSource = null;
+
+    const desktopApi = window.maoDesktop;
+    const desktopSection = document.querySelector('#desktop');
+    const desktopNav = document.querySelector('#desktop-nav');
+    const desktopPath = document.querySelector('#desktop-path');
+    const desktopShellVersion = document.querySelector('#desktop-shell-version');
+    const desktopRuntimeVersion = document.querySelector('#desktop-runtime-version');
+    const desktopUpdateStatus = document.querySelector('#desktop-update-status');
+    const desktopCheckUpdate = document.querySelector('#desktop-check-update');
+    const desktopDownloadUpdate = document.querySelector('#desktop-download-update');
+    const desktopApplyUpdate = document.querySelector('#desktop-apply-update');
+    const desktopOpenWorkspace = document.querySelector('#desktop-open-workspace');
+    const preflightOverlay = document.querySelector('#preflight-overlay');
+    const preflightList = document.querySelector('#preflight-list');
+    const preflightRetry = document.querySelector('#preflight-retry');
+    const preflightOpenConfig = document.querySelector('#preflight-open-config');
+    const configOverlay = document.querySelector('#config-overlay');
+    const appConfigForm = document.querySelector('#app-config-form');
+    const configCancel = document.querySelector('#config-cancel');
+    const configSave = document.querySelector('#config-save');
+    createResponsiveLayoutController({ window, document });
+
+    async function openAppConfig() {
+      const response = await fetch('/api/app-config');
+      const body = await response.json();
+      for (const [key, value] of Object.entries(body.config || {})) {
+        const input = appConfigForm.elements.namedItem(key);
+        if (input) input.value = value;
+      }
+      configOverlay.hidden = false;
+    }
+
+    function preflightAction(check) {
+      if (check.id === 'pddChrome') return '<button class="light preflight-launch" data-service="pdd" type="button">启动 PDD Chrome</button>';
+      if (check.id === 'wechatChrome') return '<button class="light preflight-launch" data-service="wechat" type="button">启动微信 Chrome</button>';
+      return '<button class="light preflight-configure" type="button">配置</button>';
+    }
+
+    async function runPreflight() {
+      if (!desktopApi) return true;
+      document.body.classList.add('preflight-blocked');
+      preflightOverlay.hidden = false;
+      preflightRetry.disabled = true;
+      preflightRetry.textContent = '检查中';
+      try {
+        const response = await fetch('/api/preflight', { method: 'POST' });
+        const result = await response.json();
+        preflightList.innerHTML = result.checks.map((check) => `
+          <div class="preflight-item ${check.ok ? 'ok' : ''}">
+            <span class="preflight-icon">${check.ok ? '✓' : '!'}</span>
+            <div class="preflight-detail"><strong>${escapeHtml(check.title)}</strong><span>${escapeHtml(check.detail)}</span></div>
+            ${check.ok ? '' : preflightAction(check)}
+          </div>
+        `).join('');
+        if (result.ok) {
+          preflightOverlay.hidden = true;
+          document.body.classList.remove('preflight-blocked');
+        }
+        return result.ok;
+      } catch (error) {
+        preflightList.innerHTML = `<div class="preflight-item"><span class="preflight-icon">!</span><div class="preflight-detail"><strong>本地服务检查失败</strong><span>${escapeHtml(error.message)}</span></div></div>`;
+        return false;
+      } finally {
+        preflightRetry.disabled = false;
+        preflightRetry.textContent = '重新检查';
+      }
+    }
+
+    async function initializeDesktop() {
+      if (!desktopApi) return;
+      desktopSection.hidden = false;
+      desktopNav.hidden = false;
+      const info = await desktopApi.getInfo();
+      desktopShellVersion.textContent = info.shellVersion;
+      desktopRuntimeVersion.textContent = info.runtimeVersion;
+      desktopPath.textContent = `数据目录：${info.workspacePath}`;
+      if (!info.updateConfigured) desktopUpdateStatus.textContent = '未配置更新服务器';
+      await runPreflight();
+
+      desktopApi.onUpdateStatus((status) => {
+        if (status.state === 'checking') desktopUpdateStatus.textContent = '正在检查';
+        if (status.state === 'up-to-date') desktopUpdateStatus.textContent = '已是最新版本';
+        if (status.state === 'available') {
+          desktopUpdateStatus.textContent = `发现 ${status.latestVersion}`;
+          desktopDownloadUpdate.hidden = false;
+        }
+        if (status.state === 'downloading') {
+          const percent = status.total ? Math.round(status.received / status.total * 100) : 0;
+          desktopUpdateStatus.textContent = `下载中 ${percent}%`;
+        }
+        if (status.state === 'ready') {
+          desktopUpdateStatus.textContent = `版本 ${status.version} 已就绪`;
+          desktopDownloadUpdate.hidden = true;
+          desktopApplyUpdate.hidden = false;
+        }
+        if (status.state === 'error') desktopUpdateStatus.textContent = status.message || '更新失败';
+      });
+    }
+
+    desktopCheckUpdate.addEventListener('click', async () => {
+      try {
+        const result = await desktopApi.checkUpdate();
+        if (!result.available) desktopUpdateStatus.textContent = result.message || '已是最新版本';
+      } catch (error) {
+        desktopUpdateStatus.textContent = error.message;
+      }
+    });
+    desktopDownloadUpdate.addEventListener('click', () => desktopApi.downloadUpdate());
+    desktopApplyUpdate.addEventListener('click', () => desktopApi.applyUpdate());
+    desktopOpenWorkspace.addEventListener('click', () => desktopApi.openWorkspace());
+    preflightOpenConfig.addEventListener('click', openAppConfig);
+    configCancel.addEventListener('click', () => { configOverlay.hidden = true; });
+    appConfigForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const config = Object.fromEntries(new FormData(appConfigForm).entries());
+      if (!config.FEISHU_WIKI_URL && !config.FEISHU_SPREADSHEET_TOKEN) {
+        alert('飞书 Wiki 地址和 Spreadsheet Token 至少填写一项。');
+        return;
+      }
+      configSave.disabled = true;
+      configSave.textContent = '保存中';
+      try {
+        const response = await fetch('/api/app-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config }),
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || '配置保存失败');
+        configOverlay.hidden = true;
+        await runPreflight();
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        configSave.disabled = false;
+        configSave.textContent = '保存并检查';
+      }
+    });
+    preflightRetry.addEventListener('click', runPreflight);
+    preflightList.addEventListener('click', async (event) => {
+      if (event.target.closest('.preflight-configure')) {
+        await openAppConfig();
+        return;
+      }
+      const service = event.target.closest('.preflight-launch')?.dataset.service;
+      if (!service) return;
+      event.target.disabled = true;
+      event.target.textContent = '启动中';
+      try {
+        await desktopApi.launchChromeService(service);
+        await new Promise((resolve) => setTimeout(resolve, 1800));
+        await runPreflight();
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        event.target.disabled = false;
+      }
+    });
 
     const wechatStatusEl = document.querySelector('#wechat-status');
     const wechatUserEl = document.querySelector('#wechat-user');
@@ -590,6 +868,7 @@
     });
 
     loadConfig();
+    initializeDesktop();
     refresh();
     setInterval(refresh, 1500);
   </script>

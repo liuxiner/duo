@@ -1,0 +1,83 @@
+{
+  "name": "duoduo-digital-manager-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "多多数字管家桌面客户端",
+  "author": "Duoduo Digital Manager",
+  "main": "src/main.cjs",
+  "mao": {
+    "updateFeedUrl": ""
+  },
+  "scripts": {
+    "start": "electron .",
+    "package:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac",
+    "package:win": "electron-builder --win"
+  },
+  "dependencies": {
+    "extract-zip": "^2.0.1"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "cn.duoduo.digital-manager",
+    "productName": "多多数字管家",
+    "executableName": "DuoduoDigitalManager",
+    "asar": true,
+    "directories": {
+      "output": "../release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/app",
+        "to": "app"
+      },
+      {
+        "from": "../node_modules",
+        "to": "node_modules",
+        "filter": [
+          "**/*",
+          "!electron{,/**/*}",
+          "!electron-builder{,/**/*}",
+          "!app-builder-bin{,/**/*}",
+          "!builder-util{,/**/*}",
+          "!builder-util-runtime{,/**/*}",
+          "!dmg-builder{,/**/*}",
+          "!7zip-bin{,/**/*}"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.business",
+      "identity": null,
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "artifactName": "DuoduoDigitalManager-${version}-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "DuoduoDigitalManager-${version}-${arch}-setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "多多数字管家",
+      "uninstallDisplayName": "多多数字管家"
+    }
+  }
+}
