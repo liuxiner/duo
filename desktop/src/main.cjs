@@ -12,6 +12,8 @@ let runtimePort = 0;
 let pendingUpdate = null;
 let quitting = false;
 
+const DEFAULT_SERVICE_START_TIMEOUT_MS = process.platform === 'win32' ? 90_000 : 45_000;
+
 function desktopPackage() {
   return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
 }
@@ -208,7 +210,45 @@ function findPort() {
   });
 }
 
-function waitForHealth(port, timeout = 20000) {
+function serviceStartTimeoutMs() {
+  const configured = Number(process.env.MAO_SERVICE_START_TIMEOUT_MS || 0);
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_SERVICE_START_TIMEOUT_MS;
+}
+
+function tailFile(filePath, maxBytes = 16_384) {
+  try {
+    const stat = fs.statSync(filePath);
+    const length = Math.min(stat.size, maxBytes);
+    const fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(length);
+    fs.readSync(fd, buffer, 0, length, stat.size - length);
+    fs.closeSync(fd);
+    return buffer.toString('utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+function appendServiceLog(serviceLogPath, message) {
+  try {
+    fs.appendFileSync(serviceLogPath, `${message}\n`, 'utf8');
+  } catch {}
+}
+
+function closeLogStream(logStream) {
+  return new Promise((resolve) => {
+    logStream.end(resolve);
+    setTimeout(resolve, 500).unref();
+  });
+}
+
+function startupError(message, serviceLogPath) {
+  const logTail = tailFile(serviceLogPath);
+  const detail = logTail ? `\n\n最近服务日志：\n${logTail}` : '\n\n最近服务日志：暂无内容。';
+  return new Error(`${message}\n\n日志路径：${serviceLogPath}${detail}`);
+}
+
+function waitForHealth(port, timeout = serviceStartTimeoutMs()) {
   const started = Date.now();
   return new Promise((resolve, reject) => {
     const attempt = () => {
@@ -221,7 +261,7 @@ function waitForHealth(port, timeout = 20000) {
       request.setTimeout(1000, () => request.destroy());
     };
     const retry = () => {
-      if (Date.now() - started >= timeout) reject(new Error('本地服务启动超时。'));
+      if (Date.now() - started >= timeout) reject(new Error(`本地服务启动超时（已等待 ${Math.round(timeout / 1000)} 秒）。`));
       else setTimeout(attempt, 250);
     };
     attempt();
@@ -250,7 +290,9 @@ async function startServer(allowFallback = true) {
   const entry = path.join(appRoot, 'web', 'server.mjs');
   const logs = path.join(app.getPath('userData'), 'logs');
   fs.mkdirSync(logs, { recursive: true });
-  const logStream = fs.createWriteStream(path.join(logs, 'service.log'), { flags: 'a' });
+  const serviceLogPath = path.join(logs, 'service.log');
+  const logStream = fs.createWriteStream(serviceLogPath, { flags: 'a' });
+  appendServiceLog(serviceLogPath, `[desktop] starting service port=${runtimePort} appRoot=${appRoot} workspace=${workspaceDir()}`);
   const child = spawn(process.execPath, [entry], {
     cwd: workspaceDir(),
     env: {
@@ -266,18 +308,29 @@ async function startServer(allowFallback = true) {
   serverProcess = child;
   child.stdout.pipe(logStream, { end: false });
   child.stderr.pipe(logStream, { end: false });
+  child.once('error', (error) => {
+    appendServiceLog(serviceLogPath, `[desktop] service spawn error ${error.message}`);
+  });
   child.once('exit', (code, signal) => {
     if (serverProcess === child) serverProcess = null;
-    if (!quitting) logStream.write(`[desktop] service exited code=${code} signal=${signal}\n`);
+    if (!quitting) appendServiceLog(serviceLogPath, `[desktop] service exited code=${code} signal=${signal}`);
   });
   try {
-    await waitForHealth(runtimePort);
+    await Promise.race([
+      waitForHealth(runtimePort),
+      new Promise((_, reject) => {
+        child.once('error', (error) => reject(error));
+        child.once('exit', (code, signal) => reject(new Error(`本地服务提前退出 code=${code} signal=${signal}`)));
+      }),
+    ]);
+    appendServiceLog(serviceLogPath, `[desktop] service healthy port=${runtimePort}`);
   } catch (error) {
     child.kill('SIGTERM');
+    await closeLogStream(logStream);
     if (allowFallback && updater.currentAppDir() && updater.disableCurrent(error.message)) {
       return startServer(false);
     }
-    throw error;
+    throw startupError(error.message, serviceLogPath);
   }
 }
 

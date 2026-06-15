@@ -17,6 +17,7 @@
     "desktop:prepare": "node scripts/prepare-desktop-resources.mjs",
     "desktop:dev": "pnpm desktop:prepare && pnpm --dir desktop start",
     "package:mac": "pnpm desktop:prepare && pnpm --dir desktop package:mac",
+    "package:mac:release": "pnpm desktop:prepare && pnpm --dir desktop package:mac:release",
     "package:win": "pnpm desktop:prepare && pnpm --dir desktop package:win",
     "build:runtime-update": "pnpm desktop:prepare && node scripts/build-runtime-update.mjs",
     "create:update-feed": "node scripts/create-update-feed.mjs"

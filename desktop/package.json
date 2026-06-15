@@ -10,14 +10,15 @@
   },
   "scripts": {
     "start": "electron .",
-    "package:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac",
+    "package:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --dir",
+    "package:mac:release": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac",
     "package:win": "electron-builder --win"
   },
   "dependencies": {
     "extract-zip": "^2.0.1"
   },
   "devDependencies": {
-    "electron": "^33.2.1",
+    "electron": "33.4.11",
     "electron-builder": "^25.1.8"
   },
   "build": {
@@ -39,7 +40,7 @@
       },
       {
         "from": "../node_modules",
-        "to": "node_modules",
+        "to": "app/node_modules",
         "filter": [
           "**/*",
           "!electron{,/**/*}",

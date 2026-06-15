@@ -20,12 +20,14 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm package:mac
+      - run: |
+          app_path="$(find release -maxdepth 2 -type d -name 'DuoduoDigitalManager.app' -print -quit)"
+          test -n "$app_path"
+          tar -czf release/DuoduoDigitalManager-macos-debug-app.tar.gz -C "$(dirname "$app_path")" "$(basename "$app_path")"
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-app
-          path: |
-            release/*.dmg
-            release/*-mac.zip
+          name: macos-debug-app
+          path: release/DuoduoDigitalManager-macos-debug-app.tar.gz
           if-no-files-found: error
 
   windows:

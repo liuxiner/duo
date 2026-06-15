@@ -26,7 +26,7 @@ function createRuntimeUpdater({ app, feedUrl, bundledVersion }) {
   const currentFile = () => path.join(runtimeRoot(), 'current.json');
   const versionsDir = () => path.join(runtimeRoot(), 'versions');
   const packagedDependencies = () => app.isPackaged
-    ? path.join(process.resourcesPath, 'node_modules')
+    ? path.join(process.resourcesPath, 'app', 'node_modules')
     : path.resolve(__dirname, '..', '..', 'node_modules');
 
   function readCurrent() {
