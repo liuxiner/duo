@@ -37,20 +37,6 @@
       {
         "from": "resources/app",
         "to": "app"
-      },
-      {
-        "from": "../node_modules",
-        "to": "app/node_modules",
-        "filter": [
-          "**/*",
-          "!electron{,/**/*}",
-          "!electron-builder{,/**/*}",
-          "!app-builder-bin{,/**/*}",
-          "!builder-util{,/**/*}",
-          "!builder-util-runtime{,/**/*}",
-          "!dmg-builder{,/**/*}",
-          "!7zip-bin{,/**/*}"
-        ]
       }
     ],
     "mac": {
