@@ -26,7 +26,7 @@ function createRuntimeUpdater({ app, feedUrl, bundledVersion }) {
   const currentFile = () => path.join(runtimeRoot(), 'current.json');
   const versionsDir = () => path.join(runtimeRoot(), 'versions');
   const packagedDependencies = () => app.isPackaged
-    ? path.join(process.resourcesPath, 'app', 'node_modules')
+    ? path.join(process.resourcesPath, 'runtime', 'node_modules')
     : path.resolve(__dirname, '..', '..', 'node_modules');
 
   function readCurrent() {
@@ -122,6 +122,7 @@ function createRuntimeUpdater({ app, feedUrl, bundledVersion }) {
     fs.renameSync(extracted, target);
     const dependencyLink = path.join(target, 'app', 'node_modules');
     if (fs.existsSync(packagedDependencies())) {
+      fs.rmSync(dependencyLink, { recursive: true, force: true });
       fs.symlinkSync(
         packagedDependencies(),
         dependencyLink,

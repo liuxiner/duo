@@ -14,6 +14,7 @@
     "report:pdd:dry-run": "node scripts/report-pdd-to-feishu.mjs --dry-run",
     "web": "node web/server.mjs",
     "dashboard:build": "node build-dashboard.mjs",
+    "build:runtime-sidecar": "node scripts/prepare-desktop-resources.mjs",
     "desktop:prepare": "node scripts/prepare-desktop-resources.mjs",
     "desktop:dev": "pnpm desktop:prepare && pnpm --dir desktop start",
     "package:mac": "pnpm desktop:prepare && pnpm --dir desktop package:mac",

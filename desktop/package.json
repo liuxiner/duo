@@ -35,8 +35,8 @@
     ],
     "extraResources": [
       {
-        "from": "resources/app",
-        "to": "app"
+        "from": "resources/runtime",
+        "to": "runtime"
       }
     ],
     "mac": {

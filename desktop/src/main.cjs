@@ -26,7 +26,7 @@ const updater = createRuntimeUpdater({ app, feedUrl, bundledVersion: app.getVers
 
 function bundledAppDir() {
   return app.isPackaged
-    ? path.join(process.resourcesPath, 'app')
+    ? path.join(process.resourcesPath, 'runtime')
     : path.resolve(__dirname, '..', '..');
 }
 

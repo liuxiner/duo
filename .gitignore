@@ -1,8 +1,10 @@
 .env
 .cache/
 node_modules/
+dist/
 desktop/dist/
 desktop/resources/app/
+desktop/resources/runtime/
 release/
 data/pdd/*.json
 data/pdd/*.csv

@@ -9,22 +9,26 @@ const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
 const version = pkg.version;
 const minShellVersion = process.env.MAO_MIN_SHELL_VERSION || pkg.mao?.minShellVersion;
 const platform = `${process.platform}-${process.arch}`;
-const appDir = path.join(root, 'desktop', 'resources', 'app');
+const appDir = path.join(root, 'dist', 'runtime');
 const releaseDir = path.join(root, 'release');
 const baseUrl = (process.env.MAO_UPDATE_BASE_URL || 'https://example.com/duoduo-updates').replace(/\/?$/, '/');
 
 if (!minShellVersion) throw new Error('package.json 缺少 mao.minShellVersion。');
 
-async function collectFiles(dir, prefix = '') {
+const excludedRuntimeEntries = new Set(['node_modules']);
+
+async function collectFiles(dir, prefix = '', depth = 0) {
   const files = [];
   for (const entry of await readdir(dir, { withFileTypes: true })) {
+    if (depth === 0 && excludedRuntimeEntries.has(entry.name)) continue;
     const fullPath = path.join(dir, entry.name);
     const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) files.push(...await collectFiles(fullPath, relative));
+    if (entry.isDirectory()) files.push(...await collectFiles(fullPath, relative, depth + 1));
     else if (entry.isFile()) {
       const bytes = await readFile(fullPath);
       files.push({
         path: relative,
+        sourcePath: fullPath,
         size: bytes.length,
         sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
       });
@@ -43,7 +47,10 @@ const manifest = {
   runtimeVersion: version,
   minShellVersion,
   platform,
-  files,
+  dependencies: {
+    strategy: 'link-packaged-runtime-node-modules',
+  },
+  files: files.map(({ sourcePath, ...file }) => file),
   totalSize: files.reduce((sum, file) => sum + file.size, 0),
   releaseNotes: releaseNotes(),
   createdAt: new Date().toISOString(),
@@ -60,7 +67,9 @@ await new Promise((resolve, reject) => {
   archive.on('error', reject);
   archive.pipe(output);
   archive.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' });
-  archive.directory(appDir, 'app');
+  for (const file of files) {
+    archive.file(file.sourcePath, { name: file.path });
+  }
   archive.finalize();
 });
 
