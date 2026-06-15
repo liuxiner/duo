@@ -1,4 +1,4 @@
-import { cp, mkdir, rm } from 'node:fs/promises';
+import { cp, mkdir, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -27,6 +27,24 @@ function runPnpm(args) {
   });
 }
 
+async function removeBinDirs(dir) {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory() && entry.name === '.bin') {
+      await rm(fullPath, { recursive: true, force: true });
+      continue;
+    }
+    if (entry.isDirectory()) await removeBinDirs(fullPath);
+  }
+}
+
 await rm(runtimeDir, { recursive: true, force: true });
 await rm(desktopRuntimeDir, { recursive: true, force: true });
 await rm(path.join(root, 'desktop', 'resources', 'app'), { recursive: true, force: true });
@@ -39,6 +57,7 @@ try {
   await rm(deployDir, { recursive: true, force: true });
   const result = runPnpm([
     '--config.inject-workspace-packages=true',
+    '--config.node-linker=hoisted',
     '--filter',
     '.',
     'deploy',
@@ -51,6 +70,7 @@ try {
     recursive: true,
     verbatimSymlinks: true,
   });
+  await removeBinDirs(path.join(runtimeDir, 'node_modules'));
 } finally {
   await rm(deployDir, { recursive: true, force: true });
 }
