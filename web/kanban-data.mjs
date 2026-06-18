@@ -15,7 +15,7 @@ const GROSS_PROFIT_LABEL = '毛利合计';
 const STORAGE_FEE_PART_LABELS = ['技术服务费', '多货费', '云仓费用', '共享仓费用', '其他仓储费'];
 const MANUAL_INPUT_PREFIX_LABELS = ['SKUID', '产品名称', '仓库'];
 const MANUAL_INPUT_FIELD_LABELS = ['仓库类型', '云仓单价', '产品成本', '云仓费用', '共享仓费用', '其他仓储费', '秒杀坑位费', '扣点比例', '平台扣费', '售后费用系数'];
-const MANUAL_REFERENCE_LABELS = ['模拟商品ID', '模拟成本参考', '模拟报价参考', '模拟排期参考'];
+const MANUAL_REFERENCE_LABELS = ['仓库总库存', '仓库预估总销售数', '模拟商品ID', '模拟商品名称', '模拟成本参考', '模拟报价参考', '模拟排期参考', '成本匹配方式'];
 const MANUAL_INPUT_HEADERS = MANUAL_INPUT_PREFIX_LABELS.concat(MANUAL_INPUT_FIELD_LABELS, MANUAL_REFERENCE_LABELS);
 
 let cachedPayload = null;
@@ -42,6 +42,7 @@ function productNameKey(value) {
   return normalizeText(value)
     .replace(/【[^】]*】/g, '')
     .replace(/[^\p{L}\p{N}]+/gu, '')
+    .replace(/^(?:618|官方正品|正品|新人专享|买抽纸来多多)+/i, '')
     .toLowerCase();
 }
 
@@ -633,6 +634,10 @@ function parseManualInputRows(spreadsheet) {
   });
 }
 
+function parseManualInputValues(values, title = '') {
+  return parseManualInputRows({ sheets: [{ title, values }] });
+}
+
 function hasManualValue(value) {
   return value !== null && value !== undefined && value !== '';
 }
@@ -693,16 +698,74 @@ function parseReferenceRows(spreadsheet) {
   });
 }
 
+function preferReferenceRow(current, next) {
+  if (!current) return next;
+  if (!Number.isFinite(current.productCost) && Number.isFinite(next.productCost)) return next;
+  return current;
+}
+
+function nameBigrams(value) {
+  const key = productNameKey(value);
+  if (key.length <= 1) return key ? new Set([key]) : new Set();
+  const grams = new Set();
+  for (let index = 0; index < key.length - 1; index += 1) grams.add(key.slice(index, index + 2));
+  return grams;
+}
+
+function productNameScore(left, right) {
+  const leftKey = productNameKey(left);
+  const rightKey = productNameKey(right);
+  if (!leftKey || !rightKey) return 0;
+  if (leftKey === rightKey) return 1;
+  if (leftKey.includes(rightKey) || rightKey.includes(leftKey)) {
+    return Math.min(leftKey.length, rightKey.length) / Math.max(leftKey.length, rightKey.length);
+  }
+  const leftGrams = nameBigrams(leftKey);
+  const rightGrams = nameBigrams(rightKey);
+  if (!leftGrams.size || !rightGrams.size) return 0;
+  let overlap = 0;
+  leftGrams.forEach((gram) => {
+    if (rightGrams.has(gram)) overlap += 1;
+  });
+  return (2 * overlap) / (leftGrams.size + rightGrams.size);
+}
+
+function referenceWithMatch(row, matchType, matchScore = 1) {
+  return row ? { ...row, matchType, matchScore } : null;
+}
+
 function buildReferenceIndex(referenceRows) {
   const bySku = new Map();
   const byName = new Map();
   referenceRows.forEach((row) => {
-    if (row.skuId && !bySku.has(normalizeKey(row.skuId))) bySku.set(normalizeKey(row.skuId), row);
-    if (row.nameKey && !byName.has(row.nameKey)) byName.set(row.nameKey, row);
+    if (row.skuId) {
+      const skuKey = normalizeKey(row.skuId);
+      bySku.set(skuKey, preferReferenceRow(bySku.get(skuKey), row));
+    }
+    if (row.nameKey) {
+      byName.set(row.nameKey, preferReferenceRow(byName.get(row.nameKey), row));
+    }
   });
   return {
     find(row) {
-      return bySku.get(normalizeKey(row.skuId)) || byName.get(productNameKey(row.name || row.displayName)) || null;
+      const skuMatch = bySku.get(normalizeKey(row.skuId));
+      if (skuMatch) return referenceWithMatch(skuMatch, 'SKUID匹配');
+      const name = row.name || row.displayName || '';
+      const exactNameMatch = byName.get(productNameKey(name));
+      if (exactNameMatch) return referenceWithMatch(exactNameMatch, '名称精确匹配');
+
+      let best = null;
+      let bestScore = 0;
+      referenceRows.forEach((referenceRow) => {
+        const score = productNameScore(name, referenceRow.name);
+        const adjustedScore = score + (Number.isFinite(referenceRow.productCost) ? 0.02 : 0);
+        if (adjustedScore > bestScore) {
+          best = referenceRow;
+          bestScore = adjustedScore;
+        }
+      });
+      const score = Math.min(bestScore, 1);
+      return score >= 0.72 ? referenceWithMatch(best, '名称相似匹配', score) : null;
     },
   };
 }
@@ -712,17 +775,39 @@ function latestRawRows(rows) {
   return latestDate ? rows.filter((row) => row.date === latestDate) : rows;
 }
 
+function nonBlankValue(...values) {
+  return values.find((value) => normalizeText(value) !== '') ?? '';
+}
+
+function manualFieldValue(label, row, existing, reference) {
+  const existingValue = existing?.rawValues?.[label] ?? '';
+  if (normalizeText(existingValue) !== '') return existingValue;
+  if (label === '仓库类型') return warehouseType(row.warehouse);
+  if (label === '产品成本' && Number.isFinite(reference?.productCost)) return reference.productCost;
+  return '';
+}
+
+function referenceMatchText(reference) {
+  if (!reference) return '';
+  if (reference.matchType === '名称相似匹配') return `${reference.matchType} ${Math.round((reference.matchScore || 0) * 100)}%`;
+  return reference.matchType || '';
+}
+
 function manualInputRowValues(row, existing, reference) {
-  const valueFor = (label) => existing?.rawValues?.[label] ?? '';
+  const contextValue = (label, fallback = '') => nonBlankValue(existing?.rawValues?.[label], fallback);
   return [
     row.skuId,
     row.name || row.displayName || existing?.name || '',
     row.warehouse,
-    ...MANUAL_INPUT_FIELD_LABELS.map(valueFor),
-    reference?.skuId || existing?.rawValues?.['模拟商品ID'] || '',
-    Number.isFinite(reference?.productCost) ? reference.productCost : existing?.rawValues?.['模拟成本参考'] || '',
-    reference?.quote || existing?.rawValues?.['模拟报价参考'] || '',
-    reference?.schedule || existing?.rawValues?.['模拟排期参考'] || '',
+    ...MANUAL_INPUT_FIELD_LABELS.map((label) => manualFieldValue(label, row, existing, reference)),
+    contextValue('仓库总库存', Number.isFinite(row.stock) ? row.stock : ''),
+    contextValue('仓库预估总销售数', Number.isFinite(row.estimate) ? row.estimate : ''),
+    contextValue('模拟商品ID', reference?.skuId || ''),
+    contextValue('模拟商品名称', reference?.name || ''),
+    contextValue('模拟成本参考', Number.isFinite(reference?.productCost) ? reference.productCost : ''),
+    contextValue('模拟报价参考', reference?.quote || ''),
+    contextValue('模拟排期参考', reference?.schedule || ''),
+    contextValue('成本匹配方式', referenceMatchText(reference)),
   ];
 }
 
@@ -767,12 +852,17 @@ async function syncManualInputSheet(manualSpreadsheet, rawRows, manualRows, refe
     if (nameCompare) return nameCompare;
     return normalizeText(a.skuId).localeCompare(normalizeText(b.skuId), 'zh-CN');
   });
+  let referenceMatchedCount = 0;
+  let costFilledCount = 0;
   const values = [MANUAL_INPUT_HEADERS].concat(rows.map((row) => {
     const existing = existingByKey.get(manualInputKey(row));
-    return manualInputRowValues(row, existing, referenceIndex.find(row));
+    const reference = referenceIndex.find(row);
+    if (reference) referenceMatchedCount += 1;
+    if (Number.isFinite(reference?.productCost) && normalizeText(existing?.rawValues?.['产品成本']) === '') costFilledCount += 1;
+    return manualInputRowValues(row, existing, reference);
   }));
   if (matricesEqual(values, manualSpreadsheet.sheets[0].values || [])) {
-    return { skipped: true, reason: 'unchanged', rowCount: rows.length };
+    return { skipped: true, reason: 'unchanged', rowCount: rows.length, referenceMatchedCount, costFilledCount };
   }
   const result = await writeValuesToFeishu(
     manualSpreadsheet.spreadsheetToken,
@@ -780,7 +870,14 @@ async function syncManualInputSheet(manualSpreadsheet, rawRows, manualRows, refe
     withBlankRows(values, 300),
     tenantToken
   );
-  return { skipped: false, rowCount: rows.length, range: result.range };
+  return {
+    skipped: false,
+    rowCount: rows.length,
+    referenceMatchedCount,
+    costFilledCount,
+    range: result.range,
+    syncedManualRows: parseManualInputValues(values, sheet.title),
+  };
 }
 
 function findBoardFieldHeaderRow(values) {
@@ -1577,6 +1674,10 @@ export async function loadKanbanData({ forceRefresh = false } = {}) {
     }
     if (manualInputSyncEnabled) {
       manualInputSync = await syncManualInputSheet(manualSpreadsheet, rawRows, manualRows, referenceRows, tenantToken);
+      if (Array.isArray(manualInputSync.syncedManualRows)) {
+        manualRows = manualInputSync.syncedManualRows;
+        delete manualInputSync.syncedManualRows;
+      }
     }
     rawRows = applyManualInputs(rawRows, manualRows);
   } catch (error) {
