@@ -23,6 +23,7 @@ FEISHU_APP_ID=
 FEISHU_APP_SECRET=
 FEISHU_KANBAN_RAW_URL=https://xcn413dmlc7m.feishu.cn/wiki/EChawQEHEipllvkxqMycZL3Yn7c
 FEISHU_KANBAN_RULES_URL=https://xcn413dmlc7m.feishu.cn/wiki/VY6Pw5l9piRdzIk3mQ4c5icrnib
+FEISHU_KANBAN_MANUAL_URL=https://xcn413dmlc7m.feishu.cn/wiki/FKy1wkDScizSZMknuK7cegQXnZs
 FEISHU_KANBAN_REVIEW_URL=https://xcn413dmlc7m.feishu.cn/wiki/H4QTwsAcJiUzZ5kaHr9cMJHpnCc
 FEISHU_KANBAN_WRITEBACK=true
 ```
@@ -55,18 +56,19 @@ http://127.0.0.1:4174/kanban.html
 
 - Raw data source: `FEISHU_KANBAN_RAW_URL`
 - Kanban rules: `FEISHU_KANBAN_RULES_URL`
+- Manual input table: `FEISHU_KANBAN_MANUAL_URL`
 - API: `http://127.0.0.1:4173/api/kanban-data`
 - 强制刷新 API 缓存：`http://127.0.0.1:4173/api/kanban-data?refresh=1`
 - Review writeback: `FEISHU_KANBAN_REVIEW_URL`
 
-看板页面里的 `飞书表配置` 可以直接修改 raw 数据源、规则表和复盘表 URL。点击 `保存配置` 后会写入 `.env`，并立即重新读取和写回复盘。
+看板页面里的 `飞书表配置` 可以直接修改 raw 数据源、规则表、手动输入表和复盘表 URL。点击 `保存配置` 后会写入 `.env`，并立即重新读取和写回复盘。
 
 看板会按日期拆分数据：
 
 - `days[date].kanban.big`: 大看板，按仓库聚合展示。
-- `days[date].kanban.small`: 小看板，按 SKUID 展示。
+- `days[date].kanban.small`: 单品详情，按 SKUID 展示。
 
-页面顶部是分仓库大看板，底部是分 SKUID 小看板，不包含折线图和 TOP10。
+页面顶部是分仓库大看板，底部是单品详情，不包含折线图和 TOP10。
 
 大看板不单独展示 `技术服务费`，会展示 `总仓储费用`：
 
@@ -74,13 +76,15 @@ http://127.0.0.1:4174/kanban.html
 总仓储费用 = 技术服务费 + 多货费 + 云仓费用 + 共享仓费用 + 其他仓储费
 ```
 
+手动输入表会自动补齐表头和当前 SKU/仓库行，前三列固定为 `SKUID`、`产品名称`、`仓库`，后面是人工填写的成本/费用字段：`仓库类型`、`云仓单价`、`产品成本`、`云仓费用`、`共享仓费用`、`其他仓储费`、`秒杀坑位费`、`扣点比例`、`平台扣费`、`售后费用系数`。已有人工输入会按 `SKUID + 仓库` 保留。
+
 当 `FEISHU_KANBAN_WRITEBACK=true` 时，服务会把看板复盘数据写回 `FEISHU_KANBAN_REVIEW_URL`。每个日期会创建或覆盖一个 worksheet：
 
 ```text
 看板复盘-YYYY-MM-DD
 ```
 
-每个日期复盘 sheet 里包含两个区块：`大看板（分仓库）` 和 `小看板（分SKUID）`。
+每个日期复盘 sheet 里包含两个区块：`大看板（分仓库）` 和 `单品详情（分SKUID）`。
 
 每次写回复盘表后，服务都会把日期型 worksheet 自动按时间降序排列，最新日期在最前面，方便查表。
 

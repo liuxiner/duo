@@ -71,6 +71,7 @@ const APP_CONFIG_FIELDS = [
 const KANBAN_CONFIG_FIELDS = [
   'FEISHU_KANBAN_RAW_URL',
   'FEISHU_KANBAN_RULES_URL',
+  'FEISHU_KANBAN_MANUAL_URL',
   'FEISHU_KANBAN_REVIEW_URL',
   'FEISHU_KANBAN_WRITEBACK',
 ];
@@ -131,6 +132,7 @@ function kanbanConfigFromEnv(values) {
   return {
     rawUrl: values.FEISHU_KANBAN_RAW_URL || KANBAN_DEFAULTS.rawSourceUrl,
     rulesUrl: values.FEISHU_KANBAN_RULES_URL || KANBAN_DEFAULTS.rulesSourceUrl,
+    manualUrl: values.FEISHU_KANBAN_MANUAL_URL || KANBAN_DEFAULTS.manualInputUrl,
     reviewUrl: values.FEISHU_KANBAN_REVIEW_URL || KANBAN_DEFAULTS.reviewTargetUrl,
     writebackEnabled: truthyConfig(values.FEISHU_KANBAN_WRITEBACK, true),
   };
@@ -147,6 +149,9 @@ async function saveKanbanConfig(input) {
   }
   if (Object.prototype.hasOwnProperty.call(input || {}, 'rulesUrl')) {
     updates.FEISHU_KANBAN_RULES_URL = input.rulesUrl;
+  }
+  if (Object.prototype.hasOwnProperty.call(input || {}, 'manualUrl')) {
+    updates.FEISHU_KANBAN_MANUAL_URL = input.manualUrl;
   }
   if (Object.prototype.hasOwnProperty.call(input || {}, 'reviewUrl')) {
     updates.FEISHU_KANBAN_REVIEW_URL = input.reviewUrl;

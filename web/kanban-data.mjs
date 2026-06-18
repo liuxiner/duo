@@ -1,6 +1,8 @@
 const DEFAULT_RAW_SOURCE_URL = 'https://xcn413dmlc7m.feishu.cn/wiki/EChawQEHEipllvkxqMycZL3Yn7c';
 const DEFAULT_RULES_SOURCE_URL = 'https://xcn413dmlc7m.feishu.cn/wiki/VY6Pw5l9piRdzIk3mQ4c5icrnib';
 const DEFAULT_REVIEW_TARGET_URL = 'https://xcn413dmlc7m.feishu.cn/wiki/H4QTwsAcJiUzZ5kaHr9cMJHpnCc';
+const DEFAULT_MANUAL_INPUT_URL = 'https://xcn413dmlc7m.feishu.cn/wiki/FKy1wkDScizSZMknuK7cegQXnZs';
+const DEFAULT_REFERENCE_SOURCE_URL = 'https://xcn413dmlc7m.feishu.cn/wiki/DDEtw7pjAiqsqAkR20vcaMHNnhf?sheet=22pFgN';
 const DEFAULT_THRESHOLD_DAYS = 7;
 const DEFAULT_MAX_ROWS = 5000;
 const DEFAULT_MAX_COLUMNS = 80;
@@ -8,7 +10,13 @@ const CACHE_TTL_MS = 30 * 1000;
 const WRITEBACK_TTL_MS = 5 * 60 * 1000;
 const REVIEW_SHEET_PREFIX = '看板复盘';
 const STORAGE_FEE_LABEL = '总仓储费用';
+const TOTAL_FEE_LABEL = '总费用';
+const GROSS_PROFIT_LABEL = '毛利合计';
 const STORAGE_FEE_PART_LABELS = ['技术服务费', '多货费', '云仓费用', '共享仓费用', '其他仓储费'];
+const MANUAL_INPUT_PREFIX_LABELS = ['SKUID', '产品名称', '仓库'];
+const MANUAL_INPUT_FIELD_LABELS = ['仓库类型', '云仓单价', '产品成本', '云仓费用', '共享仓费用', '其他仓储费', '秒杀坑位费', '扣点比例', '平台扣费', '售后费用系数'];
+const MANUAL_REFERENCE_LABELS = ['模拟商品ID', '模拟成本参考', '模拟报价参考', '模拟排期参考'];
+const MANUAL_INPUT_HEADERS = MANUAL_INPUT_PREFIX_LABELS.concat(MANUAL_INPUT_FIELD_LABELS, MANUAL_REFERENCE_LABELS);
 
 let cachedPayload = null;
 let lastWriteback = null;
@@ -28,6 +36,13 @@ function normalizeHeaderKey(value) {
 
 function normalizeKey(value) {
   return normalizeText(value).toLowerCase();
+}
+
+function productNameKey(value) {
+  return normalizeText(value)
+    .replace(/【[^】]*】/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, '')
+    .toLowerCase();
 }
 
 function isBlankRow(row) {
@@ -347,6 +362,39 @@ const RAW_ALIASES = {
   sales: ['销售数(份)', '销售数（份）', '销售数', '销量', '当日销量', '仓库总销售数'],
   quote: ['商家报价', '报价', '商家报价(元)', '商家报价（元）'],
   price: ['实际均价', '均价', '成交均价', '实际价格', '价格'],
+  settlementPrice: ['当天结算供价', '结算供价', '供价'],
+  inboundQuantity: ['实际入库数量', '入库数量'],
+  warehouseType: ['仓库类型'],
+  cloudUnitPrice: ['云仓单价'],
+  productCost: ['产品成本', '商品成本', '成本'],
+  openingStock: ['初始库存'],
+  centerStock: ['中心仓剩余'],
+  availableStock: ['累计可用库存', '可用库存'],
+  technicalServiceFee: ['技术服务费'],
+  overStockFee: ['多货费'],
+  cloudWarehouseFee: ['云仓费用'],
+  sharedWarehouseFee: ['共享仓费用', '共享仓费'],
+  otherWarehouseFee: ['其他仓储费'],
+  flashSaleSlotFee: ['秒杀坑位费', '坑位费'],
+  deductionRate: ['扣点比例', '扣点'],
+  platformFee: ['平台扣费'],
+  afterSalesFeeRate: ['售后费用系数', '售后系数', '售后费用比例'],
+  afterSalesFee: ['售后费用'],
+};
+
+const MANUAL_ALIASES = {
+  ...RAW_ALIASES,
+  name: ['产品名称', '商品名称', '商品信息', '名称', '品名'],
+  skuId: ['SKUID', 'SKU ID', '商品ID', '商品id', '安如山id', 'sku_id', 'sku'],
+  warehouse: ['仓库', '仓库信息', '仓库名称', '仓库名', '仓库组'],
+};
+
+const REFERENCE_ALIASES = {
+  skuId: ['安如山id', 'SKUID', 'SKU ID', '商品ID', '商品id'],
+  name: ['名称', '商品名称', '产品名称'],
+  productCost: ['成本', '产品成本'],
+  quote: ['报价', '商家报价'],
+  schedule: ['排期'],
 };
 
 const RULE_ALIASES = {
@@ -378,6 +426,46 @@ function headerValue(row, indexes, key) {
 
 function buildIndexes(headers, aliases) {
   return Object.fromEntries(Object.entries(aliases).map(([key, names]) => [key, headerIndex(headers, names)]));
+}
+
+function parseOptionalNumber(row, indexes, key) {
+  return parseNumber(headerValue(row, indexes, key));
+}
+
+function parseOptionalPrice(row, indexes, key) {
+  return parsePrice(headerValue(row, indexes, key));
+}
+
+function parseOptionalRate(row, indexes, key) {
+  const value = headerValue(row, indexes, key);
+  const number = parseNumber(value);
+  if (!Number.isFinite(number)) return null;
+  const text = normalizeText(value);
+  if (/%/.test(text) || Math.abs(number) >= 1) return number / 100;
+  return number;
+}
+
+function parseManualFields(row, indexes) {
+  return {
+    settlementPrice: parseOptionalPrice(row, indexes, 'settlementPrice'),
+    inboundQuantity: parseOptionalNumber(row, indexes, 'inboundQuantity'),
+    warehouseTypeRaw: normalizeText(headerValue(row, indexes, 'warehouseType')),
+    cloudUnitPrice: parseOptionalPrice(row, indexes, 'cloudUnitPrice'),
+    productCost: parseOptionalPrice(row, indexes, 'productCost'),
+    openingStock: parseOptionalNumber(row, indexes, 'openingStock'),
+    centerStock: parseOptionalNumber(row, indexes, 'centerStock'),
+    availableStockManual: parseOptionalNumber(row, indexes, 'availableStock'),
+    technicalServiceFeeManual: parseOptionalPrice(row, indexes, 'technicalServiceFee'),
+    overStockFeeManual: parseOptionalPrice(row, indexes, 'overStockFee'),
+    cloudWarehouseFeeManual: parseOptionalPrice(row, indexes, 'cloudWarehouseFee'),
+    sharedWarehouseFee: parseOptionalPrice(row, indexes, 'sharedWarehouseFee'),
+    otherWarehouseFee: parseOptionalPrice(row, indexes, 'otherWarehouseFee'),
+    flashSaleSlotFee: parseOptionalPrice(row, indexes, 'flashSaleSlotFee'),
+    deductionRate: parseOptionalRate(row, indexes, 'deductionRate'),
+    platformFee: parseOptionalPrice(row, indexes, 'platformFee'),
+    afterSalesFeeRate: parseOptionalRate(row, indexes, 'afterSalesFeeRate'),
+    afterSalesFeeManual: parseOptionalPrice(row, indexes, 'afterSalesFee'),
+  };
 }
 
 function findCalculatedHeaderRow(values) {
@@ -415,7 +503,7 @@ function parseCalculatedSheet(sheet) {
   const values = trimTrailingBlankRows(sheet.values);
   const headerRow = findCalculatedHeaderRow(values);
   if (headerRow < 0) return [];
-  const headers = values[headerRow].map(normalizeText);
+  const headers = normalizeBoardHeaders(values[headerRow].map(normalizeText));
   const indexes = buildIndexes(headers, RAW_ALIASES);
   const fallbackDate = parseDate(sheet.title);
 
@@ -432,6 +520,7 @@ function parseCalculatedSheet(sheet) {
       parsePrice(headerValue(row, indexes, 'quote'))
     );
     const collectedAt = normalizeText(headerValue(row, indexes, 'collectedAt'));
+    const manualFields = parseManualFields(row, indexes);
     if (!date || (!skuId && !name) || (!warehouse && !Number.isFinite(sales) && !Number.isFinite(stock))) return null;
     return {
       date,
@@ -444,6 +533,7 @@ function parseCalculatedSheet(sheet) {
       price,
       collectedAt,
       sourceSheet: sheet.title,
+      ...manualFields,
     };
   }).filter(Boolean);
 }
@@ -501,6 +591,198 @@ function parseRawRows(spreadsheet) {
   });
 }
 
+function manualInputKey(row) {
+  const skuKey = normalizeKey(row.skuId);
+  const warehouseKey = normalizeKey(row.warehouse);
+  return skuKey && warehouseKey ? `${skuKey}::${warehouseKey}` : '';
+}
+
+function findManualInputHeaderRow(values) {
+  return values.findIndex((row) => {
+    const headers = normalizeBoardHeaders(row.map(normalizeText));
+    const indexes = buildIndexes(headers, MANUAL_ALIASES);
+    return indexes.skuId >= 0 && indexes.warehouse >= 0;
+  });
+}
+
+function rawValueMap(headers, row) {
+  return Object.fromEntries(headers.map((header, index) => [header, row[index] ?? '']));
+}
+
+function parseManualInputRows(spreadsheet) {
+  return spreadsheet.sheets.flatMap((sheet) => {
+    const values = trimTrailingBlankRows(sheet.values);
+    const headerRow = findManualInputHeaderRow(values);
+    if (headerRow < 0) return [];
+    const headers = normalizeBoardHeaders(values[headerRow].map(normalizeText));
+    const indexes = buildIndexes(headers, MANUAL_ALIASES);
+    return values.slice(headerRow + 1).map((row) => {
+      const skuId = normalizeText(headerValue(row, indexes, 'skuId'));
+      const name = normalizeText(headerValue(row, indexes, 'name'));
+      const warehouse = normalizeText(headerValue(row, indexes, 'warehouse'));
+      if (!skuId || !warehouse) return null;
+      return {
+        skuId,
+        name,
+        warehouse,
+        ...parseManualFields(row, indexes),
+        rawValues: rawValueMap(headers, row),
+        sourceSheet: sheet.title,
+      };
+    }).filter(Boolean);
+  });
+}
+
+function hasManualValue(value) {
+  return value !== null && value !== undefined && value !== '';
+}
+
+function applyManualInputs(rows, manualRows) {
+  if (!manualRows.length) return rows;
+  const manualByKey = new Map();
+  manualRows.forEach((row) => {
+    const key = manualInputKey(row);
+    if (key && !manualByKey.has(key)) manualByKey.set(key, row);
+  });
+  const manualKeys = [
+    'warehouseTypeRaw',
+    'cloudUnitPrice',
+    'productCost',
+    'cloudWarehouseFeeManual',
+    'sharedWarehouseFee',
+    'otherWarehouseFee',
+    'flashSaleSlotFee',
+    'deductionRate',
+    'platformFee',
+    'afterSalesFeeRate',
+  ];
+  return rows.map((row) => {
+    const manual = manualByKey.get(manualInputKey(row));
+    if (!manual) return { ...row, manualInputMatched: false };
+    const merged = { ...row, manualInputMatched: true };
+    manualKeys.forEach((key) => {
+      if (hasManualValue(manual[key])) merged[key] = manual[key];
+    });
+    return merged;
+  });
+}
+
+function parseReferenceRows(spreadsheet) {
+  return spreadsheet.sheets.flatMap((sheet) => {
+    const values = trimTrailingBlankRows(sheet.values);
+    const headerRow = values.findIndex((row) => {
+      const indexes = buildIndexes(row.map(normalizeText), REFERENCE_ALIASES);
+      return indexes.skuId >= 0 && indexes.name >= 0;
+    });
+    if (headerRow < 0) return [];
+    const headers = values[headerRow].map(normalizeText);
+    const indexes = buildIndexes(headers, REFERENCE_ALIASES);
+    return values.slice(headerRow + 1).map((row) => {
+      const skuId = normalizeText(headerValue(row, indexes, 'skuId'));
+      const name = normalizeText(headerValue(row, indexes, 'name'));
+      if (!skuId && !name) return null;
+      return {
+        skuId,
+        name,
+        nameKey: productNameKey(name),
+        productCost: parseOptionalPrice(row, indexes, 'productCost'),
+        quote: normalizeText(headerValue(row, indexes, 'quote')),
+        schedule: normalizeText(headerValue(row, indexes, 'schedule')),
+      };
+    }).filter(Boolean);
+  });
+}
+
+function buildReferenceIndex(referenceRows) {
+  const bySku = new Map();
+  const byName = new Map();
+  referenceRows.forEach((row) => {
+    if (row.skuId && !bySku.has(normalizeKey(row.skuId))) bySku.set(normalizeKey(row.skuId), row);
+    if (row.nameKey && !byName.has(row.nameKey)) byName.set(row.nameKey, row);
+  });
+  return {
+    find(row) {
+      return bySku.get(normalizeKey(row.skuId)) || byName.get(productNameKey(row.name || row.displayName)) || null;
+    },
+  };
+}
+
+function latestRawRows(rows) {
+  const latestDate = rows.reduce((latest, row) => row.date && row.date > latest ? row.date : latest, '');
+  return latestDate ? rows.filter((row) => row.date === latestDate) : rows;
+}
+
+function manualInputRowValues(row, existing, reference) {
+  const valueFor = (label) => existing?.rawValues?.[label] ?? '';
+  return [
+    row.skuId,
+    row.name || row.displayName || existing?.name || '',
+    row.warehouse,
+    ...MANUAL_INPUT_FIELD_LABELS.map(valueFor),
+    reference?.skuId || existing?.rawValues?.['模拟商品ID'] || '',
+    Number.isFinite(reference?.productCost) ? reference.productCost : existing?.rawValues?.['模拟成本参考'] || '',
+    reference?.quote || existing?.rawValues?.['模拟报价参考'] || '',
+    reference?.schedule || existing?.rawValues?.['模拟排期参考'] || '',
+  ];
+}
+
+function normalizeMatrix(values) {
+  return trimTrailingBlankRows(values).map((row) => {
+    const normalized = row.map((cell) => normalizeText(cell));
+    while (normalized.length && normalized[normalized.length - 1] === '') normalized.pop();
+    return normalized;
+  });
+}
+
+function matricesEqual(left, right) {
+  const a = normalizeMatrix(left);
+  const b = normalizeMatrix(right);
+  if (a.length !== b.length) return false;
+  return a.every((row, rowIndex) => row.length === b[rowIndex].length
+    && row.every((cell, columnIndex) => cell === b[rowIndex][columnIndex]));
+}
+
+async function syncManualInputSheet(manualSpreadsheet, rawRows, manualRows, referenceRows, tenantToken) {
+  const sheet = manualSpreadsheet.sheets[0];
+  if (!sheet?.id) return { skipped: true, reason: 'no-manual-sheet' };
+  const existingByKey = new Map();
+  manualRows.forEach((row) => {
+    const key = manualInputKey(row);
+    if (key && !existingByKey.has(key)) existingByKey.set(key, row);
+  });
+  const referenceIndex = buildReferenceIndex(referenceRows);
+  const rowByKey = new Map();
+  latestRawRows(rawRows).forEach((row) => {
+    const key = manualInputKey(row);
+    if (key && !rowByKey.has(key)) rowByKey.set(key, row);
+  });
+  manualRows.forEach((row) => {
+    const key = manualInputKey(row);
+    if (key && !rowByKey.has(key)) rowByKey.set(key, row);
+  });
+  const rows = Array.from(rowByKey.values()).sort((a, b) => {
+    const warehouseCompare = normalizeText(a.warehouse).localeCompare(normalizeText(b.warehouse), 'zh-CN');
+    if (warehouseCompare) return warehouseCompare;
+    const nameCompare = normalizeText(a.name || a.displayName).localeCompare(normalizeText(b.name || b.displayName), 'zh-CN');
+    if (nameCompare) return nameCompare;
+    return normalizeText(a.skuId).localeCompare(normalizeText(b.skuId), 'zh-CN');
+  });
+  const values = [MANUAL_INPUT_HEADERS].concat(rows.map((row) => {
+    const existing = existingByKey.get(manualInputKey(row));
+    return manualInputRowValues(row, existing, referenceIndex.find(row));
+  }));
+  if (matricesEqual(values, manualSpreadsheet.sheets[0].values || [])) {
+    return { skipped: true, reason: 'unchanged', rowCount: rows.length };
+  }
+  const result = await writeValuesToFeishu(
+    manualSpreadsheet.spreadsheetToken,
+    sheet.id,
+    withBlankRows(values, 300),
+    tenantToken
+  );
+  return { skipped: false, rowCount: rows.length, range: result.range };
+}
+
 function findBoardFieldHeaderRow(values) {
   return values.findIndex((row) => {
     const headers = row.map(normalizeText);
@@ -521,24 +803,43 @@ function fieldKey(label) {
 function fieldKind(label) {
   const key = normalizeHeaderKey(label);
   if (/日期/.test(label)) return 'date';
-  if (/供价|单价|销额|成本|费用|服务费|仓储费|坑位费|扣费|售后|毛利/.test(label)) return 'money';
-  if (/比例|扣点/.test(label)) return 'percent';
+  if (/比例|扣点|系数|利润率/.test(label)) return 'percent';
+  if (/供价|单价|销额|成本|费用|服务费|仓储费|坑位费|扣费|售后|毛利|利润/.test(label)) return 'money';
   if (/天数|周转/.test(label)) return 'days';
-  if (/数量|销量|库存|剩余|日销|入库/.test(label)) return 'number';
+  if (/数量|销量|销售数|库存|剩余|日销|入库/.test(label)) return 'number';
   if (key === 'skuid') return 'text';
   return 'text';
 }
 
+function normalizeBoardHeaders(headers) {
+  const normalizedHeaders = headers.map(normalizeText);
+  const afterSalesIndexes = normalizedHeaders
+    .map((label, index) => ({ label, index }))
+    .filter((item) => normalizeHeaderKey(item.label) === normalizeHeaderKey('售后费用'));
+  if (afterSalesIndexes.length < 2) return normalizedHeaders;
+  const firstAfterSalesIndex = afterSalesIndexes[0].index;
+  return normalizedHeaders.map((label, index) => (
+    index === firstAfterSalesIndex ? '售后费用系数' : label
+  ));
+}
+
 function fieldsFromMarkerRow(headers, row) {
-  return headers
+  const labels = normalizeBoardHeaders(headers);
+  const seenKeys = new Map();
+  return labels
     .map((label, index) => ({ label: normalizeText(label), index }))
     .filter((field) => field.label && selectedField(row[field.index]))
-    .map((field) => ({
-      key: fieldKey(field.label),
-      label: field.label,
-      kind: fieldKind(field.label),
-      note: normalizeText(row[field.index]).replace(/✅/g, '').trim(),
-    }));
+    .map((field) => {
+      const baseKey = fieldKey(field.label);
+      const seenCount = seenKeys.get(baseKey) || 0;
+      seenKeys.set(baseKey, seenCount + 1);
+      return {
+        key: seenCount ? `${baseKey}_${field.index + 1}` : baseKey,
+        label: field.label,
+        kind: fieldKind(field.label),
+        note: normalizeText(row[field.index]).replace(/✅/g, '').trim(),
+      };
+    });
 }
 
 function defaultBoardFields() {
@@ -548,28 +849,79 @@ function defaultBoardFields() {
       { key: '产品实时销量', label: '产品实时销量', kind: 'number', note: '' },
       { key: '产品日销额', label: '产品日销额', kind: 'money', note: '' },
       { key: STORAGE_FEE_LABEL, label: STORAGE_FEE_LABEL, kind: 'money', note: '' },
+      { key: GROSS_PROFIT_LABEL, label: GROSS_PROFIT_LABEL, kind: 'money', note: '' },
     ].map((field) => ({ ...field, key: fieldKey(field.key) })),
     small: [
       { key: 'SKUID', label: 'SKUID', kind: 'text', note: '' },
-      { key: '销售日期', label: '销售日期', kind: 'date', note: '' },
       { key: '产品名称', label: '产品名称', kind: 'text', note: '' },
+      { key: '仓库', label: '仓库', kind: 'text', note: '' },
       { key: '产品实时销量', label: '产品实时销量', kind: 'number', note: '' },
-      { key: '当天剩余库存', label: '当天剩余库存', kind: 'number', note: '' },
+      { key: '仓库总库存', label: '仓库总库存', kind: 'number', note: '' },
+      { key: '仓库预估总销售数', label: '仓库预估总销售数', kind: 'number', note: '' },
       { key: '累计可用库存', label: '累计可用库存', kind: 'number', note: '' },
       { key: '周转天数', label: '周转天数', kind: 'days', note: '' },
     ].map((field) => ({ ...field, key: fieldKey(field.key) })),
   };
 }
 
+function makeBoardField(label, note = '') {
+  return { key: fieldKey(label), label, kind: fieldKind(label), note };
+}
+
 function normalizeBigBoardFields(fields) {
   const storageKeys = new Set(STORAGE_FEE_PART_LABELS.map(fieldKey));
   const storageField = { key: fieldKey(STORAGE_FEE_LABEL), label: STORAGE_FEE_LABEL, kind: 'money', note: '技术服务费 + 多货费 + 云仓费用 + 共享仓费用 + 其他仓储费' };
-  const filtered = fields.filter((field) => !storageKeys.has(field.key) && field.key !== storageField.key);
+  const grossField = { key: fieldKey(GROSS_PROFIT_LABEL), label: GROSS_PROFIT_LABEL, kind: 'money', note: '产品日销额 - 产品成本 * 销量 - 云仓费用 - 共享仓费用 - 秒杀坑位费' };
+  const grossKeys = new Set([grossField.key, fieldKey('毛利'), fieldKey('净利润（毛利）')]);
+  const filtered = fields.filter((field) => !storageKeys.has(field.key) && field.key !== storageField.key && !grossKeys.has(field.key));
   const amountIndex = filtered.findIndex((field) => field.label === '产品日销额');
-  if (amountIndex >= 0) {
-    return filtered.slice(0, amountIndex + 1).concat(storageField, filtered.slice(amountIndex + 1));
+  const withStorage = amountIndex >= 0
+    ? filtered.slice(0, amountIndex + 1).concat(storageField, grossField, filtered.slice(amountIndex + 1))
+    : filtered.concat(storageField, grossField);
+  return withStorage;
+}
+
+function normalizeSmallBoardFields(fields) {
+  const replacements = new Map([
+    [fieldKey('实际入库数量'), makeBoardField('仓库总库存', '来自 raw source 仓库总库存')],
+    [fieldKey('初始库存'), makeBoardField('仓库预估总销售数', '来自 raw source 仓库预估总销售数')],
+  ]);
+  const omittedKeys = new Set([fieldKey('销售日期')]);
+  const normalized = [];
+  const seenLabels = new Set();
+
+  fields.forEach((field) => {
+    if (omittedKeys.has(field.key)) return;
+    const nextField = replacements.get(field.key) || field;
+    const uniqueKey = fieldKey(nextField.label);
+    if (seenLabels.has(uniqueKey)) return;
+    seenLabels.add(uniqueKey);
+    normalized.push({ ...nextField, key: uniqueKey, kind: fieldKind(nextField.label) });
+  });
+
+  const ensureField = (label, afterLabel = '') => {
+    const key = fieldKey(label);
+    if (seenLabels.has(key)) return;
+    const field = makeBoardField(label);
+    const afterIndex = afterLabel ? normalized.findIndex((item) => item.label === afterLabel) : -1;
+    if (afterIndex >= 0) normalized.splice(afterIndex + 1, 0, field);
+    else normalized.push(field);
+    seenLabels.add(key);
+  };
+
+  ensureField('产品名称');
+  ensureField('仓库', '产品名称');
+  const warehouseIndex = normalized.findIndex((item) => item.label === '仓库');
+  const productIndex = normalized.findIndex((item) => item.label === '产品名称');
+  if (warehouseIndex >= 0 && productIndex >= 0 && warehouseIndex !== productIndex + 1) {
+    const [warehouseField] = normalized.splice(warehouseIndex, 1);
+    const nextProductIndex = normalized.findIndex((item) => item.label === '产品名称');
+    normalized.splice(nextProductIndex + 1, 0, warehouseField);
   }
-  return filtered.concat(storageField);
+  ensureField('仓库总库存');
+  ensureField('仓库预估总销售数');
+  ensureField('累计可用库存');
+  return normalized;
 }
 
 function parseBoardFieldRules(spreadsheet) {
@@ -586,14 +938,14 @@ function parseBoardFieldRules(spreadsheet) {
     return {
       sourceSheet: sheet.title,
       headerRow: headerRow + 1,
-      small: small.length ? small : defaults.small,
+      small: normalizeSmallBoardFields(small.length ? small : defaults.small),
       big: normalizeBigBoardFields(big.length ? big : defaults.big),
     };
   }
   return {
     sourceSheet: '',
     headerRow: null,
-    small: defaults.small,
+    small: normalizeSmallBoardFields(defaults.small),
     big: normalizeBigBoardFields(defaults.big),
   };
 }
@@ -746,19 +1098,47 @@ function enrichRows(rows, rules) {
     const safetyGap = stock - safetyStock;
     const dailyGap = stock - expected;
     const status = statusFor({ stock, expected, turnoverDays, thresholdDays });
-    const amount = Number.isFinite(row.price) ? row.sales * row.price : null;
-    const inboundQuantity = null;
-    const openingStock = Number.isFinite(stock) ? stock + row.sales : null;
-    const cloudUnitPrice = row.price;
-    const deductionRate = 0.04;
-    const type = warehouseType(row.warehouse);
+    const settlementPrice = firstFinite(row.settlementPrice, row.price);
+    const amount = Number.isFinite(settlementPrice) ? row.sales * settlementPrice : null;
+    const inboundQuantity = row.inboundQuantity;
+    const openingStock = row.openingStock;
+    const cloudUnitPrice = row.cloudUnitPrice;
+    const deductionRate = row.deductionRate;
+    const type = row.warehouseTypeRaw || warehouseType(row.warehouse);
     const isCloudWarehouse = /云仓/.test(type);
-    const technicalServiceFee = isCloudWarehouse ? row.sales * 0.165 : null;
-    const overStockFee = isCloudWarehouse && Number.isFinite(inboundQuantity) ? (inboundQuantity - row.sales) * 0.1 : null;
-    const cloudWarehouseFee = isCloudWarehouse && Number.isFinite(cloudUnitPrice) ? cloudUnitPrice : null;
-    const sharedWarehouseFee = null;
-    const otherWarehouseFee = null;
+    const technicalServiceFee = row.sales * 0.165;
+    const overStockFee = (stock - row.sales) * 0.1;
+    const cloudWarehouseFee = isCloudWarehouse ? row.cloudWarehouseFeeManual : null;
+    const sharedWarehouseFee = row.sharedWarehouseFee;
+    const otherWarehouseFee = row.otherWarehouseFee;
+    const flashSaleSlotFee = row.flashSaleSlotFee;
+    const platformFee = row.platformFee;
+    const afterSalesFeeRate = row.afterSalesFeeRate;
+    const afterSalesFee = firstFinite(
+      row.afterSalesFeeManual,
+      Number.isFinite(afterSalesFeeRate) && Number.isFinite(amount) ? afterSalesFeeRate * amount : null
+    );
     const totalStorageFee = sumFinite(technicalServiceFee, overStockFee, cloudWarehouseFee, sharedWarehouseFee, otherWarehouseFee);
+    const totalFee = sumFinite(
+      afterSalesFee,
+      platformFee,
+      flashSaleSlotFee,
+      otherWarehouseFee,
+      sharedWarehouseFee,
+      cloudWarehouseFee,
+      overStockFee,
+      technicalServiceFee
+    );
+    const grossProfit = Number.isFinite(amount)
+      ? amount - sumFinite(
+        Number.isFinite(row.productCost) ? row.productCost * row.sales : 0,
+        cloudWarehouseFee,
+        sharedWarehouseFee,
+        flashSaleSlotFee
+      )
+      : null;
+    const profitMargin = Number.isFinite(grossProfit) && Number.isFinite(amount) && amount !== 0 ? grossProfit / amount : null;
+    const availableStock = stock - expected;
     return {
       ...row,
       warehouseGroup: ruleIndex.warehouseGroupFor(row),
@@ -771,25 +1151,29 @@ function enrichRows(rows, rules) {
       tenDayAverageSales,
       thresholdDays,
       amount,
-      settlementPrice: row.price,
+      settlementPrice,
       inboundQuantity,
       warehouseType: type,
       cloudUnitPrice,
-      productCost: null,
+      productCost: row.productCost,
       openingStock,
       dayEndStock: stock,
       centerStock: /中心/.test(row.warehouse) ? stock : null,
-      availableStock: stock,
+      availableStock,
       technicalServiceFee,
       overStockFee,
       cloudWarehouseFee,
       sharedWarehouseFee,
       otherWarehouseFee,
       totalStorageFee,
-      flashSaleSlotFee: null,
+      flashSaleSlotFee,
       deductionRate,
-      platformFee: Number.isFinite(amount) ? amount * deductionRate : null,
-      afterSalesFee: row.sales * 0.01,
+      platformFee,
+      afterSalesFeeRate,
+      afterSalesFee,
+      totalFee,
+      grossProfit,
+      profitMargin,
       status,
       statusLabel: statusLabel(status),
       ruleNote: rule?.note || '',
@@ -816,6 +1200,12 @@ function emptyAggregate(key, name) {
     sharedWarehouseFee: 0,
     otherWarehouseFee: 0,
     totalStorageFee: 0,
+    flashSaleSlotFee: 0,
+    platformFee: 0,
+    afterSalesFee: 0,
+    totalFee: 0,
+    grossProfit: 0,
+    grossProfitRows: 0,
     skuIds: new Set(),
     warehouses: new Set(),
     riskSkuCount: 0,
@@ -841,6 +1231,14 @@ function addToAggregate(aggregate, row) {
   aggregate.sharedWarehouseFee += Number.isFinite(row.sharedWarehouseFee) ? row.sharedWarehouseFee : 0;
   aggregate.otherWarehouseFee += Number.isFinite(row.otherWarehouseFee) ? row.otherWarehouseFee : 0;
   aggregate.totalStorageFee += Number.isFinite(row.totalStorageFee) ? row.totalStorageFee : 0;
+  aggregate.flashSaleSlotFee += Number.isFinite(row.flashSaleSlotFee) ? row.flashSaleSlotFee : 0;
+  aggregate.platformFee += Number.isFinite(row.platformFee) ? row.platformFee : 0;
+  aggregate.afterSalesFee += Number.isFinite(row.afterSalesFee) ? row.afterSalesFee : 0;
+  aggregate.totalFee += Number.isFinite(row.totalFee) ? row.totalFee : 0;
+  if (Number.isFinite(row.grossProfit)) {
+    aggregate.grossProfit += row.grossProfit;
+    aggregate.grossProfitRows += 1;
+  }
   if (row.skuId) aggregate.skuIds.add(row.skuId);
   if (row.warehouse) aggregate.warehouses.add(row.warehouse);
   if (row.status === 'warn' || row.status === 'bad') aggregate.riskSkuCount += 1;
@@ -861,6 +1259,7 @@ function finishAggregate(aggregate) {
   const safetyGap = aggregate.stock - aggregate.safetyStock;
   const achievement = aggregate.expected > 0 ? aggregate.sales / aggregate.expected : null;
   const status = aggregate.criticalSkuCount ? 'bad' : aggregate.riskSkuCount ? 'warn' : aggregate.expected > 0 ? 'ok' : 'info';
+  const profitMargin = aggregate.amount > 0 && aggregate.grossProfitRows ? aggregate.grossProfit / aggregate.amount : null;
   return {
     ...aggregate,
     skuCount: aggregate.skuIds.size,
@@ -870,6 +1269,7 @@ function finishAggregate(aggregate) {
     safetyGap,
     turnoverDays,
     achievement,
+    profitMargin,
     status,
     statusLabel: statusLabel(status),
   };
@@ -910,6 +1310,8 @@ function makeKpis(rows) {
     criticalSkuCount: aggregate.criticalSkuCount,
     turnoverDays: aggregate.turnoverDays,
     amount: aggregate.amountRows ? aggregate.amount : null,
+    grossProfit: aggregate.grossProfitRows ? aggregate.grossProfit : null,
+    profitMargin: aggregate.profitMargin,
   };
 }
 
@@ -918,21 +1320,24 @@ function boardValue(source, label) {
   const isAggregate = Array.isArray(source.skuIds);
   const hasOwn = (property) => Object.prototype.hasOwnProperty.call(source, property);
   const values = {
-    '仓库': source.name || source.warehouse || source.warehouseGroup,
+    '仓库': source.warehouse || source.warehouseGroup || source.name,
     'skuid': source.skuId || source.skuIds?.[0],
     '销售日期': source.date,
     '产品名称': source.displayName || source.name,
-    '当天结算供价': source.settlementPrice || source.price,
+    '当天结算供价': firstFinite(source.settlementPrice, source.price),
     '实际入库数量': source.inboundQuantity,
     '产品实时销量': source.sales,
     '仓库类型': source.warehouseType,
-    '云仓单价': source.cloudUnitPrice || source.price,
+    '云仓单价': source.cloudUnitPrice,
     '产品日销额': source.amount,
     '产品成本': source.productCost,
     '初始库存': source.openingStock,
-    '当天剩余库存': source.dayEndStock || source.stock,
+    '仓库总库存': firstFinite(source.dayEndStock, source.stock),
+    '当天剩余库存': firstFinite(source.dayEndStock, source.stock),
     '中心仓剩余': source.centerStock,
-    '累计可用库存': source.availableStock || source.stock,
+    '仓库预估总销售数': source.expected,
+    '累计可用库存': source.availableStock,
+    '可用库存': source.availableStock,
     '周转天数': source.turnoverDays,
     '前10天平均日销': source.tenDayAverageSales,
     '技术服务费': hasOwn('technicalServiceFee') ? source.technicalServiceFee : Number.isFinite(source.sales) ? source.sales * 0.165 : null,
@@ -949,8 +1354,14 @@ function boardValue(source, label) {
     ),
     '秒杀坑位费': source.flashSaleSlotFee,
     '扣点比例': source.deductionRate,
-    '平台扣费': source.platformFee ?? (Number.isFinite(source.amount) ? source.amount * 0.04 : null),
-    '售后费用': source.afterSalesFee ?? (Number.isFinite(source.sales) ? source.sales * 0.01 : null),
+    '平台扣费': source.platformFee,
+    '售后费用系数': source.afterSalesFeeRate,
+    '售后费用': source.afterSalesFee,
+    [TOTAL_FEE_LABEL]: source.totalFee,
+    '毛利': source.grossProfit,
+    [GROSS_PROFIT_LABEL]: source.grossProfit,
+    '净利润（毛利）': source.grossProfit,
+    '利润率': source.profitMargin,
   };
   if (Object.prototype.hasOwnProperty.call(values, label)) return values[label];
   if (Object.prototype.hasOwnProperty.call(values, key)) return values[key];
@@ -1032,7 +1443,7 @@ function buildReviewValuesForDay(day, refreshedAt) {
     [],
     ...boardSectionValues('大看板（分仓库）', big, bigLeadingHeaders),
     [],
-    ...boardSectionValues('小看板（分SKUID）', small, smallLeadingHeaders),
+    ...boardSectionValues('单品详情（分SKUID）', small, smallLeadingHeaders),
   ];
 }
 
@@ -1135,8 +1546,11 @@ export async function loadKanbanData({ forceRefresh = false } = {}) {
   const rawSourceUrl = process.env.FEISHU_KANBAN_RAW_URL || process.env.FEISHU_WIKI_URL || DEFAULT_RAW_SOURCE_URL;
   const rulesSourceUrl = process.env.FEISHU_KANBAN_RULES_URL || DEFAULT_RULES_SOURCE_URL;
   const reviewTargetUrl = process.env.FEISHU_KANBAN_REVIEW_URL || DEFAULT_REVIEW_TARGET_URL;
+  const manualInputUrl = process.env.FEISHU_KANBAN_MANUAL_URL || DEFAULT_MANUAL_INPUT_URL;
+  const referenceSourceUrl = process.env.FEISHU_KANBAN_REFERENCE_URL || DEFAULT_REFERENCE_SOURCE_URL;
   const writebackEnabled = truthyEnv(process.env.FEISHU_KANBAN_WRITEBACK, true);
-  const cacheKey = `${rawSourceUrl}\n${rulesSourceUrl}\n${reviewTargetUrl}\n${writebackEnabled}`;
+  const manualInputSyncEnabled = truthyEnv(process.env.FEISHU_KANBAN_MANUAL_SYNC, true);
+  const cacheKey = `${rawSourceUrl}\n${rulesSourceUrl}\n${reviewTargetUrl}\n${manualInputUrl}\n${referenceSourceUrl}\n${writebackEnabled}\n${manualInputSyncEnabled}`;
 
   if (!forceRefresh && cachedPayload?.cacheKey === cacheKey && now - cachedPayload.loadedAt < CACHE_TTL_MS) {
     return { ...cachedPayload.payload, cache: { hit: true, loadedAt: cachedPayload.payload.refreshedAt } };
@@ -1145,8 +1559,29 @@ export async function loadKanbanData({ forceRefresh = false } = {}) {
   const tenantToken = await getTenantAccessToken();
   const warnings = [];
   const rawSpreadsheet = await readFeishuSpreadsheet(rawSourceUrl, tenantToken);
-  const rawRows = parseRawRows(rawSpreadsheet);
+  let rawRows = parseRawRows(rawSpreadsheet);
   if (!rawRows.length) warnings.push('raw source 没有解析到可用的商品/仓库日数据。');
+
+  let manualSpreadsheet = null;
+  let manualRows = [];
+  let manualInputSync = { skipped: true, reason: 'not-loaded' };
+  let referenceRows = [];
+  try {
+    manualSpreadsheet = await readFeishuSpreadsheet(manualInputUrl, tenantToken);
+    manualRows = parseManualInputRows(manualSpreadsheet);
+    try {
+      const referenceSpreadsheet = await readFeishuSpreadsheet(referenceSourceUrl, tenantToken);
+      referenceRows = parseReferenceRows(referenceSpreadsheet);
+    } catch (error) {
+      warnings.push(`模拟参考表读取失败，手动输入表仍会补齐空列：${error.message}`);
+    }
+    if (manualInputSyncEnabled) {
+      manualInputSync = await syncManualInputSheet(manualSpreadsheet, rawRows, manualRows, referenceRows, tenantToken);
+    }
+    rawRows = applyManualInputs(rawRows, manualRows);
+  } catch (error) {
+    warnings.push(`手动输入表读取失败，成本/费用字段按空值处理：${error.message}`);
+  }
 
   let rulesSpreadsheet = null;
   let rules = [];
@@ -1175,6 +1610,13 @@ export async function loadKanbanData({ forceRefresh = false } = {}) {
       rulesRowCount: rules.length,
       reviewUrl: reviewTargetUrl,
       writebackEnabled,
+      manualInputUrl,
+      manualInputSheetCount: manualSpreadsheet?.sheetCount || 0,
+      manualInputRowCount: manualRows.length || manualInputSync.rowCount || 0,
+      manualInputSyncEnabled,
+      manualInputSync,
+      referenceUrl: referenceSourceUrl,
+      referenceRowCount: referenceRows.length,
       boardRuleSourceSheet,
       bigBoardFieldCount: boardFields.big.length,
       smallBoardFieldCount: boardFields.small.length,
@@ -1209,4 +1651,5 @@ export const KANBAN_DEFAULTS = {
   rawSourceUrl: DEFAULT_RAW_SOURCE_URL,
   rulesSourceUrl: DEFAULT_RULES_SOURCE_URL,
   reviewTargetUrl: DEFAULT_REVIEW_TARGET_URL,
+  manualInputUrl: DEFAULT_MANUAL_INPUT_URL,
 };
