@@ -743,7 +743,7 @@
           <div class="toolbar">
             <button id="wechat-save-config" type="button">保存微信配置</button>
             <button id="wechat-run-selected" class="success" type="button">多仓库微信上报</button>
-            <button id="wechat-dry-run-selected" class="secondary" type="button">多仓库微信测试</button>
+            <button id="wechat-dry-run-selected" class="secondary" type="button">多仓库微信预览</button>
           </div>
         </div>
         <div id="wechat-config-table-wrap" class="table-wrap">
@@ -828,6 +828,8 @@
     let expandedLogs = { sync: false, report: false, scheduler: false };
     let reportRequestPending = false;
     let wechatEventSource = null;
+    let refreshTimer = null;
+    let refreshInFlight = false;
 
     const desktopApi = window.maoDesktop;
     const desktopSection = document.querySelector('#desktop');
@@ -1114,7 +1116,7 @@
           <td><input class="wide" data-wechat-field="roomName" value="${escapeHtml(item.wechatRoomName || '')}" placeholder="微信群名" ${locked ? 'disabled' : ''}></td>
           <td><input class="wide" data-wechat-field="mentionNames" value="${escapeHtml((item.wechatMentionNames || []).join(', '))}" placeholder="多人用逗号分隔" ${locked ? 'disabled' : ''}></td>
           <td><div class="row-actions">
-            <button class="secondary wechat-test-one" data-id="${escapeHtml(item.id)}" type="button">微信测试</button>
+            <button class="secondary wechat-test-one" data-id="${escapeHtml(item.id)}" type="button">微信预览</button>
             <button class="success wechat-run-one" data-id="${escapeHtml(item.id)}" type="button">微信上报</button>
           </div></td>
         </tr>
@@ -1155,6 +1157,31 @@
       const state = statusText[task.status] || task.status || '空闲';
       const pillClass = task.status === 'failed' ? 'fail' : (task.status === 'idle' || task.status === 'stopped' ? 'off' : '');
       const progress = task.lastDate ? `已处理到 ${task.lastDate}` : (task.status === 'running' ? '正在处理' : '暂无进度');
+      const signature = JSON.stringify({
+        expanded: expandedLogs[key],
+        status: task.status,
+        lastDate: task.lastDate || '',
+        startedAt: task.startedAt || '',
+        finishedAt: task.finishedAt || '',
+        exitCode: task.exitCode ?? '',
+        logsLength: allLogs.length,
+        logsTail: allLogs.slice(-3),
+        previewLength: logs.length,
+        previewTail: logs.slice(-3),
+      });
+      if (panel.dataset.signature === signature) return;
+
+      const currentFull = panel.querySelector('.log-full');
+      const currentPreview = panel.querySelector('.log-lines');
+      const fullWasAtBottom = currentFull
+        ? currentFull.scrollTop + currentFull.clientHeight >= currentFull.scrollHeight - 8
+        : true;
+      const previewWasAtBottom = currentPreview
+        ? currentPreview.scrollTop + currentPreview.clientHeight >= currentPreview.scrollHeight - 8
+        : true;
+      const fullScrollTop = currentFull?.scrollTop || 0;
+      const previewScrollTop = currentPreview?.scrollTop || 0;
+
       panel.innerHTML = `
         <div class="log-summary">
           <div><strong>${title}</strong> <span class="pill ${pillClass}">${state}</span><div class="hint">${progress}</div></div>
@@ -1163,6 +1190,12 @@
         <div class="log-lines">${logs.length ? logs.map((line) => `<div class="log-line">${escapeHtml(line)}</div>`).join('') : '<div class="log-line">暂无日志</div>'}</div>
         <div class="log-full ${expandedLogs[key] ? 'open' : ''}">${allLogs.length ? allLogs.map((line) => `<div class="log-line">${escapeHtml(line)}</div>`).join('') : '<div class="log-line">暂无完整日志</div>'}</div>
       `;
+      panel.dataset.signature = signature;
+
+      const nextFull = panel.querySelector('.log-full');
+      const nextPreview = panel.querySelector('.log-lines');
+      if (nextFull) nextFull.scrollTop = fullWasAtBottom ? nextFull.scrollHeight : fullScrollTop;
+      if (nextPreview) nextPreview.scrollTop = previewWasAtBottom ? nextPreview.scrollHeight : previewScrollTop;
     }
     async function loadConfig() {
       const response = await fetch('/api/report-config');
@@ -1171,19 +1204,40 @@
       renderConfig();
     }
     async function refresh() {
-      const response = await fetch('/api/status');
-      const state = await response.json();
-      const sync = state.sync || { status: 'idle', logs: [], previewLogs: [] };
-      const report = state.report || { status: 'idle', logs: [], previewLogs: [] };
-      const scheduler = state.scheduler || { status: 'idle', logs: [], previewLogs: [] };
-      submit.disabled = sync.status === 'running';
-      syncState.textContent = statusText[sync.status] || sync.status;
-      syncRange.textContent = sync.from ? `${sync.from} 至 ${sync.to}` : '未选择';
-      syncProgress.textContent = sync.lastDate ? `已处理到 ${sync.lastDate}` : (sync.status === 'running' ? '正在同步' : '等待任务');
-      renderLogPanel(syncLogPanel, 'sync', '同步日志', sync);
-      renderLogPanel(reportLogPanel, 'report', '立即上报日志', report);
-      renderLogPanel(schedulerLogPanel, 'scheduler', '定时上报日志', scheduler);
-      updateWechatUI(state.wechat);
+      if (refreshInFlight) return null;
+      refreshInFlight = true;
+      try {
+        const response = await fetch('/api/status');
+        const state = await response.json();
+        const sync = state.sync || { status: 'idle', logs: [], previewLogs: [] };
+        const report = state.report || { status: 'idle', logs: [], previewLogs: [] };
+        const scheduler = state.scheduler || { status: 'idle', logs: [], previewLogs: [] };
+        submit.disabled = sync.status === 'running';
+        syncState.textContent = statusText[sync.status] || sync.status;
+        syncRange.textContent = sync.from ? `${sync.from} 至 ${sync.to}` : '未选择';
+        syncProgress.textContent = sync.lastDate ? `已处理到 ${sync.lastDate}` : (sync.status === 'running' ? '正在同步' : '等待任务');
+        renderLogPanel(syncLogPanel, 'sync', '同步日志', sync);
+        renderLogPanel(reportLogPanel, 'report', '立即上报日志', report);
+        renderLogPanel(schedulerLogPanel, 'scheduler', '定时上报日志', scheduler);
+        updateWechatUI(state.wechat);
+        return state;
+      } finally {
+        refreshInFlight = false;
+      }
+    }
+    function scheduleRefresh(delay = 0) {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(async () => {
+        let nextDelay = 5000;
+        try {
+          const state = await refresh();
+          const tasks = [state?.sync, state?.report, state?.scheduler];
+          nextDelay = tasks.some((task) => task?.status === 'running') ? 1500 : 5000;
+        } catch {
+          nextDelay = 8000;
+        }
+        scheduleRefresh(nextDelay);
+      }, delay);
     }
     async function saveCurrentConfig() {
       syncConfigFromTable();
@@ -1305,6 +1359,8 @@
       const key = event.target.closest('.toggle-log')?.dataset.key;
       if (key) {
         expandedLogs[key] = !expandedLogs[key];
+        const panels = { sync: syncLogPanel, report: reportLogPanel, scheduler: schedulerLogPanel };
+        if (panels[key]) delete panels[key].dataset.signature;
         refresh();
         return;
       }
@@ -1327,8 +1383,7 @@
 
     loadConfig();
     initializeDesktop();
-    refresh();
-    setInterval(refresh, 1500);
+    scheduleRefresh(0);
   </script>
 </body>
 </html>

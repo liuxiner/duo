@@ -15,6 +15,10 @@ function wechatPageScore(page) {
   return 0;
 }
 
+function isDuplicateLoginError(error) {
+  return /onLogin\(\) user had already logined/i.test(error?.message || '');
+}
+
 function installNavigationCompatibility(puppet, {
   cdpUrl = '',
   timeout = DEFAULT_NAVIGATION_TIMEOUT_MS,
@@ -59,6 +63,22 @@ function installNavigationCompatibility(puppet, {
     };
     return browser;
   };
+}
+
+async function findRoomMember(room, targetName) {
+  const target = String(targetName || '').trim();
+  if (!target) return null;
+
+  const direct = await room.member(target).catch(() => null);
+  if (direct) return direct;
+
+  const members = await room.memberAll().catch(() => []);
+  for (const member of members) {
+    const name = member.name();
+    const alias = await member.alias().catch(() => '');
+    if (name === target || alias === target) return member;
+  }
+  return null;
 }
 
 export class WechatyBot {
@@ -144,6 +164,13 @@ export class WechatyBot {
     });
 
     this.bot.on('error', (error) => {
+      if (isDuplicateLoginError(error)) {
+        if (this.loggedInUser) this.status = 'logged-in';
+        this.qrData = null;
+        this.lastError = null;
+        console.warn(`[Wechaty] ignored duplicate login event: ${error.message}`);
+        return;
+      }
       if (/return this\._type|No dialog is showing/.test(error.message)) {
         console.warn(`[Wechaty] ignored transient page dialog error: ${error.message}`);
         return;
@@ -181,18 +208,27 @@ export class WechatyBot {
     this.lastError = null;
   }
 
+  effectiveStatus() {
+    if (this.status === 'error' && this.loggedInUser && isDuplicateLoginError({ message: this.lastError })) {
+      return 'logged-in';
+    }
+    return this.status;
+  }
+
   getStatus() {
+    const status = this.effectiveStatus();
     return {
-      status: this.status,
+      status,
       loggedInUser: this.loggedInUser || null,
-      qrAvailable: this.status === 'scanning' && Boolean(this.qrData),
-      error: this.lastError || null,
+      qrAvailable: status === 'scanning' && Boolean(this.qrData),
+      error: status === 'error' ? (this.lastError || null) : null,
     };
   }
 
   async sendToRoom(roomName, text, imagePaths = [], mentionNames = []) {
-    if (this.status !== 'logged-in') {
-      throw new Error('Wechaty bot is not logged in');
+    const status = this.effectiveStatus();
+    if (status !== 'logged-in') {
+      throw new Error(`Wechaty bot is not logged in (current status: ${status})`);
     }
 
     const room = await this.bot.Room.find({ topic: roomName });
@@ -209,10 +245,15 @@ export class WechatyBot {
     }
 
     const contacts = [];
-    for (const name of mentionNames) {
-      const contact = await room.member(name);
+    const missingMentionNames = [];
+    const normalizedMentionNames = mentionNames.map((name) => String(name).trim()).filter(Boolean);
+    for (const name of normalizedMentionNames) {
+      const contact = await findRoomMember(room, name);
       if (contact) contacts.push(contact);
-      else console.warn(`[Wechaty] member not found in room ${roomName}: ${name}`);
+      else missingMentionNames.push(name);
+    }
+    if (missingMentionNames.length) {
+      throw new Error(`WeChat members not found in room ${roomName}: ${missingMentionNames.join(', ')}`);
     }
 
     if (imageFiles.length > 0) {
@@ -234,5 +275,12 @@ export class WechatyBot {
       }
       console.log(`[Wechaty] sent text to room ${roomName}`);
     }
+
+    return {
+      roomName,
+      imageCount: imageFiles.length,
+      textSent: Boolean(text),
+      mentionNames: normalizedMentionNames,
+    };
   }
 }

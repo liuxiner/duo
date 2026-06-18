@@ -37,6 +37,7 @@ process.env.PDD_CDP_URL ||= 'http://127.0.0.1:9222';
 process.env.WECHATY_CDP_URL ||= 'http://127.0.0.1:9333';
 
 const PORT = Number(process.env.PORT || 4173);
+const LOCAL_WECHAT_BRIDGE_URL = `http://127.0.0.1:${PORT}`;
 const REPORT_CONFIG_PATH = path.resolve(ROOT, process.env.PDD_REPORT_CONFIG_PATH || 'data/report-config.json');
 let activeSync = null;
 let activeReport = null;
@@ -364,6 +365,7 @@ function startReport({ all = false, dryRun = false, ids = [], channel = 'both' }
     env: {
       ...process.env,
       ELECTRON_RUN_AS_NODE: process.versions.electron ? '1' : process.env.ELECTRON_RUN_AS_NODE,
+      WECHAT_BRIDGE_URL: LOCAL_WECHAT_BRIDGE_URL,
     },
     stdio: ['inherit', 'pipe', 'pipe'],
   });
@@ -392,6 +394,7 @@ function startScheduler() {
     env: {
       ...process.env,
       ELECTRON_RUN_AS_NODE: process.versions.electron ? '1' : process.env.ELECTRON_RUN_AS_NODE,
+      WECHAT_BRIDGE_URL: LOCAL_WECHAT_BRIDGE_URL,
     },
     stdio: ['inherit', 'pipe', 'pipe'],
   });
@@ -644,13 +647,13 @@ const server = createServer(async (request, response) => {
         sendJson(response, 400, { error: 'roomName is required' });
         return;
       }
-      await wechatyBot.sendToRoom(
+      const result = await wechatyBot.sendToRoom(
         roomName,
         text || '',
         Array.isArray(imagePaths) ? imagePaths : [],
         Array.isArray(mentionNames) ? mentionNames : [],
       );
-      sendJson(response, 200, { ok: true });
+      sendJson(response, 200, { ok: true, result });
       return;
     }
 

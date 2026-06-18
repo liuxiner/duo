@@ -696,6 +696,12 @@ async function sendToWechat(reportItem, text, imagePaths) {
   if (!reportItem.wechatRoomName) return false;
 
   const bridgeUrl = process.env.WECHAT_BRIDGE_URL || 'http://127.0.0.1:4173';
+  const mentionNames = reportItem.wechatMentionNames || [];
+  console.log(
+    `准备发送到微信群 ${reportItem.wechatRoomName}：${imagePaths.length} 张图片`
+    + `${mentionNames.length ? `，@${mentionNames.join(', ')}` : '，不@人'}。`
+  );
+  console.log(`微信桥接服务：${bridgeUrl}`);
   const response = await fetch(`${bridgeUrl}/api/wechat/send`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -703,18 +709,23 @@ async function sendToWechat(reportItem, text, imagePaths) {
       roomName: reportItem.wechatRoomName,
       text,
       imagePaths,
-      mentionNames: reportItem.wechatMentionNames || [],
+      mentionNames,
     }),
   });
+  const body = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
     const error = new Error(`WeChat send failed: ${body.error || response.statusText}`);
     error.code = 'WECHAT_SEND_FAILED';
     throw error;
   }
 
-  console.log(`已发送到微信群 ${reportItem.wechatRoomName}`);
+  const sent = body.result || {};
+  console.log(
+    `已发送到微信群 ${sent.roomName || reportItem.wechatRoomName}：`
+    + `${sent.imageCount ?? imagePaths.length} 张图片`
+    + `${(sent.mentionNames || mentionNames).length ? `，已@${(sent.mentionNames || mentionNames).join(', ')}` : '，未@人'}。`
+  );
   return true;
 }
 
@@ -774,7 +785,7 @@ async function runConfiguredReports(cfg, token, configs, {
           const wechatText = formatWechatText(item, report.warnings, report.total, report.screenshots.length, beijingTimestamp());
           await sendToWechat(item, wechatText, report.screenshots);
         } else if (dryRun && sendWechat) {
-          console.log(`微信测试目标：${item.wechatRoomName}，@${item.wechatMentionNames.join(', ') || '无'}。`);
+          console.log(`微信预览模式：不会发送到微信群；目标 ${item.wechatRoomName}，@${item.wechatMentionNames.join(', ') || '无'}。`);
         }
         completed = true;
       } catch (error) {
