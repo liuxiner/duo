@@ -4,6 +4,10 @@ function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function shouldPreserveModal(text) {
+  return /报价|价格|商家报价|查看报价信息/.test(normalizeText(text));
+}
+
 function serviceKey(value) {
   try {
     const url = new URL(value);
@@ -58,6 +62,8 @@ export async function closeBlockingModals(page) {
     const title = normalizeText(
       await modal.locator('[class*="MDL_header"]').first().innerText().catch(() => '')
     );
+    const modalText = normalizeText(await modal.innerText().catch(() => title));
+    if (shouldPreserveModal(`${title} ${modalText}`)) continue;
     await clickModalClose(modal, closeButton).catch(async (error) => {
       if (await modal.isVisible({ timeout: 500 }).catch(() => false)) throw error;
     });
@@ -73,6 +79,8 @@ export async function installBlockingModalGuard(page) {
     const title = normalizeText(
       await visibleModal.locator('[class*="MDL_header"]').first().innerText().catch(() => '')
     );
+    const modalText = normalizeText(await visibleModal.innerText().catch(() => title));
+    if (shouldPreserveModal(`${title} ${modalText}`)) return;
     await clickModalClose(visibleModal, closeButton);
     console.log(`Closed blocking PDD modal${title ? `: ${title}` : ''}.`);
   });

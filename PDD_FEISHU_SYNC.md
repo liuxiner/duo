@@ -39,7 +39,7 @@ This pipeline collects product table data from the 多多买菜商家后台, wri
    pnpm run sync:pdd
    ```
 
-   A browser will open. Log in to the PDD merchant backend manually if needed, finish verification, wait for the goods table to load, then press Enter in the terminal. The login session is saved under `.cache/pdd-chrome-profile`.
+   A browser will open. Log in to the PDD merchant backend manually if needed, finish verification, wait for the order management table to load, then press Enter in the terminal. The login session is saved under `.cache/pdd-chrome-profile`.
 
    If the browser stops at a QR code, SMS, captcha, or other security verification page, complete it directly in the opened browser. The script will wait in the terminal and continue only after you press Enter.
 
@@ -128,7 +128,7 @@ If login still gets stuck at `oneredirect` or QR verification, use CDP attach mo
 In that Chrome window, log in to PDD and open:
 
 ```text
-https://mc.pinduoduo.com/ddmc-supplier-product/goods-manage
+https://mc.pinduoduo.com/ddmc-mms/order/management
 ```
 
 Then set:
@@ -191,6 +191,7 @@ For order-management syncs, the script now:
 - Uses Beijing time for `采集时间`, formatted as `YYYY-MM-DD-HH-MM-SS`.
 - Selects yesterday's date range by default with `PDD_SELECT_YESTERDAY=true`.
 - Attempts to set the page size to `PDD_TARGET_PAGE_SIZE=100`.
+- Attempts to reveal masked `商家报价` values by clicking `查看报价信息` before collecting each page.
 - Collects all pages until the page total is reached.
 - Validates collected raw row count against the current query's `共有 N 条`.
 - Writes the calculated template to Feishu:

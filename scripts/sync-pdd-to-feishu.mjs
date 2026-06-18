@@ -13,6 +13,8 @@ import {
 } from './pdd-page-tools.mjs';
 
 const ROOT = process.cwd();
+const DEFAULT_PDD_ORDER_MANAGEMENT_URL = 'https://mc.pinduoduo.com/ddmc-mms/order/management';
+const LEGACY_PDD_GOODS_MANAGE_PATH = '/ddmc-supplier-product/goods-manage';
 const RAW_HEADERS_PREFIX = ['采集时间', '销售日期', '页面', '商品名称', '商品ID'];
 const CALCULATED_HEADERS = ['采集时间', '销售日期', '商品名称', '商品ID', '仓库信息', '仓库总库存', '仓库预估总销售数', '销售数(份)', '商家报价', '实际均价'];
 
@@ -24,6 +26,17 @@ function envBool(value, defaultValue = false) {
 function envInt(value, defaultValue) {
   const number = Number(value);
   return Number.isFinite(number) ? number : defaultValue;
+}
+
+function pddOrderManagementUrl() {
+  const configuredUrl = process.env.PDD_ORDER_MANAGEMENT_URL || process.env.PDD_GOODS_MANAGE_URL || DEFAULT_PDD_ORDER_MANAGEMENT_URL;
+  if (String(configuredUrl).includes(LEGACY_PDD_GOODS_MANAGE_PATH)) {
+    console.warn(
+      `PDD URL points to 商品管理 (${configuredUrl}); using 订货管理 ${DEFAULT_PDD_ORDER_MANAGEMENT_URL} instead.`
+    );
+    return DEFAULT_PDD_ORDER_MANAGEMENT_URL;
+  }
+  return configuredUrl;
 }
 
 async function loadDotEnv(file = '.env') {
@@ -50,7 +63,7 @@ async function loadDotEnv(file = '.env') {
 
 function config() {
   return {
-    pddUrl: process.env.PDD_GOODS_MANAGE_URL || 'https://mc.pinduoduo.com/ddmc-supplier-product/goods-manage',
+    pddUrl: pddOrderManagementUrl(),
     profileDir: path.resolve(ROOT, process.env.PDD_BROWSER_PROFILE_DIR || '.cache/pdd-chrome-profile'),
     browserChannel: process.env.PDD_BROWSER_CHANNEL || '',
     chromiumSandbox: envBool(process.env.PDD_CHROMIUM_SANDBOX, true),
@@ -200,6 +213,27 @@ function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function normalizeHeaderKey(value) {
+  return normalizeText(value)
+    .replace(/（/g, '(')
+    .replace(/）/g, ')')
+    .replace(/\s+/g, '')
+    .toLowerCase();
+}
+
+function recordValue(record, ...headers) {
+  for (const header of headers) {
+    const direct = record[header];
+    if (normalizeText(direct)) return direct;
+  }
+
+  const normalizedHeaders = new Set(headers.map(normalizeHeaderKey));
+  const entry = Object.entries(record).find(([key, value]) => (
+    normalizedHeaders.has(normalizeHeaderKey(key)) && normalizeText(value)
+  ));
+  return entry?.[1] ?? '';
+}
+
 function parseLeadingQuantity(text) {
   const match = normalizeText(text).match(/(-?\d+(?:\.\d+)?)\s*份?/);
   return match ? Number(match[1]) : null;
@@ -233,13 +267,40 @@ function cleanWarehouseText(text) {
   return normalizeText(text).replace(/查看地址/g, '').trim();
 }
 
+function salesQuantitiesFromRecord(record) {
+  const detailed = parseSalesQuantities(recordValue(record, '销售数(份)', '销售数（份）', '销售数'));
+  const fallback = parseSalesQuantities(recordValue(record, '仓库总销售数', '总销售数'));
+  return { detailed, fallback, total: detailed.length ? detailed : fallback };
+}
+
+function pricesFromRecord(record) {
+  return parsePrices(recordValue(record, '商家报价', '报价', '商家报价(元)', '商家报价（元）'));
+}
+
+function summarizeParsedRecords(records) {
+  let salesRows = 0;
+  let fallbackSalesRows = 0;
+  let priceRows = 0;
+  let maskedPriceRows = 0;
+
+  records.forEach((record) => {
+    const quantities = salesQuantitiesFromRecord(record);
+    if (quantities.total.length) salesRows += 1;
+    if (!quantities.detailed.length && quantities.fallback.length) fallbackSalesRows += 1;
+    if (pricesFromRecord(record).length) priceRows += 1;
+    if (/\*{2,}/.test(recordValue(record, '商家报价', '报价'))) maskedPriceRows += 1;
+  });
+
+  return { salesRows, fallbackSalesRows, priceRows, maskedPriceRows };
+}
+
 function calculatedRowsFromRecords(records, collectedAt, salesDate) {
   const groups = new Map();
 
   records.forEach((record) => {
-    const name = record.product?.name || record['商品名称'] || record['商品信息'] || '';
-    const id = record.product?.id || record['商品ID'] || '';
-    const warehouse = cleanWarehouseText(record['仓库信息']);
+    const name = record.product?.name || recordValue(record, '商品名称', '商品信息');
+    const id = record.product?.id || recordValue(record, '商品ID');
+    const warehouse = cleanWarehouseText(recordValue(record, '仓库信息'));
     const key = `${id || name}::${warehouse}`;
     if (!groups.has(key)) {
       groups.set(key, {
@@ -260,17 +321,25 @@ function calculatedRowsFromRecords(records, collectedAt, salesDate) {
     if (!group.id && id) group.id = id;
     if (!group.warehouse && warehouse) group.warehouse = warehouse;
 
-    group.stockTotal = addQuantity(group.stockTotal, parseLeadingQuantity(record['仓库总库存']));
-    group.estimateTotal = addQuantity(group.estimateTotal, parseLeadingQuantity(record['仓库预估总销售数']));
+    group.stockTotal = addQuantity(group.stockTotal, parseLeadingQuantity(recordValue(record, '仓库总库存')));
+    group.estimateTotal = addQuantity(group.estimateTotal, parseLeadingQuantity(recordValue(record, '仓库预估总销售数')));
 
-    const quantities = parseSalesQuantities(record['销售数(份)']);
-    const prices = parsePrices(record['商家报价']);
-    quantities.forEach((quantity) => {
+    const salesQuantities = salesQuantitiesFromRecord(record);
+    const quantitiesForTotal = salesQuantities.total;
+    const prices = pricesFromRecord(record);
+    quantitiesForTotal.forEach((quantity) => {
       if (Number.isFinite(quantity)) group.salesTotal += quantity;
     });
     prices.forEach((price) => group.prices.add(formatPrice(price)));
 
-    quantities.forEach((quantity, index) => {
+    let quantitiesForAverage = salesQuantities.detailed;
+    if (!quantitiesForAverage.length && prices.length === 1) {
+      quantitiesForAverage = quantitiesForTotal;
+    } else if (!quantitiesForAverage.length && prices.length === quantitiesForTotal.length) {
+      quantitiesForAverage = quantitiesForTotal;
+    }
+
+    quantitiesForAverage.forEach((quantity, index) => {
       const price = prices[index] ?? (prices.length === 1 ? prices[0] : null);
       if (Number.isFinite(quantity) && Number.isFinite(price)) {
         group.weightedAmount += quantity * price;
@@ -331,10 +400,10 @@ async function waitForManualLogin(page, cfg) {
     if (isVerification) {
       console.log('The browser appears to be on a login, QR code, or security verification page.');
     } else {
-      console.log('No goods table was detected yet.');
+      console.log('No order management table was detected yet.');
     }
     console.log('Please finish login/scan/verification in the opened browser window.');
-    console.log('After the goods manage table is visible, return here and press Enter.');
+    console.log('After the order management table is visible, return here and press Enter.');
 
     const rl = createInterface({ input, output });
     await rl.question('');
@@ -343,13 +412,13 @@ async function waitForManualLogin(page, cfg) {
     const afterEnterHasTable = await page.locator('table, [data-testid="beast-core-table"]').first().count().catch(() => 0);
     if (afterEnterHasTable > 0) return;
 
-    console.log('Re-opening goods manage page after manual login...');
+    console.log('Re-opening order management page after manual login...');
     await page.goto(cfg.pddUrl, { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
     await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
     await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
   }
 
-  throw new Error('Still could not find the PDD goods table after manual login/verification handoff.');
+  throw new Error('Still could not find the PDD order management table after manual login/verification handoff.');
 }
 
 async function collectCurrentPage(page) {
@@ -416,6 +485,97 @@ async function readTotalCount(page) {
   }).catch(() => null);
 }
 
+async function readMerchantPriceState(page) {
+  return page.evaluate(() => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const tableRoot = document.querySelector('[data-testid="beast-core-table"]') || document;
+    const middleHeader = tableRoot.querySelector('[data-testid="beast-core-table-middle-header"]');
+    const middleBody = tableRoot.querySelector('[data-testid="beast-core-table-middle-body"]');
+    const headerCells = middleHeader
+      ? middleHeader.querySelectorAll('th')
+      : tableRoot.querySelectorAll('thead th');
+    const headers = Array.from(headerCells).map((th) => normalize(th.textContent));
+    const priceIndex = headers.findIndex((header) => header.replace(/\s+/g, '') === '商家报价');
+    const bodyRows = middleBody
+      ? middleBody.querySelectorAll('tbody tr')
+      : tableRoot.querySelectorAll('tbody tr');
+    const priceTexts = priceIndex >= 0
+      ? Array.from(bodyRows).map((row) => normalize(row.querySelectorAll('td')[priceIndex]?.textContent))
+      : [];
+    const revealButtons = Array.from(document.querySelectorAll('a,button,[role="button"]'))
+      .filter((node) => normalize(node.textContent).includes('查看报价信息')).length;
+
+    return {
+      maskedPriceRows: priceTexts.filter((text) => /\*{2,}/.test(text)).length,
+      visiblePriceRows: priceTexts.filter((text) => /[￥¥]?\s*\d+(?:\.\d+)?/.test(text)).length,
+      revealButtons,
+    };
+  }).catch(() => ({ maskedPriceRows: 0, visiblePriceRows: 0, revealButtons: 0 }));
+}
+
+async function confirmPriceDisclosure(page) {
+  const modal = page.locator('[data-testid="beast-core-modal"]:visible')
+    .filter({ hasText: /报价|价格|商家报价|查看报价信息/ })
+    .last();
+  if (!(await modal.count().catch(() => 0))) return false;
+
+  const confirmButton = modal.locator('button, [role="button"], a')
+    .filter({ hasText: /确认|确定|继续|查看|我知道了/ })
+    .last();
+  if (!(await confirmButton.count().catch(() => 0))) return false;
+
+  await confirmButton.click({ timeout: 3000 }).catch(() => confirmButton.dispatchEvent('click'));
+  await page.waitForTimeout(800);
+  return true;
+}
+
+async function revealMaskedPrices(page) {
+  let state = await readMerchantPriceState(page);
+  if (!state.maskedPriceRows && !state.revealButtons) return false;
+  if (!state.revealButtons) {
+    console.warn(`Merchant prices are still masked in ${state.maskedPriceRows} rows, but no 查看报价信息 button was found.`);
+    return false;
+  }
+
+  console.log(`Detected ${state.maskedPriceRows} masked merchant price rows; attempting to reveal prices.`);
+  const maxClicks = Math.min(state.revealButtons, PDD_PAGE_SIZE);
+  let revealedAny = false;
+
+  for (let attempt = 1; attempt <= maxClicks; attempt += 1) {
+    state = await readMerchantPriceState(page);
+    if (!state.maskedPriceRows || !state.revealButtons) break;
+
+    const revealButton = page.locator('a,button,[role="button"]')
+      .filter({ hasText: /查看报价信息/ })
+      .first();
+    if (!(await revealButton.count().catch(() => 0))) break;
+
+    const before = state;
+    await revealButton.click({ timeout: 5000 }).catch(() => revealButton.dispatchEvent('click'));
+    await confirmPriceDisclosure(page);
+    await page.waitForFunction((previous) => {
+      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      const text = normalize(document.querySelector('[data-testid="beast-core-table-middle-body"]')?.textContent);
+      const visiblePriceRows = (text.match(/[￥¥]\s*\d+(?:\.\d+)?/g) || []).length;
+      const maskedPriceRows = (text.match(/\*{2,}/g) || []).length;
+      return visiblePriceRows > previous.visiblePriceRows || maskedPriceRows < previous.maskedPriceRows;
+    }, before, { timeout: 5000 }).catch(() => {});
+
+    const after = await readMerchantPriceState(page);
+    const changed = after.visiblePriceRows > before.visiblePriceRows || after.maskedPriceRows < before.maskedPriceRows;
+    if (changed) revealedAny = true;
+    if (!changed) break;
+  }
+
+  state = await readMerchantPriceState(page);
+  if (revealedAny) {
+    console.log(`Merchant price reveal result: ${state.visiblePriceRows} visible, ${state.maskedPriceRows} still masked.`);
+  } else if (state.maskedPriceRows) {
+    console.warn(`Merchant prices remain masked in ${state.maskedPriceRows} rows after clicking 查看报价信息.`);
+  }
+  return revealedAny;
+}
+
 async function waitForQueryResults(page, salesDate, targetPageSize, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   let stableMatches = 0;
@@ -428,7 +588,7 @@ async function waitForQueryResults(page, salesDate, targetPageSize, timeoutMs = 
       getPddPageSize(page),
     ]);
     const dates = Array.from(new Set(
-      result.records.map((record) => normalizeText(record['销售日期'])).filter(Boolean)
+      result.records.map((record) => normalizeText(recordValue(record, '销售日期'))).filter(Boolean)
     ));
     const pageSize = selectedPageSize || targetPageSize || result.records.length;
     const expectedRows = Number.isFinite(total) ? Math.min(total, pageSize) : null;
@@ -640,14 +800,18 @@ async function collectPddRows(cfg, context) {
   }
   await setPddPageSize(page, PDD_PAGE_SIZE);
   console.log(`Page size set to ${PDD_PAGE_SIZE}.`);
-  const stableQuery = await waitForQueryResults(page, salesDate, PDD_PAGE_SIZE);
+  let stableQuery = await waitForQueryResults(page, salesDate, PDD_PAGE_SIZE);
   const expectedTotal = stableQuery.total;
+  if (await revealMaskedPrices(page)) {
+    stableQuery = { ...stableQuery, result: await collectCurrentPage(page) };
+  }
   console.log(`Query stabilized: ${stableQuery.result.records.length} visible rows, ${expectedTotal ?? 'unknown'} total.`);
 
   const allRecords = [];
   let headers = [];
 
   for (let pageIndex = 1; pageIndex <= cfg.maxPages; pageIndex += 1) {
+    if (pageIndex > 1) await revealMaskedPrices(page);
     const result = pageIndex === 1 ? stableQuery.result : await collectCurrentPage(page);
     if (!headers.length && result.headers.length) headers = result.headers;
     allRecords.push(...result.records);
@@ -658,7 +822,7 @@ async function collectPddRows(cfg, context) {
     if (!hasNext) break;
   }
 
-  const tableDates = Array.from(new Set(allRecords.map((record) => normalizeText(record['销售日期'])).filter(Boolean)));
+  const tableDates = Array.from(new Set(allRecords.map((record) => normalizeText(recordValue(record, '销售日期'))).filter(Boolean)));
   const mismatchedDates = tableDates.filter((date) => date !== salesDate);
   if ((cfg.syncDate || cfg.selectYesterday) && mismatchedDates.length) {
     throw new Error(`Sales date validation failed: expected ${salesDate}, table has ${tableDates.join(', ')}.`);
@@ -666,6 +830,15 @@ async function collectPddRows(cfg, context) {
 
   headers = normalizeHeaders(headers);
   const rawRows = dedupeRows(allRecords.map((record) => normalizeRow(record, headers, collectedAt, salesDate, page.url())));
+  const parseSummary = summarizeParsedRecords(allRecords);
+  console.log(
+    `Parsed sales quantities for ${parseSummary.salesRows}/${allRecords.length} rows`
+    + `${parseSummary.fallbackSalesRows ? ` (${parseSummary.fallbackSalesRows} via 仓库总销售数 fallback)` : ''}; `
+    + `parsed merchant prices for ${parseSummary.priceRows}/${allRecords.length} rows.`
+  );
+  if (parseSummary.maskedPriceRows) {
+    console.warn(`${parseSummary.maskedPriceRows} rows still have masked merchant prices; actual average price cannot be calculated for those rows.`);
+  }
   const calculatedRows = calculatedRowsFromRecords(allRecords, collectedAt, salesDate);
   if (expectedTotal && rawRows.length !== expectedTotal) {
     throw new Error(`PDD row count validation failed: collected ${rawRows.length}, page total ${expectedTotal}.`);
