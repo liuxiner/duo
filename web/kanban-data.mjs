@@ -950,8 +950,8 @@ function defaultBoardFields() {
     ].map((field) => ({ ...field, key: fieldKey(field.key) })),
     small: [
       { key: 'SKUID', label: 'SKUID', kind: 'text', note: '' },
-      { key: '产品名称', label: '产品名称', kind: 'text', note: '' },
       { key: '仓库', label: '仓库', kind: 'text', note: '' },
+      { key: '产品名称', label: '产品名称', kind: 'text', note: '' },
       { key: '产品实时销量', label: '产品实时销量', kind: 'number', note: '' },
       { key: '仓库总库存', label: '仓库总库存', kind: 'number', note: '' },
       { key: '仓库预估总销售数', label: '仓库预估总销售数', kind: 'number', note: '' },
@@ -1006,14 +1006,22 @@ function normalizeSmallBoardFields(fields) {
     seenLabels.add(key);
   };
 
-  ensureField('产品名称');
-  ensureField('仓库', '产品名称');
+  ensureField('SKUID');
+  ensureField('仓库', 'SKUID');
+  ensureField('产品名称', '仓库');
   const warehouseIndex = normalized.findIndex((item) => item.label === '仓库');
-  const productIndex = normalized.findIndex((item) => item.label === '产品名称');
-  if (warehouseIndex >= 0 && productIndex >= 0 && warehouseIndex !== productIndex + 1) {
+  const skuIndex = normalized.findIndex((item) => item.label === 'SKUID');
+  if (warehouseIndex >= 0 && skuIndex >= 0 && warehouseIndex !== skuIndex + 1) {
     const [warehouseField] = normalized.splice(warehouseIndex, 1);
-    const nextProductIndex = normalized.findIndex((item) => item.label === '产品名称');
-    normalized.splice(nextProductIndex + 1, 0, warehouseField);
+    const nextSkuIndex = normalized.findIndex((item) => item.label === 'SKUID');
+    normalized.splice(nextSkuIndex + 1, 0, warehouseField);
+  }
+  const productIndex = normalized.findIndex((item) => item.label === '产品名称');
+  const nextWarehouseIndex = normalized.findIndex((item) => item.label === '仓库');
+  if (productIndex >= 0 && nextWarehouseIndex >= 0 && productIndex !== nextWarehouseIndex + 1) {
+    const [productField] = normalized.splice(productIndex, 1);
+    const finalWarehouseIndex = normalized.findIndex((item) => item.label === '仓库');
+    normalized.splice(finalWarehouseIndex + 1, 0, productField);
   }
   ensureField('仓库总库存');
   ensureField('仓库预估总销售数');
