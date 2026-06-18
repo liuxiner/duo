@@ -1535,7 +1535,7 @@ function attentionForRow({ stock, expected, turnoverDays, thresholdDays }) {
     return {
       severity: 'bad',
       note: '补货',
-      labels: ['累计可用库存'],
+      labels: ['周转天数'],
       reason: '仓库总库存低于仓库预估总销售数',
     };
   }
@@ -1550,7 +1550,7 @@ function attentionForRow({ stock, expected, turnoverDays, thresholdDays }) {
   if (Number.isFinite(turnoverDays) && turnoverDays <= thresholdDays) {
     return {
       severity: 'warn',
-      note: '需关注',
+      note: '关注',
       labels: ['周转天数'],
       reason: '周转天数低于关注阈值',
     };
@@ -1560,8 +1560,8 @@ function attentionForRow({ stock, expected, turnoverDays, thresholdDays }) {
 
 function statusLabel(status) {
   return {
-    bad: '立即补',
-    warn: '需关注',
+    bad: '补货',
+    warn: '关注',
     ok: '充足',
     info: '无预期',
   }[status] || '无预期';

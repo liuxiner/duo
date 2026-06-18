@@ -96,7 +96,7 @@
     input,
     button {
       height: 34px;
-      border-radius: 6px;
+      border-radius: 4px;
       font: inherit;
     }
 
@@ -159,7 +159,7 @@
     .panel,
     .warehouse-card {
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 4px;
       background: var(--panel);
     }
 
@@ -247,9 +247,9 @@
       overflow: auto;
       overscroll-behavior: contain;
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 4px;
       background: #fff;
-      box-shadow: 0 22px 56px rgba(15, 23, 42, .18);
+      box-shadow: 0 16px 36px rgba(15, 23, 42, .16);
       padding: 14px;
     }
 
@@ -290,7 +290,7 @@
 
     .warning {
       border: 1px solid #fde68a;
-      border-radius: 8px;
+      border-radius: 4px;
       background: var(--soft-amber);
       color: var(--amber);
       padding: 9px 10px;
@@ -345,18 +345,18 @@
       align-items: center;
       justify-content: center;
       min-height: 24px;
-      border-radius: 999px;
+      border-radius: 3px;
       padding: 2px 8px;
       font-size: 12px;
       font-weight: 800;
       white-space: nowrap;
     }
 
-    .badge.ok { background: var(--soft-green); color: var(--green); }
-    .badge.warn { background: var(--soft-amber); color: var(--amber); }
+    .badge.ok { background: #f0fdf4; color: var(--green); border: 1px solid #bbf7d0; }
+    .badge.warn { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
     .badge.bad { background: #fff; color: var(--red); border: 1px solid #fecaca; }
-    .badge.info { background: var(--soft-blue); color: var(--blue); }
-    .badge.rule { background: var(--soft-violet); color: var(--violet); }
+    .badge.info { background: #eff6ff; color: var(--blue); border: 1px solid #bfdbfe; }
+    .badge.rule { background: #f5f3ff; color: var(--violet); border: 1px solid #ddd6fe; }
 
     .warehouse-stats {
       display: grid;
@@ -367,7 +367,7 @@
     .stat {
       min-width: 0;
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: 3px;
       background: var(--panel-soft);
       padding: 8px;
     }
@@ -375,8 +375,9 @@
     .stat.profit-stat {
       position: relative;
       min-height: 64px;
-      border-color: #a7f3d0;
-      background: linear-gradient(135deg, #f0fdfa 0%, #f8fafc 100%);
+      border-color: #86efac;
+      border-left: 3px solid #16a34a;
+      background: #f7fef9;
     }
 
     .stat span {
@@ -405,9 +406,10 @@
       display: inline-flex;
       align-items: center;
       min-height: 20px;
-      border-radius: 999px;
-      padding: 2px 7px;
-      background: #d1fae5;
+      border-radius: 3px;
+      padding: 2px 6px;
+      border: 1px solid #bbf7d0;
+      background: #f0fdf4;
       color: #047857;
       font-size: 11px;
       font-weight: 800;
@@ -418,7 +420,7 @@
     .bar {
       height: 8px;
       overflow: hidden;
-      border-radius: 999px;
+      border-radius: 2px;
       background: #f1f5f9;
     }
 
@@ -442,7 +444,7 @@
       overflow: auto;
       max-height: calc(100vh - 330px);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 4px;
     }
 
     table {
@@ -482,11 +484,26 @@
     }
 
     .cell-with-note {
-      display: inline-flex;
+      display: flex;
       align-items: center;
-      gap: 7px;
+      gap: 10px;
       justify-content: flex-end;
+      width: 100%;
       max-width: 100%;
+    }
+
+    .sku-cell-value {
+      display: inline-block;
+      color: #18181b;
+      font-size: 18px;
+      font-weight: 650;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    .cell-with-note .sku-cell-value {
+      min-width: 54px;
+      text-align: right;
     }
 
     .sku-name {
@@ -505,22 +522,24 @@
 
     .sku-alert-note {
       flex: 0 0 auto;
-      border-radius: 999px;
-      padding: 4px 9px;
-      font-size: 12px;
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-size: 15px;
       font-weight: 850;
       line-height: 1.1;
       white-space: nowrap;
     }
 
     .sku-alert-note.bad-note {
-      background: #fff1f2;
+      border: 1px solid #fecaca;
+      background: #fff5f5;
       color: var(--red);
     }
 
     .sku-alert-note.warn-note {
-      background: #fffbeb;
-      color: var(--amber);
+      border: 1px solid #fed7aa;
+      background: #fff7ed;
+      color: #c2410c;
     }
 
     .pos { color: var(--green); font-weight: 750; }
@@ -529,7 +548,7 @@
 
     details {
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 4px;
       background: var(--panel);
     }
 
@@ -565,7 +584,7 @@
     .empty,
     .error {
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 4px;
       background: #fff;
       padding: 16px;
       color: var(--muted);
@@ -856,7 +875,7 @@
       document.getElementById('kpiGrossProfit').textContent = formatMoney(kpis.grossProfit);
       document.getElementById('kpiProfitMargin').textContent = formatPct(kpis.profitMargin);
       document.getElementById('kpiRisk').textContent = formatNum(kpis.riskSkuCount) + ' / ' + formatNum(kpis.skuCount);
-      document.getElementById('kpiRiskHint').textContent = '立即补 ' + formatNum(kpis.criticalSkuCount);
+      document.getElementById('kpiRiskHint').textContent = '补货 ' + formatNum(kpis.criticalSkuCount);
     }
 
     function barWidth(row) {
@@ -881,7 +900,7 @@
             { label: '毛利合计', display: formatMoney(metrics.grossProfit), subDisplay: formatPct(metrics.profitMargin), className: 'profit-stat' },
           ];
           const stockWarningText = '总 SKU ' + formatNum(metrics.skuCount) + ' 个 · 库存预警 ' + formatNum(metrics.riskSkuCount) + ' 个'
-            + (num(metrics.criticalSkuCount) ? ' · 立即补货 ' + formatNum(metrics.criticalSkuCount) + ' 个' : '');
+            + (num(metrics.criticalSkuCount) ? ' · 补货 ' + formatNum(metrics.criticalSkuCount) + ' 个' : '');
           return (
         '<button type="button" class="warehouse-card ' + esc(row.status) + (state.warehouse === row.key ? ' active' : '') + '" data-warehouse="' + esc(row.key) + '">' +
           '<div class="warehouse-title"><strong>' + esc(row.warehouse || row.name) + '</strong><span class="badge ' + esc(row.status) + '">' + esc(row.statusLabel) + '</span></div>' +
@@ -967,6 +986,11 @@
       return '<small class="sku-alert-note ' + noteClass + '" title="' + esc(attention.reason || '') + '">' + esc(attention.note || '') + '</small>';
     }
 
+    function renderedCellValue(text, field) {
+      const isPlainText = field.kind === 'text' || field.kind === 'date';
+      return isPlainText ? esc(text) : '<span class="sku-cell-value">' + esc(text) + '</span>';
+    }
+
     function renderSkuCell(row, field) {
       const cell = (row.cells || []).find((item) => item.key === field.key);
       const text = cell?.display ?? '-';
@@ -975,7 +999,7 @@
       if (field.label === '产品名称') {
         return '<td><div class="sku-name" title="' + esc(text) + '"><span class="sku-name-text">' + esc(text) + '</span>' + note + '</div></td>';
       }
-      return '<td><div' + (note ? ' class="cell-with-note"' : '') + '>' + esc(text) + note + '</div></td>';
+      return '<td><div' + (note ? ' class="cell-with-note"' : '') + '>' + renderedCellValue(text, field) + note + '</div></td>';
     }
 
     function renderSkuTable() {
