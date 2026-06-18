@@ -1,0 +1,912 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>宁波多多飞书实时看板</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f6f8;
+      --panel: #ffffff;
+      --panel-soft: #fafafa;
+      --text: #18181b;
+      --muted: #71717a;
+      --line: #e4e4e7;
+      --line-strong: #d4d4d8;
+      --blue: #2563eb;
+      --green: #15803d;
+      --red: #b42318;
+      --amber: #a16207;
+      --violet: #6d28d9;
+      --soft-blue: #eff6ff;
+      --soft-green: #ecfdf3;
+      --soft-red: #fef3f2;
+      --soft-amber: #fffbeb;
+      --soft-violet: #f5f3ff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 4;
+      border-bottom: 1px solid var(--line);
+      background: rgba(245, 246, 248, .94);
+      backdrop-filter: blur(10px);
+    }
+
+    .wrap {
+      width: min(1520px, calc(100vw - 28px));
+      margin: 0 auto;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      min-height: 76px;
+      padding: 10px 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: end;
+      justify-content: flex-end;
+      gap: 9px;
+    }
+
+    label {
+      display: grid;
+      gap: 5px;
+      color: #3f3f46;
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    select,
+    input,
+    button {
+      height: 34px;
+      border-radius: 6px;
+      font: inherit;
+    }
+
+    select,
+    input {
+      min-width: 150px;
+      border: 1px solid var(--line-strong);
+      background: #fff;
+      color: var(--text);
+      padding: 0 10px;
+    }
+
+    .search {
+      min-width: 260px;
+    }
+
+    button {
+      border: 1px solid #1d4ed8;
+      background: var(--blue);
+      color: white;
+      padding: 0 12px;
+      font-weight: 750;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    button:hover { filter: brightness(.97); }
+    button:disabled { opacity: .55; cursor: wait; }
+    button.secondary {
+      border-color: var(--line-strong);
+      background: #fff;
+      color: #27272a;
+    }
+
+    main {
+      display: grid;
+      gap: 14px;
+      padding: 16px 0 26px;
+    }
+
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(140px, 1fr));
+      gap: 10px;
+    }
+
+    .metric,
+    .panel,
+    .warehouse-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .metric {
+      min-height: 86px;
+      padding: 12px;
+    }
+
+    .metric .label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .metric .value {
+      margin-top: 6px;
+      font-size: 24px;
+      font-weight: 800;
+      line-height: 1.1;
+    }
+
+    .metric .hint {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .panel {
+      padding: 14px;
+      min-width: 0;
+    }
+
+    .config-grid {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(220px, 1fr) auto auto;
+      gap: 9px;
+      align-items: end;
+    }
+
+    .config-grid label,
+    .config-grid input {
+      min-width: 0;
+      width: 100%;
+    }
+
+    .toggle-label {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 8px;
+      min-height: 34px;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .toggle-label input {
+      width: auto;
+      min-width: 0;
+      height: 18px;
+      margin: 0;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+
+    .status-line {
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .warnings {
+      display: grid;
+      gap: 7px;
+      margin-bottom: 12px;
+    }
+
+    .warning {
+      border: 1px solid #fde68a;
+      border-radius: 8px;
+      background: var(--soft-amber);
+      color: var(--amber);
+      padding: 9px 10px;
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .warehouse-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(230px, 1fr));
+      gap: 10px;
+      align-items: start;
+    }
+
+    .warehouse-card {
+      display: grid;
+      align-content: start;
+      gap: 10px;
+      width: 100%;
+      height: auto;
+      min-height: 214px;
+      padding: 13px;
+      color: var(--text);
+      text-align: left;
+      box-shadow: none;
+    }
+
+    .warehouse-card.active {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 2px #dbeafe;
+    }
+
+    .warehouse-title {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 28px;
+    }
+
+    .warehouse-title strong {
+      font-size: 15px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 24px;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .ok { background: var(--soft-green); color: var(--green); }
+    .warn { background: var(--soft-amber); color: var(--amber); }
+    .bad { background: var(--soft-red); color: var(--red); }
+    .info { background: var(--soft-blue); color: var(--blue); }
+    .rule { background: var(--soft-violet); color: var(--violet); }
+
+    .warehouse-stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .stat {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-soft);
+      padding: 8px;
+    }
+
+    .stat span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .stat strong {
+      display: block;
+      margin-top: 3px;
+      font-size: 16px;
+      line-height: 1.1;
+      overflow-wrap: anywhere;
+    }
+
+    .bar {
+      height: 8px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #f1f5f9;
+    }
+
+    .bar > i {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--green);
+    }
+
+    .warehouse-card.bad .bar > i { background: var(--red); }
+    .warehouse-card.warn .bar > i { background: var(--amber); }
+    .warehouse-card.info .bar > i { background: var(--blue); }
+
+    .table-wrap {
+      overflow: auto;
+      max-height: calc(100vh - 330px);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    table {
+      width: 100%;
+      min-width: 1240px;
+      border-collapse: separate;
+      border-spacing: 0;
+      background: #fff;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 9px 10px;
+      text-align: right;
+      vertical-align: middle;
+      white-space: nowrap;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #fafafa;
+      color: #3f3f46;
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    td:first-child,
+    th:first-child,
+    td:nth-child(2),
+    th:nth-child(2),
+    td:nth-child(3),
+    th:nth-child(3) {
+      text-align: left;
+    }
+
+    .sku-name {
+      max-width: 390px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .pos { color: var(--green); font-weight: 750; }
+    .neg { color: var(--red); font-weight: 750; }
+    .muted { color: var(--muted); }
+
+    details {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      cursor: pointer;
+      font-weight: 800;
+    }
+
+    .json-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 0 14px 12px;
+    }
+
+    pre {
+      max-height: 360px;
+      overflow: auto;
+      margin: 0;
+      border-top: 1px solid var(--line);
+      background: #18181b;
+      color: #f4f4f5;
+      padding: 12px 14px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .empty,
+    .error {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 16px;
+      color: var(--muted);
+    }
+
+    .error {
+      border-color: #fecaca;
+      background: var(--soft-red);
+      color: var(--red);
+      font-weight: 700;
+    }
+
+    @media (max-width: 1280px) {
+      .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .config-grid { grid-template-columns: 1fr 1fr; }
+      .warehouse-grid { grid-template-columns: repeat(2, minmax(230px, 1fr)); }
+    }
+
+    @media (max-width: 820px) {
+      .wrap { width: min(100vw - 16px, 1520px); }
+      .topbar { align-items: stretch; flex-direction: column; }
+      .controls { justify-content: stretch; }
+      label, select, input, button { width: 100%; min-width: 0; }
+      .config-grid { grid-template-columns: 1fr; }
+      .toggle-label input { width: auto; }
+      .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .warehouse-grid { grid-template-columns: 1fr; }
+      .panel-head { align-items: flex-start; flex-direction: column; }
+    }
+
+    @media (max-width: 520px) {
+      .kpis { grid-template-columns: 1fr; }
+      .warehouse-stats { grid-template-columns: 1fr; }
+      h1 { font-size: 20px; }
+      .metric .value { font-size: 22px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap topbar">
+      <div>
+        <h1>宁波多多飞书实时看板</h1>
+        <div id="sourceStatus" class="subtitle">读取飞书实时数据</div>
+      </div>
+      <div class="controls">
+        <label>日期 <select id="dateSelect"></select></label>
+        <label>仓库 <select id="warehouseSelect"></select></label>
+        <label>搜索 <input id="searchInput" class="search" placeholder="SKUID / 商品 / 仓库"></label>
+        <button id="refreshButton" type="button">刷新</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div id="message"></div>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>飞书表配置</h2>
+        <div id="configStatus" class="status-line">-</div>
+      </div>
+      <div class="config-grid">
+        <label>原始数据 <input id="rawUrlInput" placeholder="raw source URL"></label>
+        <label>规则表 <input id="rulesUrlInput" placeholder="rules URL"></label>
+        <label>复盘表 <input id="reviewUrlInput" placeholder="review target URL"></label>
+        <label class="toggle-label"><span>写回复盘</span><input id="writebackInput" type="checkbox"></label>
+        <button id="saveConfigButton" type="button">保存配置</button>
+      </div>
+    </section>
+
+    <section class="kpis" aria-label="关键指标">
+      <div class="metric"><div class="label">当日销量</div><div id="kpiSales" class="value">-</div><div id="kpiSalesHint" class="hint">-</div></div>
+      <div class="metric"><div class="label">剩余库存</div><div id="kpiStock" class="value">-</div><div class="hint">日末仓库库存合计</div></div>
+      <div class="metric"><div class="label">预估日销</div><div id="kpiExpected" class="value">-</div><div class="hint">规则优先，其次飞书预估</div></div>
+      <div class="metric"><div class="label">风险 SKU</div><div id="kpiRisk" class="value">-</div><div id="kpiRiskHint" class="hint">-</div></div>
+      <div class="metric"><div class="label">仓库 / SKU</div><div id="kpiScope" class="value">-</div><div class="hint">当日有效数据范围</div></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>仓库看板</h2>
+        <div id="warehouseSummary" class="status-line">-</div>
+      </div>
+      <div id="warehouseGrid" class="warehouse-grid"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>SKUID 看板</h2>
+        <div id="skuSummary" class="status-line">-</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr id="skuHead"></tr></thead>
+          <tbody id="skuBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <details>
+      <summary>
+        <span>当日数据包</span>
+        <span id="jsonSummary" class="status-line">-</span>
+      </summary>
+      <div class="json-actions">
+        <button id="copyJsonButton" class="secondary" type="button">复制 JSON</button>
+        <button id="downloadJsonButton" class="secondary" type="button">下载 JSON</button>
+      </div>
+      <pre id="dayJson">{}</pre>
+    </details>
+  </main>
+
+  <script>
+    const state = {
+      data: null,
+      config: null,
+      date: '',
+      warehouse: 'all',
+      query: '',
+      sort: '产品实时销量',
+      dir: 'desc',
+      loading: false,
+    };
+
+    const fmt = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 });
+    const money = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    const pct = new Intl.NumberFormat('zh-CN', { style: 'percent', maximumFractionDigits: 0 });
+    const statusRank = { bad: 0, warn: 1, info: 2, ok: 3 };
+
+    function num(value) {
+      return Number.isFinite(value) ? value : 0;
+    }
+
+    function formatNum(value) {
+      return Number.isFinite(value) ? fmt.format(value) : '-';
+    }
+
+    function formatMoney(value) {
+      return Number.isFinite(value) ? '￥' + money.format(value) : '-';
+    }
+
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+    }
+
+    function day() {
+      return state.data?.days?.[state.date] || { kpis: {}, warehouseRows: [], skuRows: [], warehouseSkuRows: [] };
+    }
+
+    function dateText(value) {
+      return String(value || '').replace(/^(\d{4})-(\d{2})-(\d{2})$/, '$2/$3');
+    }
+
+    function showMessage(html, kind = '') {
+      const node = document.getElementById('message');
+      node.innerHTML = html ? '<div class="' + (kind || 'empty') + '">' + html + '</div>' : '';
+    }
+
+    function renderWarnings() {
+      const warnings = state.data?.warnings || [];
+      if (!warnings.length) return '';
+      return '<div class="warnings">' + warnings.map((warning) => '<div class="warning">' + esc(warning) + '</div>').join('') + '</div>';
+    }
+
+    function renderConfig() {
+      const config = state.config || {};
+      document.getElementById('rawUrlInput').value = config.rawUrl || '';
+      document.getElementById('rulesUrlInput').value = config.rulesUrl || '';
+      document.getElementById('reviewUrlInput').value = config.reviewUrl || '';
+      document.getElementById('writebackInput').checked = config.writebackEnabled !== false;
+      document.getElementById('configStatus').textContent = config.reviewUrl ? '复盘表已配置' : '-';
+    }
+
+    async function loadConfig() {
+      const response = await fetch('/api/kanban-config', { cache: 'no-store' });
+      const config = await response.json();
+      if (!response.ok || config.error) throw new Error(config.error || '飞书表配置读取失败');
+      state.config = config;
+      renderConfig();
+    }
+
+    async function saveConfig() {
+      const button = document.getElementById('saveConfigButton');
+      button.disabled = true;
+      button.textContent = '保存中';
+      document.getElementById('configStatus').textContent = '保存中';
+      try {
+        const response = await fetch('/api/kanban-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+          body: JSON.stringify({
+            rawUrl: document.getElementById('rawUrlInput').value.trim(),
+            rulesUrl: document.getElementById('rulesUrlInput').value.trim(),
+            reviewUrl: document.getElementById('reviewUrlInput').value.trim(),
+            writebackEnabled: document.getElementById('writebackInput').checked,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || '飞书表配置保存失败');
+        state.config = payload.config;
+        renderConfig();
+        document.getElementById('configStatus').textContent = '已保存';
+        await loadData(true);
+      } catch (error) {
+        document.getElementById('configStatus').textContent = error.message;
+      } finally {
+        button.disabled = false;
+        button.textContent = '保存配置';
+      }
+    }
+
+    async function loadData(forceRefresh = false) {
+      if (state.loading) return;
+      state.loading = true;
+      const button = document.getElementById('refreshButton');
+      button.disabled = true;
+      button.textContent = '刷新中';
+      try {
+        const response = await fetch('/api/kanban-data' + (forceRefresh ? '?refresh=1' : ''), { cache: 'no-store' });
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || '看板数据读取失败');
+        state.data = payload;
+        window.KANBAN_DAILY_DATA = payload.days || {};
+        window.KANBAN_SOURCE = payload.source || {};
+        if (!state.date || !payload.dates.includes(state.date)) state.date = payload.dates[payload.dates.length - 1] || '';
+        if (!state.date) showMessage('没有可展示的日期数据。');
+        render();
+      } catch (error) {
+        showMessage(esc(error.message), 'error');
+      } finally {
+        state.loading = false;
+        button.disabled = false;
+        button.textContent = '刷新';
+      }
+    }
+
+    function renderDateSelect() {
+      const select = document.getElementById('dateSelect');
+      const dates = state.data?.dates || [];
+      select.innerHTML = dates.map((date) => '<option value="' + esc(date) + '">' + esc(date) + '</option>').join('');
+      select.value = state.date;
+    }
+
+    function renderWarehouseSelect() {
+      const select = document.getElementById('warehouseSelect');
+      const rows = day().warehouseRows || [];
+      const options = ['<option value="all">全部仓库</option>'].concat(rows.map((row) => (
+        '<option value="' + esc(row.key) + '">' + esc(row.name) + '</option>'
+      )));
+      select.innerHTML = options.join('');
+      if (!['all', ...rows.map((row) => row.key)].includes(state.warehouse)) state.warehouse = 'all';
+      select.value = state.warehouse;
+    }
+
+    function renderSourceStatus() {
+      const source = state.data?.source;
+      const refreshed = state.data?.refreshedAt ? new Date(state.data.refreshedAt).toLocaleString('zh-CN', { hour12: false }) : '-';
+      document.getElementById('sourceStatus').textContent = source
+        ? 'raw ' + source.rawRowCount + ' 行 · 大看板 ' + source.bigBoardFieldCount + ' 字段 · 小看板 ' + source.smallBoardFieldCount + ' 字段 · ' + refreshed
+        : '读取飞书实时数据';
+    }
+
+    function renderKpis() {
+      const kpis = day().kpis || {};
+      document.getElementById('kpiSales').textContent = formatNum(kpis.sales);
+      document.getElementById('kpiSalesHint').textContent = state.date ? dateText(state.date) + ' 销量合计' : '-';
+      document.getElementById('kpiStock').textContent = formatNum(kpis.stock);
+      document.getElementById('kpiExpected').textContent = formatNum(kpis.expected);
+      document.getElementById('kpiRisk').textContent = formatNum(kpis.riskSkuCount);
+      document.getElementById('kpiRiskHint').textContent = '立即补 ' + formatNum(kpis.criticalSkuCount);
+      document.getElementById('kpiScope').textContent = formatNum(kpis.warehouseCount) + ' / ' + formatNum(kpis.skuCount);
+    }
+
+    function barWidth(row) {
+      if (!Number.isFinite(row.achievement)) return 0;
+      return Math.max(3, Math.min(100, row.achievement * 100));
+    }
+
+    function renderWarehouseCards() {
+      const current = day();
+      const rows = current.kanban?.big?.rows || [];
+      const metricByKey = new Map((current.warehouseRows || []).map((row) => [row.key, row]));
+      document.getElementById('warehouseSummary').textContent = rows.length
+        ? rows.length + ' 个仓库 · 风险 SKU ' + (current.warehouseRows || []).reduce((sum, row) => sum + num(row.riskSkuCount), 0)
+        : '-';
+      document.getElementById('warehouseGrid').innerHTML = rows.length ? rows.map((row) => (
+        (() => {
+          const metrics = metricByKey.get(row.key) || {};
+          const statCells = row.cells.filter((cell) => cell.kind !== 'text' && cell.kind !== 'date').slice(0, 6);
+          return (
+        '<button type="button" class="warehouse-card ' + esc(row.status) + (state.warehouse === row.key ? ' active' : '') + '" data-warehouse="' + esc(row.key) + '">' +
+          '<div class="warehouse-title"><strong>' + esc(row.warehouse || row.name) + '</strong><span class="badge ' + esc(row.status) + '">' + esc(row.statusLabel) + '</span></div>' +
+          '<div class="warehouse-stats">' +
+            statCells.map((cell) => '<div class="stat"><span>' + esc(cell.label) + '</span><strong>' + esc(cell.display) + '</strong></div>').join('') +
+          '</div>' +
+          '<div class="bar" aria-hidden="true"><i style="width:' + barWidth(metrics) + '%"></i></div>' +
+          '<div class="status-line">SKU ' + formatNum(metrics.skuCount) + ' · 风险 ' + formatNum(metrics.riskSkuCount) + ' · 距安全线 ' + signed(metrics.safetyGap) + '</div>' +
+        '</button>'
+          );
+        })()
+      )).join('') : '<div class="empty">没有仓库数据。</div>';
+
+      document.querySelectorAll('.warehouse-card[data-warehouse]').forEach((card) => {
+        card.addEventListener('click', () => {
+          state.warehouse = card.dataset.warehouse || 'all';
+          render();
+        });
+      });
+    }
+
+    function rowName(row) {
+      return row.name || row.displayName || row.skuName || row.skuId || '-';
+    }
+
+    function rowSku(row) {
+      return row.skuId || row.skuIds?.[0] || row.key || '-';
+    }
+
+    function rowWarehouse(row) {
+      if (row.warehouse) return row.warehouseGroup && row.warehouseGroup !== row.warehouse
+        ? row.warehouseGroup + ' / ' + row.warehouse
+        : row.warehouse;
+      return (row.warehouses || []).join(' / ') || '-';
+    }
+
+    function rowPrice(row) {
+      if (Number.isFinite(row.price)) return row.price;
+      return Number.isFinite(row.amount) && row.sales > 0 ? row.amount / row.sales : null;
+    }
+
+    function selectedSkuRows() {
+      const current = day();
+      let rows = current.kanban?.small?.rows || [];
+      if (state.warehouse !== 'all') rows = rows.filter((row) => normalizeRowKey(row.warehouseGroup || row.warehouse) === state.warehouse);
+      const query = state.query.toLowerCase();
+      if (query) {
+        rows = rows.filter((row) => {
+          return [rowSku(row), rowName(row), rowWarehouse(row), ...(row.cells || []).map((cell) => cell.display)]
+            .some((value) => String(value || '').toLowerCase().includes(query));
+        });
+      }
+      return sortRows(rows);
+    }
+
+    function normalizeRowKey(value) {
+      return String(value || '').toLowerCase();
+    }
+
+    function signed(value) {
+      if (!Number.isFinite(value)) return '-';
+      const cls = value >= 0 ? 'pos' : 'neg';
+      const prefix = value > 0 ? '+' : '';
+      return '<span class="' + cls + '">' + prefix + formatNum(value) + '</span>';
+    }
+
+    function sortValue(row, key) {
+      if (key === 'skuId') return rowSku(row);
+      if (key === 'name') return rowName(row);
+      if (key === 'warehouse') return rowWarehouse(row);
+      if (key === 'price') return rowPrice(row);
+      if (key === 'status') return statusRank[row.status] ?? 9;
+      if (key === 'hasRule') return row.hasRule ? 1 : 0;
+      const cell = (row.cells || []).find((item) => item.key === key || item.label === key);
+      return cell ? cell.value : row[key];
+    }
+
+    function sortRows(rows) {
+      return [...rows].sort((a, b) => {
+        const av = sortValue(a, state.sort);
+        const bv = sortValue(b, state.sort);
+        let result;
+        if (typeof av === 'string' || typeof bv === 'string') result = String(av || '').localeCompare(String(bv || ''), 'zh-CN');
+        else result = num(av) - num(bv);
+        return state.dir === 'asc' ? result : -result;
+      });
+    }
+
+    function renderSkuTable() {
+      const rows = selectedSkuRows();
+      const fields = day().kanban?.small?.fields || [];
+      document.getElementById('skuHead').innerHTML = fields.map((field) => (
+        '<th data-sort="' + esc(field.key) + '">' + esc(field.label) + '</th>'
+      )).join('');
+      document.querySelectorAll('#skuHead th[data-sort]').forEach((th) => {
+        th.addEventListener('click', () => {
+          const key = th.dataset.sort;
+          if (state.sort === key) state.dir = state.dir === 'asc' ? 'desc' : 'asc';
+          else {
+            state.sort = key;
+            state.dir = 'desc';
+          }
+          renderSkuTable();
+        });
+      });
+      document.getElementById('skuSummary').textContent = rows.length
+        ? rows.length + ' 行 · 当前仓库 ' + (state.warehouse === 'all' ? '全部' : document.querySelector('#warehouseSelect option:checked')?.textContent || '-')
+        : '-';
+      document.getElementById('skuBody').innerHTML = rows.map((row) => {
+        return '<tr>' +
+          fields.map((field, index) => {
+            const cell = (row.cells || []).find((item) => item.key === field.key);
+            const text = cell?.display ?? '-';
+            const cls = index === 2 ? ' class="sku-name" title="' + esc(text) + '"' : '';
+            return '<td><div' + cls + '>' + esc(text) + '</div></td>';
+          }).join('') +
+        '</tr>';
+      }).join('');
+    }
+
+    function selectedDayJson() {
+      const selected = day();
+      return JSON.stringify(selected, null, 2);
+    }
+
+    function renderDayJson() {
+      const json = selectedDayJson();
+      document.getElementById('dayJson').textContent = json;
+      document.getElementById('jsonSummary').textContent = state.date ? state.date + ' · ' + Math.ceil(json.length / 1024) + ' KB' : '-';
+    }
+
+    function render() {
+      showMessage(renderWarnings());
+      renderDateSelect();
+      renderWarehouseSelect();
+      renderSourceStatus();
+      renderKpis();
+      renderWarehouseCards();
+      renderSkuTable();
+      renderDayJson();
+    }
+
+    function initEvents() {
+      document.getElementById('dateSelect').addEventListener('change', (event) => {
+        state.date = event.target.value;
+        state.warehouse = 'all';
+        render();
+      });
+      document.getElementById('warehouseSelect').addEventListener('change', (event) => {
+        state.warehouse = event.target.value;
+        render();
+      });
+      document.getElementById('searchInput').addEventListener('input', (event) => {
+        state.query = event.target.value.trim();
+        renderSkuTable();
+      });
+      document.getElementById('refreshButton').addEventListener('click', () => loadData(true));
+      document.getElementById('saveConfigButton').addEventListener('click', saveConfig);
+      document.getElementById('copyJsonButton').addEventListener('click', async () => {
+        await navigator.clipboard.writeText(selectedDayJson());
+      });
+      document.getElementById('downloadJsonButton').addEventListener('click', () => {
+        const blob = new Blob([selectedDayJson()], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'kanban-' + (state.date || 'day') + '.json';
+        link.click();
+        URL.revokeObjectURL(url);
+      });
+    }
+
+    initEvents();
+    loadConfig()
+      .catch((error) => {
+        document.getElementById('configStatus').textContent = error.message;
+      })
+      .finally(() => loadData(false));
+    window.setInterval(() => loadData(true), 60000);
+  </script>
+</body>
+</html>

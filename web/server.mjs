@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
 import { WechatyBot } from '../scripts/wechaty-bot.mjs';
+import { KANBAN_DEFAULTS, loadKanbanData } from './kanban-data.mjs';
 
 const WEB_DIR = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(WEB_DIR, '..');
@@ -67,26 +68,33 @@ const APP_CONFIG_FIELDS = [
   'WECHATY_CDP_URL',
 ];
 
+const KANBAN_CONFIG_FIELDS = [
+  'FEISHU_KANBAN_RAW_URL',
+  'FEISHU_KANBAN_RULES_URL',
+  'FEISHU_KANBAN_REVIEW_URL',
+  'FEISHU_KANBAN_WRITEBACK',
+];
+
 const CDP_SERVICES = {
   pddChrome: { envKey: 'PDD_CDP_URL', title: 'PDD Chrome 服务', defaultPort: 9222, candidatePorts: 12 },
   wechatChrome: { envKey: 'WECHATY_CDP_URL', title: '微信 Chrome 服务', defaultPort: 9333, candidatePorts: 12 },
 };
 
-async function readAppConfig() {
+async function readEnvConfig(fields) {
   await loadDotEnv('.env', true);
-  return Object.fromEntries(APP_CONFIG_FIELDS.map((key) => [key, process.env[key] || '']));
+  return Object.fromEntries(fields.map((key) => [key, process.env[key] || '']));
 }
 
 function envValue(value) {
   return JSON.stringify(String(value || ''));
 }
 
-async function saveAppConfig(input) {
+async function saveEnvConfig(input, fields) {
   const envPath = path.resolve(ROOT, '.env');
   let text = '';
   try { text = await readFile(envPath, 'utf8'); } catch {}
-  const current = await readAppConfig();
-  const values = Object.fromEntries(APP_CONFIG_FIELDS.map((key) => {
+  const current = await readEnvConfig(fields);
+  const values = Object.fromEntries(fields.map((key) => {
     const nextValue = Object.prototype.hasOwnProperty.call(input || {}, key) ? input[key] : current[key];
     return [key, String(nextValue || '').trim()];
   }));
@@ -98,12 +106,55 @@ async function saveAppConfig(input) {
     seen.add(key);
     return `${key}=${envValue(values[key])}`;
   });
-  for (const key of APP_CONFIG_FIELDS) {
+  for (const key of fields) {
     if (!seen.has(key)) lines.push(`${key}=${envValue(values[key])}`);
     process.env[key] = values[key];
   }
   await writeFile(envPath, `${lines.join('\n').replace(/\n+$/, '')}\n`, 'utf8');
   return values;
+}
+
+async function readAppConfig() {
+  return readEnvConfig(APP_CONFIG_FIELDS);
+}
+
+async function saveAppConfig(input) {
+  return saveEnvConfig(input, APP_CONFIG_FIELDS);
+}
+
+function truthyConfig(value, defaultValue = false) {
+  if (value == null || value === '') return defaultValue;
+  return ['1', 'true', 'yes', 'y', 'on'].includes(String(value).toLowerCase());
+}
+
+function kanbanConfigFromEnv(values) {
+  return {
+    rawUrl: values.FEISHU_KANBAN_RAW_URL || KANBAN_DEFAULTS.rawSourceUrl,
+    rulesUrl: values.FEISHU_KANBAN_RULES_URL || KANBAN_DEFAULTS.rulesSourceUrl,
+    reviewUrl: values.FEISHU_KANBAN_REVIEW_URL || KANBAN_DEFAULTS.reviewTargetUrl,
+    writebackEnabled: truthyConfig(values.FEISHU_KANBAN_WRITEBACK, true),
+  };
+}
+
+async function readKanbanConfig() {
+  return kanbanConfigFromEnv(await readEnvConfig(KANBAN_CONFIG_FIELDS));
+}
+
+async function saveKanbanConfig(input) {
+  const updates = {};
+  if (Object.prototype.hasOwnProperty.call(input || {}, 'rawUrl')) {
+    updates.FEISHU_KANBAN_RAW_URL = input.rawUrl;
+  }
+  if (Object.prototype.hasOwnProperty.call(input || {}, 'rulesUrl')) {
+    updates.FEISHU_KANBAN_RULES_URL = input.rulesUrl;
+  }
+  if (Object.prototype.hasOwnProperty.call(input || {}, 'reviewUrl')) {
+    updates.FEISHU_KANBAN_REVIEW_URL = input.reviewUrl;
+  }
+  if (Object.prototype.hasOwnProperty.call(input || {}, 'writebackEnabled')) {
+    updates.FEISHU_KANBAN_WRITEBACK = input.writebackEnabled ? 'true' : 'false';
+  }
+  return kanbanConfigFromEnv(await saveEnvConfig(updates, KANBAN_CONFIG_FIELDS));
 }
 
 function sendJson(response, status, body) {
@@ -490,6 +541,16 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === 'GET' && request.url === '/kanban.html') {
+      const html = await readFile(path.join(WEB_DIR, 'kanban.html'));
+      response.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+      });
+      response.end(html);
+      return;
+    }
+
     if (request.method === 'GET' && request.url === '/responsive-layout.mjs') {
       const script = await readFile(path.join(WEB_DIR, 'responsive-layout.mjs'));
       response.writeHead(200, {
@@ -507,6 +568,23 @@ const server = createServer(async (request, response) => {
         scheduler: summarizeTask(activeScheduler),
         wechat: wechatyBot.getStatus(),
       });
+      return;
+    }
+
+    if (request.method === 'GET' && request.url === '/api/kanban-config') {
+      sendJson(response, 200, await readKanbanConfig());
+      return;
+    }
+
+    if (request.method === 'POST' && request.url === '/api/kanban-config') {
+      const config = await saveKanbanConfig(await readJson(request));
+      sendJson(response, 200, { ok: true, config });
+      return;
+    }
+
+    if (request.method === 'GET' && request.url.startsWith('/api/kanban-data')) {
+      const url = new URL(request.url, `http://${request.headers.host || '127.0.0.1'}`);
+      sendJson(response, 200, await loadKanbanData({ forceRefresh: url.searchParams.get('refresh') === '1' }));
       return;
     }
 
