@@ -1991,8 +1991,15 @@ function reviewFormulaForLabel(label, headers, rowNumber) {
   return '';
 }
 
+function reviewFormulaCell(formula) {
+  return { type: 'formula', text: formula };
+}
+
 function applyReviewFormulas(headers, row, rowNumber) {
-  return row.map((value, index) => reviewFormulaForLabel(headers[index], headers, rowNumber) || value);
+  return row.map((value, index) => {
+    const formula = reviewFormulaForLabel(headers[index], headers, rowNumber);
+    return formula ? reviewFormulaCell(formula) : value;
+  });
 }
 
 function boardSectionValues(title, board, leadingHeaders = [], sectionStartRow = 1) {
