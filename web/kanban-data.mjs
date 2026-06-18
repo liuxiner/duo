@@ -14,9 +14,17 @@ const TOTAL_FEE_LABEL = '总费用';
 const GROSS_PROFIT_LABEL = '毛利合计';
 const STORAGE_FEE_PART_LABELS = ['技术服务费', '多货费', '云仓费用', '共享仓费用', '其他仓储费'];
 const MANUAL_INPUT_PREFIX_LABELS = ['SKUID', '产品名称', '仓库'];
-const MANUAL_INPUT_FIELD_LABELS = ['仓库类型', '云仓单价', '产品成本', '云仓费用', '共享仓费用', '其他仓储费', '秒杀坑位费', '扣点比例', '平台扣费', '售后费用系数'];
-const MANUAL_REFERENCE_LABELS = ['仓库总库存', '仓库预估总销售数', '模拟商品ID', '模拟商品名称', '模拟成本参考', '模拟报价参考', '模拟排期参考', '成本匹配方式'];
+const MANUAL_INPUT_FIELD_LABELS = ['仓库类型', '云仓单价', '产品成本', '产品成本状态', '云仓费用', '共享仓费用', '其他仓储费', '秒杀坑位费', '扣点比例', '平台扣费', '售后费用系数'];
+const MANUAL_REFERENCE_LABELS = ['仓库总库存', '仓库预估总销售数'];
+const REMOVED_MANUAL_REFERENCE_LABELS = ['模拟商品ID', '模拟商品名称', '模拟成本参考', '模拟报价参考', '模拟排期参考', '成本匹配方式'];
 const MANUAL_INPUT_HEADERS = MANUAL_INPUT_PREFIX_LABELS.concat(MANUAL_INPUT_FIELD_LABELS, MANUAL_REFERENCE_LABELS);
+const DEFAULT_CLOUD_STORAGE_UNIT_PRICE = 0.01371;
+const CLOUD_STORAGE_UNIT_PRICES = [
+  { pattern: /宁波/, unitPrice: 0.00445 },
+  { pattern: /金华/, unitPrice: 0.01432 },
+];
+const PRODUCT_COST_ESTIMATE_COLOR = '#9CA3AF';
+const PRODUCT_COST_NORMAL_COLOR = '#111827';
 
 let cachedPayload = null;
 let lastWriteback = null;
@@ -295,9 +303,7 @@ function withBlankRows(values, count = 200) {
   return values.concat(blanks);
 }
 
-async function writeValuesToFeishu(spreadsheetToken, sheetIdForWrite, values, tenantToken) {
-  const width = Math.max(...values.map((row) => row.length), 1);
-  const range = `${sheetIdForWrite}!A1:${columnName(width - 1)}${values.length}`;
+async function writeValueRangeToFeishu(spreadsheetToken, range, values, tenantToken) {
   const body = await feishuJson(
     `https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/values`,
     {
@@ -312,6 +318,95 @@ async function writeValuesToFeishu(spreadsheetToken, sheetIdForWrite, values, te
     }
   );
   return { range, updatedCells: body.data?.updatedCells || body.data?.updated_cells || null };
+}
+
+async function writeValuesToFeishu(spreadsheetToken, sheetIdForWrite, values, tenantToken) {
+  const width = Math.max(...values.map((row) => row.length), 1);
+  const range = `${sheetIdForWrite}!A1:${columnName(width - 1)}${values.length}`;
+  return writeValueRangeToFeishu(spreadsheetToken, range, values, tenantToken);
+}
+
+async function writeStyleToFeishu(spreadsheetToken, range, style, tenantToken) {
+  await feishuJson(
+    `https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/style`,
+    {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${tenantToken}`,
+        'Content-Type': 'application/json; charset=utf-8',
+      },
+      body: JSON.stringify({
+        appendStyle: { range, style },
+      }),
+    }
+  );
+}
+
+function contiguousRanges(numbers) {
+  const sorted = Array.from(new Set(numbers.filter(Number.isFinite))).sort((a, b) => a - b);
+  const ranges = [];
+  let start = null;
+  let previous = null;
+  sorted.forEach((number) => {
+    if (start == null) {
+      start = number;
+      previous = number;
+      return;
+    }
+    if (number === previous + 1) {
+      previous = number;
+      return;
+    }
+    ranges.push([start, previous]);
+    start = number;
+    previous = number;
+  });
+  if (start != null) ranges.push([start, previous]);
+  return ranges;
+}
+
+async function styleProductCostCells(spreadsheetToken, sheetIdForWrite, rowCount, estimatedRows, tenantToken) {
+  const productCostIndex = MANUAL_INPUT_HEADERS.indexOf('产品成本');
+  if (productCostIndex < 0 || rowCount <= 0) return { skipped: true, reason: 'no-product-cost-column' };
+  const column = columnName(productCostIndex);
+  const allDataRange = `${sheetIdForWrite}!${column}2:${column}${rowCount + 1}`;
+  await writeStyleToFeishu(spreadsheetToken, allDataRange, { foreColor: PRODUCT_COST_NORMAL_COLOR }, tenantToken);
+
+  const ranges = contiguousRanges(estimatedRows);
+  for (const [start, end] of ranges) {
+    await writeStyleToFeishu(
+      spreadsheetToken,
+      `${sheetIdForWrite}!${column}${start}:${column}${end}`,
+      { foreColor: PRODUCT_COST_ESTIMATE_COLOR },
+      tenantToken
+    );
+  }
+  return { styledRows: estimatedRows.length, ranges: ranges.length };
+}
+
+async function clearRemovedManualColumns(manualSpreadsheet, sheetIdForWrite, tenantToken) {
+  const values = manualSpreadsheet.sheets[0]?.values || [];
+  const headerRow = findManualInputHeaderRow(values);
+  if (headerRow < 0) return { skipped: true, reason: 'no-header-row' };
+  const headers = values[headerRow].map(normalizeText);
+  const hasRemovedColumns = headers.some((header) => REMOVED_MANUAL_REFERENCE_LABELS.includes(header));
+  if (!hasRemovedColumns) return { skipped: true, reason: 'no-removed-columns' };
+
+  const oldWidth = Math.max(...values.map((row) => row.length), MANUAL_INPUT_HEADERS.length);
+  const start = MANUAL_INPUT_HEADERS.length;
+  const end = oldWidth - 1;
+  if (end < start) return { skipped: true, reason: 'no-extra-columns' };
+  const rowCount = Math.max(values.length, 350);
+  const width = end - start + 1;
+  const range = `${sheetIdForWrite}!${columnName(start)}${headerRow + 1}:${columnName(end)}${rowCount}`;
+  const blankValues = Array.from({ length: rowCount - headerRow }, () => Array.from({ length: width }, () => ''));
+  const result = await writeValueRangeToFeishu(
+    manualSpreadsheet.spreadsheetToken,
+    range,
+    blankValues,
+    tenantToken
+  );
+  return { clearedColumns: width, range: result.range };
 }
 
 async function readSheetValues(spreadsheetToken, sheet, tenantToken) {
@@ -779,36 +874,264 @@ function nonBlankValue(...values) {
   return values.find((value) => normalizeText(value) !== '') ?? '';
 }
 
-function manualFieldValue(label, row, existing, reference) {
+function clamp(value, min, max) {
+  if (!Number.isFinite(value)) return value;
+  return Math.max(min, Math.min(max, value));
+}
+
+function roundMoney(value) {
+  return Number.isFinite(value) ? Number(value.toFixed(2)) : null;
+}
+
+function roundUnitPrice(value) {
+  return Number.isFinite(value) ? Number(value.toFixed(5)) : null;
+}
+
+function roundRate(value) {
+  return Number.isFinite(value) ? Number(value.toFixed(4)) : null;
+}
+
+function hashText(value) {
+  let hash = 2166136261;
+  const text = normalizeText(value);
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function deterministicRange(key, min, max, decimals = 2) {
+  const unit = hashText(key) / 0xffffffff;
+  const value = min + (max - min) * unit;
+  return Number(value.toFixed(decimals));
+}
+
+function cloudStorageUnitPriceFor(warehouse) {
+  const text = normalizeText(warehouse);
+  const matched = CLOUD_STORAGE_UNIT_PRICES.find((item) => item.pattern.test(text));
+  return matched?.unitPrice ?? DEFAULT_CLOUD_STORAGE_UNIT_PRICE;
+}
+
+function isRoundedAutoUnitPrice(existingUnitPrice, defaultUnitPrice) {
+  return Number.isFinite(existingUnitPrice)
+    && Math.abs(existingUnitPrice - 0.01) < 0.000001
+    && Math.abs(defaultUnitPrice - existingUnitPrice) > 0.000001;
+}
+
+function productSpecSignals(value) {
+  const text = normalizeText(value)
+    .replace(/[×＊*]/g, 'x')
+    .toLowerCase();
+  let amount = null;
+  let count = null;
+
+  for (const match of text.matchAll(/(\d+(?:\.\d+)?)\s*(kg|千克|公斤|斤|g|克|ml|毫升|l|升)\s*x\s*(\d+(?:\.\d+)?)/g)) {
+    const number = Number(match[1]);
+    const multiplier = Number(match[3]);
+    if (!Number.isFinite(number) || !Number.isFinite(multiplier)) continue;
+    const unit = match[2];
+    let normalized = number;
+    if (/kg|千克|公斤/.test(unit)) normalized *= 1000;
+    if (/斤/.test(unit)) normalized *= 500;
+    if (unit === 'l' || unit === '升') normalized *= 1000;
+    amount = Math.max(amount ?? 0, normalized * multiplier);
+  }
+
+  for (const match of text.matchAll(/(\d+(?:\.\d+)?)\s*(kg|千克|公斤|斤|g|克|ml|毫升|l|升)/g)) {
+    const number = Number(match[1]);
+    if (!Number.isFinite(number)) continue;
+    const unit = match[2];
+    let normalized = number;
+    if (/kg|千克|公斤/.test(unit)) normalized *= 1000;
+    if (/斤/.test(unit)) normalized *= 500;
+    if (unit === 'l' || unit === '升') normalized *= 1000;
+    amount = Math.max(amount ?? 0, normalized);
+  }
+
+  for (const match of text.matchAll(/(\d+(?:\.\d+)?)\s*(包|袋|卷|片|抽|瓶|盒|支|个|只|条|罐|组|提|件)/g)) {
+    const number = Number(match[1]);
+    if (Number.isFinite(number)) count = Math.max(count ?? 0, number);
+  }
+
+  return { amount, count };
+}
+
+function specScale(targetName, referenceName) {
+  const target = productSpecSignals(targetName);
+  const reference = productSpecSignals(referenceName);
+  if (Number.isFinite(target.amount) && Number.isFinite(reference.amount) && reference.amount > 0) {
+    return clamp(target.amount / reference.amount, 0.55, 1.8);
+  }
+  if (Number.isFinite(target.count) && Number.isFinite(reference.count) && reference.count > 0) {
+    return clamp(target.count / reference.count, 0.55, 1.8);
+  }
+  return 1;
+}
+
+function productCategory(value) {
+  const text = normalizeText(value);
+  if (/纸|抽纸|卷纸|纸巾|清风|维达|洁柔|心相印|湿巾/.test(text)) return 'paper';
+  if (/卫生巾|护垫|苏菲|七度空间|安尔乐|自由点/.test(text)) return 'hygiene';
+  if (/洗衣|洗洁|沐浴|洗发|牙膏|牙刷|花露水|六神|肥皂|香皂|洗手|洗护/.test(text)) return 'personal';
+  if (/牛奶|酸奶|饮料|咖啡|茶|饼干|零食|面包|方便面|米|油|粮|食品/.test(text)) return 'food';
+  return 'general';
+}
+
+function categoryCostRatio(value) {
+  return {
+    paper: 0.72,
+    hygiene: 0.66,
+    personal: 0.62,
+    food: 0.68,
+    general: 0.7,
+  }[productCategory(value)] || 0.7;
+}
+
+function categoryFallbackCost(name, key) {
+  const spec = productSpecSignals(name);
+  const category = productCategory(name);
+  if (category === 'paper' && Number.isFinite(spec.count)) return clamp(spec.count * 0.42, 1.2, 18);
+  if (category === 'hygiene' && Number.isFinite(spec.count)) return clamp(spec.count * 0.22, 1.5, 22);
+  if (category === 'personal' && Number.isFinite(spec.amount)) return clamp(spec.amount * 0.008, 2, 28);
+  if (category === 'food' && Number.isFinite(spec.amount)) return clamp(spec.amount * 0.012, 1.5, 30);
+  return deterministicRange(`${key}:fallback-cost`, 2.5, 12, 2);
+}
+
+function estimateProductCost(row, reference, referenceRows) {
+  if (Number.isFinite(reference?.productCost)) {
+    return { value: roundMoney(reference.productCost), source: reference.matchType || '参考表' };
+  }
+
+  const name = row.name || row.displayName || '';
+  const key = manualInputKey(row) || `${name}:${row.warehouse}`;
+  const candidates = referenceRows
+    .filter((item) => Number.isFinite(item.productCost) && item.name)
+    .map((item) => {
+      const score = productNameScore(name, item.name);
+      const scaledCost = item.productCost * specScale(name, item.name);
+      return { score, scaledCost };
+    })
+    .filter((item) => item.score >= 0.32 && Number.isFinite(item.scaledCost))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+
+  if (candidates.length) {
+    const weighted = candidates.reduce((acc, item) => {
+      const weight = Math.max(0.2, item.score);
+      acc.total += item.scaledCost * weight;
+      acc.weight += weight;
+      return acc;
+    }, { total: 0, weight: 0 });
+    if (weighted.weight > 0) {
+      return { value: roundMoney(weighted.total / weighted.weight), source: '同类商品估算' };
+    }
+  }
+
+  const price = firstFinite(row.settlementPrice, row.price, parsePrice(reference?.quote));
+  if (Number.isFinite(price) && price > 0) {
+    const adjustment = deterministicRange(`${key}:cost-adjustment`, -0.18, 0.16, 4);
+    return {
+      value: roundMoney(Math.max(0.2, price * clamp(categoryCostRatio(name) + adjustment, 0.45, 0.9))),
+      source: '供价比例估算',
+    };
+  }
+
+  return { value: roundMoney(categoryFallbackCost(name, key)), source: '规格兜底估算' };
+}
+
+function resolveProductCost(row, existing, reference, referenceRows) {
+  const existingValue = existing?.rawValues?.['产品成本'] ?? '';
+  const existingCost = parsePrice(existingValue);
+  const existingStatus = normalizeText(existing?.rawValues?.['产品成本状态']);
+  if (Number.isFinite(existingCost)) {
+    return {
+      value: roundMoney(existingCost),
+      numericValue: existingCost,
+      status: '有',
+      autoFilled: existingStatus === '',
+    };
+  }
+  const estimate = estimateProductCost(row, reference, referenceRows);
+  return {
+    value: estimate.value ?? '',
+    numericValue: estimate.value,
+    status: Number.isFinite(estimate.value) ? '有' : '缺',
+    autoFilled: Number.isFinite(estimate.value),
+    source: estimate.source,
+  };
+}
+
+function buildManualDefaults(row, existing, reference, referenceRows) {
+  const type = normalizeText(existing?.rawValues?.['仓库类型']) || row.warehouseTypeRaw || warehouseType(row.warehouse);
+  const existingCloudUnitPrice = parsePrice(existing?.rawValues?.['云仓单价']);
+  const defaultCloudUnitPrice = cloudStorageUnitPriceFor(row.warehouse);
+  const cloudUnitPrice = Number.isFinite(existingCloudUnitPrice) && existingCloudUnitPrice > 0
+    && !isRoundedAutoUnitPrice(existingCloudUnitPrice, defaultCloudUnitPrice)
+    ? existingCloudUnitPrice
+    : defaultCloudUnitPrice;
+  const stockForCloudFee = firstFinite(row.stock, row.inboundQuantity, 0);
+  const cloudWarehouseFee = /云仓/.test(type) && stockForCloudFee > 0
+    ? roundMoney(stockForCloudFee * cloudUnitPrice)
+    : 0;
+  const key = manualInputKey(row) || `${row.skuId}:${row.name}:${row.warehouse}`;
+  const productCost = resolveProductCost(row, existing, reference, referenceRows);
+  return {
+    warehouseType: type,
+    cloudUnitPrice: roundUnitPrice(cloudUnitPrice),
+    productCost,
+    cloudWarehouseFee,
+    sharedWarehouseFee: deterministicRange(`${key}:shared-warehouse-fee`, 0, 20, 2),
+    otherWarehouseFee: 0,
+    flashSaleSlotFee: 0,
+    deductionRate: roundRate(deterministicRange(`${key}:deduction-rate`, 0.038, 0.042, 4)),
+    platformFee: deterministicRange(`${key}:platform-fee`, 0, 20, 2),
+    afterSalesFeeRate: 0.01,
+  };
+}
+
+function manualFieldValue(label, row, existing, defaults) {
   const existingValue = existing?.rawValues?.[label] ?? '';
+  if (label === '产品成本状态') return defaults.productCost.status;
+  if (label === '云仓单价') {
+    const existingUnitPrice = parsePrice(existingValue);
+    const useExisting = Number.isFinite(existingUnitPrice) && existingUnitPrice > 0
+      && !isRoundedAutoUnitPrice(existingUnitPrice, defaults.cloudUnitPrice);
+    return useExisting ? existingValue : defaults.cloudUnitPrice;
+  }
+  if (label === '云仓费用') {
+    const existingCloudFee = parsePrice(existingValue);
+    if (Number.isFinite(existingCloudFee) && existingCloudFee > 0) return existingValue;
+    return defaults.cloudWarehouseFee;
+  }
+  if (label === '产品成本') return defaults.productCost.value;
   if (normalizeText(existingValue) !== '') return existingValue;
-  if (label === '仓库类型') return warehouseType(row.warehouse);
-  if (label === '产品成本' && Number.isFinite(reference?.productCost)) return reference.productCost;
+  if (label === '仓库类型') return defaults.warehouseType;
+  if (label === '共享仓费用') return defaults.sharedWarehouseFee;
+  if (label === '其他仓储费') return defaults.otherWarehouseFee;
+  if (label === '秒杀坑位费') return defaults.flashSaleSlotFee;
+  if (label === '扣点比例') return defaults.deductionRate;
+  if (label === '平台扣费') return defaults.platformFee;
+  if (label === '售后费用系数') return defaults.afterSalesFeeRate;
   return '';
 }
 
-function referenceMatchText(reference) {
-  if (!reference) return '';
-  if (reference.matchType === '名称相似匹配') return `${reference.matchType} ${Math.round((reference.matchScore || 0) * 100)}%`;
-  return reference.matchType || '';
-}
-
-function manualInputRowValues(row, existing, reference) {
+function manualInputRowValues(row, existing, reference, referenceRows) {
   const contextValue = (label, fallback = '') => nonBlankValue(existing?.rawValues?.[label], fallback);
-  return [
-    row.skuId,
-    row.name || row.displayName || existing?.name || '',
-    row.warehouse,
-    ...MANUAL_INPUT_FIELD_LABELS.map((label) => manualFieldValue(label, row, existing, reference)),
-    contextValue('仓库总库存', Number.isFinite(row.stock) ? row.stock : ''),
-    contextValue('仓库预估总销售数', Number.isFinite(row.estimate) ? row.estimate : ''),
-    contextValue('模拟商品ID', reference?.skuId || ''),
-    contextValue('模拟商品名称', reference?.name || ''),
-    contextValue('模拟成本参考', Number.isFinite(reference?.productCost) ? reference.productCost : ''),
-    contextValue('模拟报价参考', reference?.quote || ''),
-    contextValue('模拟排期参考', reference?.schedule || ''),
-    contextValue('成本匹配方式', referenceMatchText(reference)),
-  ];
+  const defaults = buildManualDefaults(row, existing, reference, referenceRows);
+  return {
+    values: [
+      row.skuId,
+      row.name || row.displayName || existing?.name || '',
+      row.warehouse,
+      ...MANUAL_INPUT_FIELD_LABELS.map((label) => manualFieldValue(label, row, existing, defaults)),
+      contextValue('仓库总库存', Number.isFinite(row.stock) ? row.stock : ''),
+      contextValue('仓库预估总销售数', Number.isFinite(row.estimate) ? row.estimate : ''),
+    ],
+    estimatedProductCost: defaults.productCost.status === '有',
+    productCostAutoFilled: defaults.productCost.autoFilled,
+    productCostStatus: defaults.productCost.status,
+  };
 }
 
 function normalizeMatrix(values) {
@@ -854,15 +1177,49 @@ async function syncManualInputSheet(manualSpreadsheet, rawRows, manualRows, refe
   });
   let referenceMatchedCount = 0;
   let costFilledCount = 0;
-  const values = [MANUAL_INPUT_HEADERS].concat(rows.map((row) => {
+  let productCostReadyCount = 0;
+  const manualEntries = rows.map((row) => {
     const existing = existingByKey.get(manualInputKey(row));
     const reference = referenceIndex.find(row);
     if (reference) referenceMatchedCount += 1;
-    if (Number.isFinite(reference?.productCost) && normalizeText(existing?.rawValues?.['产品成本']) === '') costFilledCount += 1;
-    return manualInputRowValues(row, existing, reference);
-  }));
+    const entry = manualInputRowValues(row, existing, reference, referenceRows);
+    if (entry.productCostAutoFilled) costFilledCount += 1;
+    if (entry.productCostStatus === '有') productCostReadyCount += 1;
+    return entry;
+  });
+  const values = [MANUAL_INPUT_HEADERS].concat(manualEntries.map((entry) => entry.values));
+  const estimatedProductCostRows = manualEntries
+    .map((entry, index) => (entry.estimatedProductCost ? index + 2 : null))
+    .filter(Number.isFinite);
   if (matricesEqual(values, manualSpreadsheet.sheets[0].values || [])) {
-    return { skipped: true, reason: 'unchanged', rowCount: rows.length, referenceMatchedCount, costFilledCount };
+    let removedColumnClear = { skipped: true, reason: 'unchanged' };
+    try {
+      removedColumnClear = await clearRemovedManualColumns(manualSpreadsheet, sheet.id, tenantToken);
+    } catch (error) {
+      removedColumnClear = { error: friendlyFeishuError(error) };
+    }
+    let productCostStyle = { skipped: true, reason: 'unchanged' };
+    try {
+      productCostStyle = await styleProductCostCells(
+        manualSpreadsheet.spreadsheetToken,
+        sheet.id,
+        rows.length,
+        estimatedProductCostRows,
+        tenantToken
+      );
+    } catch (error) {
+      productCostStyle = { error: friendlyFeishuError(error) };
+    }
+    return {
+      skipped: true,
+      reason: 'unchanged',
+      rowCount: rows.length,
+      referenceMatchedCount,
+      costFilledCount,
+      productCostReadyCount,
+      removedColumnClear,
+      productCostStyle,
+    };
   }
   const result = await writeValuesToFeishu(
     manualSpreadsheet.spreadsheetToken,
@@ -870,11 +1227,32 @@ async function syncManualInputSheet(manualSpreadsheet, rawRows, manualRows, refe
     withBlankRows(values, 300),
     tenantToken
   );
+  let removedColumnClear = null;
+  try {
+    removedColumnClear = await clearRemovedManualColumns(manualSpreadsheet, sheet.id, tenantToken);
+  } catch (error) {
+    removedColumnClear = { error: friendlyFeishuError(error) };
+  }
+  let productCostStyle = null;
+  try {
+    productCostStyle = await styleProductCostCells(
+      manualSpreadsheet.spreadsheetToken,
+      sheet.id,
+      rows.length,
+      estimatedProductCostRows,
+      tenantToken
+    );
+  } catch (error) {
+    productCostStyle = { error: friendlyFeishuError(error) };
+  }
   return {
     skipped: false,
     rowCount: rows.length,
     referenceMatchedCount,
     costFilledCount,
+    productCostReadyCount,
+    removedColumnClear,
+    productCostStyle,
     range: result.range,
     syncedManualRows: parseManualInputValues(values, sheet.title),
   };
@@ -1207,18 +1585,24 @@ function enrichRows(rows, rules) {
     const amount = Number.isFinite(settlementPrice) ? row.sales * settlementPrice : null;
     const inboundQuantity = row.inboundQuantity;
     const openingStock = row.openingStock;
-    const cloudUnitPrice = row.cloudUnitPrice;
-    const deductionRate = row.deductionRate;
+    const key = manualInputKey(row) || `${row.skuId}:${row.name}:${row.warehouse}`;
     const type = row.warehouseTypeRaw || warehouseType(row.warehouse);
     const isCloudWarehouse = /云仓/.test(type);
+    const defaultCloudUnitPrice = cloudStorageUnitPriceFor(row.warehouse);
+    const cloudUnitPrice = Number.isFinite(row.cloudUnitPrice) && row.cloudUnitPrice > 0
+      && !isRoundedAutoUnitPrice(row.cloudUnitPrice, defaultCloudUnitPrice)
+      ? row.cloudUnitPrice
+      : defaultCloudUnitPrice;
+    const deductionRate = firstFinite(row.deductionRate, deterministicRange(`${key}:deduction-rate`, 0.038, 0.042, 4));
     const technicalServiceFee = row.sales * 0.165;
     const overStockFee = (stock - row.sales) * 0.1;
-    const cloudWarehouseFee = isCloudWarehouse ? row.cloudWarehouseFeeManual : null;
-    const sharedWarehouseFee = row.sharedWarehouseFee;
-    const otherWarehouseFee = row.otherWarehouseFee;
-    const flashSaleSlotFee = row.flashSaleSlotFee;
-    const platformFee = row.platformFee;
-    const afterSalesFeeRate = row.afterSalesFeeRate;
+    const defaultCloudWarehouseFee = isCloudWarehouse && stock > 0 ? roundMoney(stock * cloudUnitPrice) : 0;
+    const cloudWarehouseFee = isCloudWarehouse ? firstFinite(row.cloudWarehouseFeeManual, defaultCloudWarehouseFee) : 0;
+    const sharedWarehouseFee = firstFinite(row.sharedWarehouseFee, deterministicRange(`${key}:shared-warehouse-fee`, 0, 20, 2));
+    const otherWarehouseFee = firstFinite(row.otherWarehouseFee, 0);
+    const flashSaleSlotFee = firstFinite(row.flashSaleSlotFee, 0);
+    const platformFee = firstFinite(row.platformFee, deterministicRange(`${key}:platform-fee`, 0, 20, 2));
+    const afterSalesFeeRate = firstFinite(row.afterSalesFeeRate, 0.01);
     const afterSalesFee = firstFinite(
       row.afterSalesFeeManual,
       Number.isFinite(afterSalesFeeRate) && Number.isFinite(amount) ? afterSalesFeeRate * amount : null
