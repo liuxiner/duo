@@ -462,16 +462,20 @@
       text-align: right;
       vertical-align: middle;
       white-space: nowrap;
+      color: #1f2937;
+      font-size: 13px;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
     }
 
     th {
       position: sticky;
       top: 0;
       z-index: 1;
-      background: #fafafa;
-      color: #3f3f46;
-      font-size: 12px;
-      font-weight: 800;
+      background: #f8fafc;
+      color: #4b5563;
+      font-size: 13px;
+      font-weight: 650;
     }
 
     td:first-child,
@@ -486,7 +490,7 @@
     .cell-with-note {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
       justify-content: flex-end;
       width: 100%;
       max-width: 100%;
@@ -494,15 +498,15 @@
 
     .sku-cell-value {
       display: inline-block;
-      color: #18181b;
-      font-size: 18px;
-      font-weight: 650;
-      line-height: 1.15;
+      color: #111827;
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1.25;
       letter-spacing: 0;
     }
 
     .cell-with-note .sku-cell-value {
-      min-width: 54px;
+      min-width: 42px;
       text-align: right;
     }
 
@@ -522,24 +526,24 @@
 
     .sku-alert-note {
       flex: 0 0 auto;
-      border-radius: 4px;
-      padding: 3px 8px;
-      font-size: 15px;
-      font-weight: 850;
-      line-height: 1.1;
+      border-radius: 2px;
+      padding: 2px 6px;
+      font-size: 12px;
+      font-weight: 650;
+      line-height: 1.2;
       white-space: nowrap;
     }
 
     .sku-alert-note.bad-note {
-      border: 1px solid #fecaca;
-      background: #fff5f5;
-      color: var(--red);
+      border: 1px solid #f3b6b6;
+      background: #fff7f7;
+      color: #b91c1c;
     }
 
     .sku-alert-note.warn-note {
-      border: 1px solid #fed7aa;
-      background: #fff7ed;
-      color: #c2410c;
+      border: 1px solid #f0c58e;
+      background: #fffaf0;
+      color: #a16207;
     }
 
     .pos { color: var(--green); font-weight: 750; }
@@ -986,11 +990,6 @@
       return '<small class="sku-alert-note ' + noteClass + '" title="' + esc(attention.reason || '') + '">' + esc(attention.note || '') + '</small>';
     }
 
-    function renderedCellValue(text, field) {
-      const isPlainText = field.kind === 'text' || field.kind === 'date';
-      return isPlainText ? esc(text) : '<span class="sku-cell-value">' + esc(text) + '</span>';
-    }
-
     function renderSkuCell(row, field) {
       const cell = (row.cells || []).find((item) => item.key === field.key);
       const text = cell?.display ?? '-';
@@ -999,7 +998,8 @@
       if (field.label === '产品名称') {
         return '<td><div class="sku-name" title="' + esc(text) + '"><span class="sku-name-text">' + esc(text) + '</span>' + note + '</div></td>';
       }
-      return '<td><div' + (note ? ' class="cell-with-note"' : '') + '>' + renderedCellValue(text, field) + note + '</div></td>';
+      if (note) return '<td><div class="cell-with-note"><span class="sku-cell-value">' + esc(text) + '</span>' + note + '</div></td>';
+      return '<td><div>' + esc(text) + '</div></td>';
     }
 
     function renderSkuTable() {
