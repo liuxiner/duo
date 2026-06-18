@@ -14,9 +14,9 @@ const TOTAL_FEE_LABEL = '总费用';
 const GROSS_PROFIT_LABEL = '毛利合计';
 const STORAGE_FEE_PART_LABELS = ['技术服务费', '多货费', '云仓费用', '共享仓费用', '其他仓储费'];
 const MANUAL_INPUT_PREFIX_LABELS = ['SKUID', '产品名称', '仓库'];
-const MANUAL_INPUT_FIELD_LABELS = ['仓库类型', '云仓单价', '产品成本', '产品成本状态', '云仓费用', '共享仓费用', '其他仓储费', '秒杀坑位费', '扣点比例', '平台扣费', '售后费用系数'];
+const MANUAL_INPUT_FIELD_LABELS = ['仓库类型', '云仓单价', '产品成本', '云仓费用', '共享仓费用', '其他仓储费', '秒杀坑位费', '扣点比例', '平台扣费', '售后费用系数'];
 const MANUAL_REFERENCE_LABELS = ['仓库总库存', '仓库预估总销售数'];
-const REMOVED_MANUAL_REFERENCE_LABELS = ['模拟商品ID', '模拟商品名称', '模拟成本参考', '模拟报价参考', '模拟排期参考', '成本匹配方式'];
+const REMOVED_MANUAL_REFERENCE_LABELS = ['产品成本状态', '模拟商品ID', '模拟商品名称', '模拟成本参考', '模拟报价参考', '模拟排期参考', '成本匹配方式'];
 const MANUAL_INPUT_HEADERS = MANUAL_INPUT_PREFIX_LABELS.concat(MANUAL_INPUT_FIELD_LABELS, MANUAL_REFERENCE_LABELS);
 const DEFAULT_CLOUD_STORAGE_UNIT_PRICE = 0.01371;
 const CLOUD_STORAGE_UNIT_PRICES = [
@@ -1043,13 +1043,12 @@ function estimateProductCost(row, reference, referenceRows) {
 function resolveProductCost(row, existing, reference, referenceRows) {
   const existingValue = existing?.rawValues?.['产品成本'] ?? '';
   const existingCost = parsePrice(existingValue);
-  const existingStatus = normalizeText(existing?.rawValues?.['产品成本状态']);
   if (Number.isFinite(existingCost)) {
     return {
       value: roundMoney(existingCost),
       numericValue: existingCost,
       status: '有',
-      autoFilled: existingStatus === '',
+      autoFilled: false,
     };
   }
   const estimate = estimateProductCost(row, reference, referenceRows);
@@ -1092,7 +1091,6 @@ function buildManualDefaults(row, existing, reference, referenceRows) {
 
 function manualFieldValue(label, row, existing, defaults) {
   const existingValue = existing?.rawValues?.[label] ?? '';
-  if (label === '产品成本状态') return defaults.productCost.status;
   if (label === '云仓单价') {
     const existingUnitPrice = parsePrice(existingValue);
     const useExisting = Number.isFinite(existingUnitPrice) && existingUnitPrice > 0
@@ -1130,7 +1128,7 @@ function manualInputRowValues(row, existing, reference, referenceRows) {
     ],
     estimatedProductCost: defaults.productCost.status === '有',
     productCostAutoFilled: defaults.productCost.autoFilled,
-    productCostStatus: defaults.productCost.status,
+    hasProductCost: defaults.productCost.status === '有',
   };
 }
 
@@ -1184,7 +1182,7 @@ async function syncManualInputSheet(manualSpreadsheet, rawRows, manualRows, refe
     if (reference) referenceMatchedCount += 1;
     const entry = manualInputRowValues(row, existing, reference, referenceRows);
     if (entry.productCostAutoFilled) costFilledCount += 1;
-    if (entry.productCostStatus === '有') productCostReadyCount += 1;
+    if (entry.hasProductCost) productCostReadyCount += 1;
     return entry;
   });
   const values = [MANUAL_INPUT_HEADERS].concat(manualEntries.map((entry) => entry.values));
@@ -1347,8 +1345,9 @@ function normalizeBigBoardFields(fields) {
   const storageKeys = new Set(STORAGE_FEE_PART_LABELS.map(fieldKey));
   const storageField = { key: fieldKey(STORAGE_FEE_LABEL), label: STORAGE_FEE_LABEL, kind: 'money', note: '技术服务费 + 多货费 + 云仓费用 + 共享仓费用 + 其他仓储费' };
   const grossField = { key: fieldKey(GROSS_PROFIT_LABEL), label: GROSS_PROFIT_LABEL, kind: 'money', note: '产品日销额 - 产品成本 * 销量 - 云仓费用 - 共享仓费用 - 秒杀坑位费' };
-  const grossKeys = new Set([grossField.key, fieldKey('毛利'), fieldKey('净利润（毛利）')]);
-  const filtered = fields.filter((field) => !storageKeys.has(field.key) && field.key !== storageField.key && !grossKeys.has(field.key));
+  const filtered = fields.filter((field) => !storageKeys.has(field.key)
+    && field.key !== storageField.key
+    && !isGrossProfitLabel(field.label));
   const amountIndex = filtered.findIndex((field) => field.label === '产品日销额');
   const withStorage = amountIndex >= 0
     ? filtered.slice(0, amountIndex + 1).concat(storageField, grossField, filtered.slice(amountIndex + 1))
@@ -1903,10 +1902,103 @@ function cellRawValue(cell) {
   return cell.value;
 }
 
-function boardSectionValues(title, board, leadingHeaders = []) {
-  const fields = (board.fields || []).filter((field) => !leadingHeaders.includes(field.label));
+function isGrossProfitLabel(label) {
+  const key = fieldKey(label);
+  return key === fieldKey(GROSS_PROFIT_LABEL)
+    || key === fieldKey('毛利')
+    || key === fieldKey('净利润（毛利）');
+}
+
+function canonicalReviewLabel(label) {
+  return isGrossProfitLabel(label) ? GROSS_PROFIT_LABEL : label;
+}
+
+function reviewFields(fields, leadingHeaders = []) {
+  const seen = new Set(leadingHeaders.map((label) => normalizeHeaderKey(canonicalReviewLabel(label))));
+  return (fields || [])
+    .map((field) => ({ ...field, label: canonicalReviewLabel(field.label) }))
+    .filter((field) => {
+      const key = normalizeHeaderKey(field.label);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function reviewHeaderIndex(headers, aliases) {
+  const normalized = headers.map(normalizeHeaderKey);
+  return aliases
+    .map(normalizeHeaderKey)
+    .map((alias) => normalized.indexOf(alias))
+    .find((index) => index >= 0) ?? -1;
+}
+
+function reviewRef(headers, aliases, rowNumber) {
+  const index = reviewHeaderIndex(headers, aliases);
+  return index >= 0 ? `${columnName(index)}${rowNumber}` : '';
+}
+
+function reviewSumFormula(headers, aliases, rowNumber) {
+  const refs = aliases.map((alias) => reviewRef(headers, [alias], rowNumber)).filter(Boolean);
+  return refs.length ? `=SUM(${refs.join(',')})` : '';
+}
+
+function reviewFormulaForLabel(label, headers, rowNumber) {
+  const key = fieldKey(label);
+  const sales = reviewRef(headers, ['产品实时销量'], rowNumber);
+  const amount = reviewRef(headers, ['产品日销额'], rowNumber);
+  const stock = reviewRef(headers, ['仓库总库存', '当天剩余库存'], rowNumber);
+  const expected = reviewRef(headers, ['仓库预估总销售数'], rowNumber);
+  const settlementPrice = reviewRef(headers, ['当天结算供价'], rowNumber);
+  const productCost = reviewRef(headers, ['产品成本'], rowNumber);
+  const cloudFee = reviewRef(headers, ['云仓费用'], rowNumber);
+  const sharedFee = reviewRef(headers, ['共享仓费用', '共享仓费'], rowNumber);
+  const otherFee = reviewRef(headers, ['其他仓储费'], rowNumber);
+  const flashFee = reviewRef(headers, ['秒杀坑位费', '坑位费'], rowNumber);
+  const technicalFee = reviewRef(headers, ['技术服务费'], rowNumber);
+  const overStockFee = reviewRef(headers, ['多货费'], rowNumber);
+  const platformFee = reviewRef(headers, ['平台扣费'], rowNumber);
+  const afterSalesRate = reviewRef(headers, ['售后费用系数'], rowNumber);
+  const afterSalesFee = reviewRef(headers, ['售后费用'], rowNumber);
+  const grossProfit = reviewRef(headers, [GROSS_PROFIT_LABEL, '毛利', '净利润（毛利）'], rowNumber);
+
+  if (key === fieldKey('产品日销额') && settlementPrice && sales) return `=${settlementPrice}*${sales}`;
+  if (key === fieldKey('累计可用库存') && stock && expected) return `=${stock}-${expected}`;
+  if (key === fieldKey('周转天数') && stock && expected) return `=IF(${expected}>0,${stock}/${expected},"")`;
+  if (key === fieldKey('技术服务费') && sales) return `=${sales}*0.165`;
+  if (key === fieldKey('多货费') && stock && sales) return `=(${stock}-${sales})*0.1`;
+  if (key === fieldKey('云仓费用')) {
+    const warehouseTypeRef = reviewRef(headers, ['仓库类型'], rowNumber);
+    const unitPriceRef = reviewRef(headers, ['云仓单价'], rowNumber);
+    if (warehouseTypeRef && unitPriceRef && stock) return `=IF(${warehouseTypeRef}="云仓",${unitPriceRef}*${stock},0)`;
+  }
+  if (key === fieldKey('售后费用') && afterSalesRate && amount) return `=${afterSalesRate}*${amount}`;
+  if (key === fieldKey(STORAGE_FEE_LABEL)) {
+    return reviewSumFormula(headers, STORAGE_FEE_PART_LABELS, rowNumber);
+  }
+  if (key === fieldKey(TOTAL_FEE_LABEL)) {
+    return reviewSumFormula(
+      headers,
+      ['售后费用', '平台扣费', '秒杀坑位费', '其他仓储费', '共享仓费用', '云仓费用', '多货费', '技术服务费'],
+      rowNumber
+    );
+  }
+  if (isGrossProfitLabel(label) && amount && productCost && sales) {
+    const deductions = [cloudFee, sharedFee, flashFee].filter(Boolean).map((ref) => `-${ref}`).join('');
+    return `=${amount}-${productCost}*${sales}${deductions}`;
+  }
+  if (key === fieldKey('利润率') && grossProfit && amount) return `=IF(${amount}>0,${grossProfit}/${amount},"")`;
+  return '';
+}
+
+function applyReviewFormulas(headers, row, rowNumber) {
+  return row.map((value, index) => reviewFormulaForLabel(headers[index], headers, rowNumber) || value);
+}
+
+function boardSectionValues(title, board, leadingHeaders = [], sectionStartRow = 1) {
+  const fields = reviewFields(board.fields || [], leadingHeaders);
   const headers = leadingHeaders.concat(fields.map((field) => field.label));
-  const rows = (board.rows || []).map((row) => {
+  const rows = (board.rows || []).map((row, rowIndex) => {
     const leading = leadingHeaders.map((header) => {
       if (header === '仓库') return row.warehouse || row.warehouseGroup || '';
       if (header === '状态') return row.statusLabel || '';
@@ -1918,7 +2010,7 @@ function boardSectionValues(title, board, leadingHeaders = []) {
       const cell = (row.cells || []).find((item) => item.key === field.key);
       return cellRawValue(cell || {});
     }));
-  });
+  }).map((row, rowIndex) => applyReviewFormulas(headers, row, sectionStartRow + 2 + rowIndex));
   return [[title], headers, ...rows];
 }
 
@@ -1927,12 +2019,16 @@ function buildReviewValuesForDay(day, refreshedAt) {
   const small = day.kanban?.small || { fields: [], rows: [] };
   const bigLeadingHeaders = ['仓库', '状态'];
   const smallLeadingHeaders = ['仓库', '状态'];
+  const bigSectionStartRow = 3;
+  const bigSection = boardSectionValues('大看板（分仓库）', big, bigLeadingHeaders, bigSectionStartRow);
+  const smallSectionStartRow = bigSectionStartRow + bigSection.length + 1;
+  const smallSection = boardSectionValues('单品详情（分SKUID）', small, smallLeadingHeaders, smallSectionStartRow);
   return [
     ['看板复盘', day.date, '生成时间', refreshedAt],
     [],
-    ...boardSectionValues('大看板（分仓库）', big, bigLeadingHeaders),
+    ...bigSection,
     [],
-    ...boardSectionValues('单品详情（分SKUID）', small, smallLeadingHeaders),
+    ...smallSection,
   ];
 }
 
