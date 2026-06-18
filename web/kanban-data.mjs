@@ -18,6 +18,7 @@ const MANUAL_INPUT_FIELD_LABELS = ['仓库类型', '云仓单价', '产品成本
 const MANUAL_REFERENCE_LABELS = ['仓库总库存', '仓库预估总销售数'];
 const REMOVED_MANUAL_REFERENCE_LABELS = ['产品成本状态', '模拟商品ID', '模拟商品名称', '模拟成本参考', '模拟报价参考', '模拟排期参考', '成本匹配方式'];
 const MANUAL_INPUT_HEADERS = MANUAL_INPUT_PREFIX_LABELS.concat(MANUAL_INPUT_FIELD_LABELS, MANUAL_REFERENCE_LABELS);
+const RAW_WAREHOUSE_STOCK_COLUMN_INDEX = 5;
 const DEFAULT_CLOUD_STORAGE_UNIT_PRICE = 0.01371;
 const CLOUD_STORAGE_UNIT_PRICES = [
   { pattern: /宁波/, unitPrice: 0.00445 },
@@ -541,6 +542,11 @@ function parseOptionalRate(row, indexes, key) {
   return number;
 }
 
+function parseWarehouseStock(row, indexes) {
+  const fixedColumnValue = parseNumber(row[RAW_WAREHOUSE_STOCK_COLUMN_INDEX]);
+  return Number.isFinite(fixedColumnValue) ? fixedColumnValue : parseNumber(headerValue(row, indexes, 'stock'));
+}
+
 function parseManualFields(row, indexes) {
   return {
     settlementPrice: parseOptionalPrice(row, indexes, 'settlementPrice'),
@@ -609,7 +615,7 @@ function parseCalculatedSheet(sheet) {
     const warehouse = normalizeText(headerValue(row, indexes, 'warehouse')) || '未分仓库';
     const date = parseDate(headerValue(row, indexes, 'salesDate')) || fallbackDate;
     const sales = parseNumber(headerValue(row, indexes, 'sales')) || 0;
-    const stock = parseNumber(headerValue(row, indexes, 'stock'));
+    const stock = parseWarehouseStock(row, indexes);
     const estimate = parseNumber(headerValue(row, indexes, 'estimate'));
     const price = firstFinite(
       parsePrice(headerValue(row, indexes, 'price')),
@@ -1523,6 +1529,35 @@ function statusFor({ stock, expected, turnoverDays, thresholdDays }) {
   return 'ok';
 }
 
+function attentionForRow({ stock, expected, turnoverDays, thresholdDays }) {
+  if (!Number.isFinite(expected) || expected <= 0) return null;
+  if (Number.isFinite(stock) && stock < expected) {
+    return {
+      severity: 'bad',
+      note: '补货',
+      labels: ['累计可用库存'],
+      reason: '仓库总库存低于仓库预估总销售数',
+    };
+  }
+  if (Number.isFinite(turnoverDays) && turnoverDays <= Math.max(2, thresholdDays / 2)) {
+    return {
+      severity: 'bad',
+      note: '补货',
+      labels: ['周转天数'],
+      reason: '周转天数低于立即补货阈值',
+    };
+  }
+  if (Number.isFinite(turnoverDays) && turnoverDays <= thresholdDays) {
+    return {
+      severity: 'warn',
+      note: '关注',
+      labels: ['周转天数'],
+      reason: '周转天数低于关注阈值',
+    };
+  }
+  return null;
+}
+
 function statusLabel(status) {
   return {
     bad: '立即补',
@@ -1580,6 +1615,7 @@ function enrichRows(rows, rules) {
     const safetyGap = stock - safetyStock;
     const dailyGap = stock - expected;
     const status = statusFor({ stock, expected, turnoverDays, thresholdDays });
+    const attention = attentionForRow({ stock, expected, turnoverDays, thresholdDays });
     const settlementPrice = firstFinite(row.settlementPrice, row.price);
     const amount = Number.isFinite(settlementPrice) ? row.sales * settlementPrice : null;
     const inboundQuantity = row.inboundQuantity;
@@ -1662,6 +1698,7 @@ function enrichRows(rows, rules) {
       totalFee,
       grossProfit,
       profitMargin,
+      attention,
       status,
       statusLabel: statusLabel(status),
       ruleNote: rule?.note || '',
@@ -1882,6 +1919,11 @@ function projectBoardRow(source, fields) {
     name: source.displayName || source.name || '',
     warehouse: source.warehouse || source.name || '',
     warehouseGroup: source.warehouseGroup || source.name || '',
+    sourceOrder: source.sourceOrder ?? null,
+    attention: source.attention ? {
+      ...source.attention,
+      keys: (source.attention.labels || []).map(fieldKey),
+    } : null,
     status: source.status || 'info',
     statusLabel: source.statusLabel || statusLabel(source.status),
     cells,
@@ -1891,6 +1933,12 @@ function projectBoardRow(source, fields) {
 
 function projectBoardRows(rows, fields) {
   return rows.map((row) => projectBoardRow(row, fields));
+}
+
+function skuAttentionRank(row) {
+  if (row.status === 'bad') return 0;
+  if (row.status === 'warn') return 1;
+  return 2;
 }
 
 function reviewSheetTitle(date) {
@@ -2088,7 +2136,7 @@ async function writeKanbanReviewSheets(payload, targetUrl, tenantToken, { force 
 }
 
 function buildDailyPayload(rawRows, rules, boardFields) {
-  const enriched = enrichRows(rawRows, rules);
+  const enriched = enrichRows(rawRows, rules).map((row, index) => ({ ...row, sourceOrder: index }));
   const dates = Array.from(new Set(enriched.map((row) => row.date).filter(Boolean))).sort();
   const days = {};
   dates.forEach((date) => {
@@ -2107,8 +2155,9 @@ function buildDailyPayload(rawRows, rules, boardFields) {
       skuId: row.skuIds[0] || row.key,
     }));
     const warehouseSkuRows = [...rows].sort((a, b) => {
-      if (a.status !== b.status) return ['bad', 'warn', 'info', 'ok'].indexOf(a.status) - ['bad', 'warn', 'info', 'ok'].indexOf(b.status);
-      return a.safetyGap - b.safetyGap;
+      const priority = skuAttentionRank(a) - skuAttentionRank(b);
+      if (priority) return priority;
+      return (a.sourceOrder ?? 0) - (b.sourceOrder ?? 0);
     });
     days[date] = {
       date,
