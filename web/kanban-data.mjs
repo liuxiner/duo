@@ -1550,7 +1550,7 @@ function attentionForRow({ stock, expected, turnoverDays, thresholdDays }) {
   if (Number.isFinite(turnoverDays) && turnoverDays <= thresholdDays) {
     return {
       severity: 'warn',
-      note: '关注',
+      note: '需关注',
       labels: ['周转天数'],
       reason: '周转天数低于关注阈值',
     };
