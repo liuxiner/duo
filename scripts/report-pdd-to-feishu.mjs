@@ -1170,7 +1170,7 @@ function msUntilNextMinute() {
   return next.getTime() - now.getTime();
 }
 
-async function scheduler() {
+async function scheduler({ channel = 'both' } = {}) {
   const cfg = config();
   console.log('多多数字管家定时上报已启动，每分钟检查一次启用规则。');
   while (true) {
@@ -1184,7 +1184,7 @@ async function scheduler() {
       console.log(`${currentBeijingTime()} 定时上报未开启。`);
       continue;
     }
-    await runOnce().catch(printRunError);
+    await runOnce({ channel }).catch(printRunError);
   }
 }
 
@@ -1203,5 +1203,5 @@ if (args.has('--once') || args.has('--dry-run')) {
   });
   process.exit(exitCode);
 } else {
-  await scheduler();
+  await scheduler({ channel });
 }

@@ -191,8 +191,16 @@ const APP_CONFIG_FIELDS = [
   'FEISHU_REPORT_CHAT_NAME',
   'FEISHU_REPORT_CHAT_ID',
   'FEISHU_WIKI_URL',
+  'FEISHU_WIKI_NODE_TOKEN',
   'FEISHU_SPREADSHEET_TOKEN',
   'FEISHU_SHEET_ID',
+  'FEISHU_START_CELL',
+  'FEISHU_DAILY_SHEET_NAME_FORMAT',
+  'FEISHU_KANBAN_RAW_URL',
+  'FEISHU_KANBAN_RULES_URL',
+  'FEISHU_KANBAN_MANUAL_URL',
+  'FEISHU_KANBAN_REVIEW_URL',
+  'FEISHU_KANBAN_WRITEBACK',
   'PDD_CDP_URL',
 ];
 
@@ -1075,7 +1083,7 @@ function normalizeConfig(config) {
   const defaultHeartbeat = defaultHeartbeatConfig();
   const intervalMinutes = Number(heartbeatInput.intervalMinutes || defaultHeartbeat.intervalMinutes);
   return {
-    schedulerEnabled: FEISHU_REPORT_ENABLED && Boolean(config?.schedulerEnabled),
+    schedulerEnabled: Boolean(config?.schedulerEnabled),
     heartbeat: {
       enabled: typeof heartbeatInput.enabled === 'boolean' ? heartbeatInput.enabled : defaultHeartbeat.enabled,
       intervalMinutes: Number.isFinite(intervalMinutes) && intervalMinutes > 0 ? intervalMinutes : defaultHeartbeat.intervalMinutes,
@@ -1512,12 +1520,8 @@ function startReport({ all = false, dryRun = false, ids = [], channel = 'both' }
 }
 
 function startScheduler() {
-  if (!FEISHU_REPORT_ENABLED) {
-    activeScheduler = { status: 'stopped', logs: activeScheduler?.logs || [], finishedAt: new Date().toISOString() };
-    return;
-  }
   if (activeScheduler?.status === 'running') return;
-  const child = spawn(process.execPath, [path.join(NODE_ENTRY_ROOT, 'scripts/report-pdd-to-feishu.mjs')], {
+  const child = spawn(process.execPath, [path.join(NODE_ENTRY_ROOT, 'scripts/report-pdd-to-feishu.mjs'), '--channel=wechat'], {
     cwd: ROOT,
     env: {
       ...process.env,
@@ -1558,7 +1562,7 @@ function stopScheduler() {
 
 async function setSchedulerEnabled(enabled) {
   const config = await readReportConfig();
-  config.schedulerEnabled = FEISHU_REPORT_ENABLED && Boolean(enabled);
+  config.schedulerEnabled = Boolean(enabled);
   await mkdir(path.dirname(REPORT_CONFIG_PATH), { recursive: true });
   await writeFile(REPORT_CONFIG_PATH, `${JSON.stringify(normalizeConfig(config), null, 2)}\n`, 'utf8');
   if (config.schedulerEnabled) startScheduler();
@@ -1907,7 +1911,7 @@ process.once('SIGINT', shutdown);
 
 readReportConfig()
   .then((config) => {
-    if (FEISHU_REPORT_ENABLED && config.schedulerEnabled) startScheduler();
+    if (config.schedulerEnabled) startScheduler();
     startHeartbeatMonitor();
   })
   .catch((error) => {

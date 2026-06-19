@@ -65,11 +65,19 @@ async function copyWindowsHelpers() {
   const source = path.join(root, 'desktop', 'native', 'windows', 'wechat-automation.ps1');
   const output = path.join(runtimeDir, 'bin', 'mao-wechat-automation.ps1');
   const sourceBytes = await readFile(source);
+  const firstNonAscii = sourceBytes.findIndex((byte) => byte > 0x7F);
+  if (firstNonAscii >= 0) {
+    throw new Error(`Windows WeChat helper must stay ASCII-only; found non-ASCII byte at offset ${firstNonAscii}. Use \\uXXXX/[char] escapes.`);
+  }
   const utf8Bom = Buffer.from([0xEF, 0xBB, 0xBF]);
   const outputBytes = sourceBytes.subarray(0, 3).equals(utf8Bom)
     ? sourceBytes
     : Buffer.concat([utf8Bom, sourceBytes]);
   await writeFile(output, outputBytes);
+  const writtenBytes = await readFile(output);
+  if (!writtenBytes.subarray(0, 3).equals(utf8Bom)) {
+    throw new Error('Windows WeChat helper must be written with a UTF-8 BOM.');
+  }
 }
 
 async function removeOptionalPath(targetPath) {
