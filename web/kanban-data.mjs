@@ -1521,38 +1521,41 @@ function buildRuleIndex(rules) {
   };
 }
 
-function statusFor({ stock, expected, turnoverDays, thresholdDays }) {
-  if (!Number.isFinite(expected) || expected <= 0) return 'info';
-  if (Number.isFinite(stock) && stock < expected) return 'bad';
-  if (Number.isFinite(turnoverDays) && turnoverDays <= Math.max(2, thresholdDays / 2)) return 'bad';
-  if (Number.isFinite(turnoverDays) && turnoverDays <= thresholdDays) return 'warn';
-  return 'ok';
+function statusFor({ availableStock, turnoverDays }) {
+  if (Number.isFinite(availableStock) && availableStock < 0) return 'bad';
+  if (Number.isFinite(turnoverDays) && turnoverDays < 2) return 'warn';
+  if (Number.isFinite(availableStock) || Number.isFinite(turnoverDays)) return 'ok';
+  return 'info';
 }
 
-function attentionForRow({ stock, expected, turnoverDays, thresholdDays }) {
-  if (!Number.isFinite(expected) || expected <= 0) return null;
-  if (Number.isFinite(stock) && stock < expected) {
+function attentionForRow({ availableStock, turnoverDays }) {
+  const labels = ['周转天数'];
+  const valueLabels = ['累计可用库存', '周转天数'];
+  if (Number.isFinite(availableStock) && availableStock < 0) {
     return {
       severity: 'bad',
       note: '补货',
-      labels: ['周转天数'],
-      reason: '仓库总库存低于仓库预估总销售数',
+      labels,
+      valueLabels,
+      reason: '累计可用库存为负',
     };
   }
-  if (Number.isFinite(turnoverDays) && turnoverDays <= Math.max(2, thresholdDays / 2)) {
-    return {
-      severity: 'bad',
-      note: '补货',
-      labels: ['周转天数'],
-      reason: '周转天数低于立即补货阈值',
-    };
-  }
-  if (Number.isFinite(turnoverDays) && turnoverDays <= thresholdDays) {
+  if (Number.isFinite(turnoverDays) && turnoverDays < 2) {
     return {
       severity: 'warn',
       note: '关注',
-      labels: ['周转天数'],
-      reason: '周转天数低于关注阈值',
+      labels,
+      valueLabels,
+      reason: '周转天数低于2天',
+    };
+  }
+  if (Number.isFinite(availableStock) || Number.isFinite(turnoverDays)) {
+    return {
+      severity: 'ok',
+      note: '充足',
+      labels,
+      valueLabels,
+      reason: '累计可用库存和周转天数充足',
     };
   }
   return null;
@@ -1611,11 +1614,13 @@ function enrichRows(rows, rules) {
     const stock = firstFinite(row.stock, 0);
     const safetyStock = firstFinite(rule?.targetStock, expected * thresholdDays, 0);
     const tenDayAverageSales = firstFinite(tenDayAverages.get(row), expected, row.sales, 0);
-    const turnoverDays = tenDayAverageSales > 0 ? stock / tenDayAverageSales : expected > 0 ? stock / expected : null;
     const safetyGap = stock - safetyStock;
     const dailyGap = stock - expected;
-    const status = statusFor({ stock, expected, turnoverDays, thresholdDays });
-    const attention = attentionForRow({ stock, expected, turnoverDays, thresholdDays });
+    const availableStock = stock - expected;
+    const rawTurnoverDays = tenDayAverageSales > 0 ? stock / tenDayAverageSales : expected > 0 ? stock / expected : null;
+    const turnoverDays = availableStock < 0 ? null : rawTurnoverDays;
+    const status = statusFor({ availableStock, turnoverDays });
+    const attention = attentionForRow({ availableStock, turnoverDays });
     const settlementPrice = firstFinite(row.settlementPrice, row.price);
     const amount = Number.isFinite(settlementPrice) ? row.sales * settlementPrice : null;
     const inboundQuantity = row.inboundQuantity;
@@ -1662,7 +1667,6 @@ function enrichRows(rows, rules) {
       )
       : null;
     const profitMargin = Number.isFinite(grossProfit) && Number.isFinite(amount) && amount !== 0 ? grossProfit / amount : null;
-    const availableStock = stock - expected;
     return {
       ...row,
       warehouseGroup: ruleIndex.warehouseGroupFor(row),
@@ -1923,6 +1927,7 @@ function projectBoardRow(source, fields) {
     attention: source.attention ? {
       ...source.attention,
       keys: (source.attention.labels || []).map(fieldKey),
+      valueKeys: (source.attention.valueLabels || source.attention.labels || []).map(fieldKey),
     } : null,
     status: source.status || 'info',
     statusLabel: source.statusLabel || statusLabel(source.status),

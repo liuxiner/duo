@@ -375,9 +375,8 @@
     .stat.profit-stat {
       position: relative;
       min-height: 64px;
-      border-color: #86efac;
-      border-left: 3px solid #16a34a;
-      background: #f7fef9;
+      border-color: var(--line);
+      background: var(--panel-soft);
     }
 
     .stat span {
@@ -406,10 +405,9 @@
       display: inline-flex;
       align-items: center;
       min-height: 20px;
-      border-radius: 3px;
-      padding: 2px 6px;
-      border: 1px solid #bbf7d0;
-      background: #f0fdf4;
+      padding: 0;
+      border: 0;
+      background: transparent;
       color: #047857;
       font-size: 11px;
       font-weight: 800;
@@ -510,6 +508,10 @@
       text-align: right;
     }
 
+    .sku-cell-value.bad-value { color: #b91c1c; }
+    .sku-cell-value.warn-value { color: #a16207; }
+    .sku-cell-value.ok-value { color: #15803d; }
+
     .sku-name {
       display: inline-flex;
       align-items: center;
@@ -544,6 +546,12 @@
       border: 1px solid #f0c58e;
       background: #fffaf0;
       color: #a16207;
+    }
+
+    .sku-alert-note.ok-note {
+      border: 1px solid #bbf7d0;
+      background: #f0fdf4;
+      color: #15803d;
     }
 
     .pos { color: var(--green); font-weight: 750; }
@@ -980,25 +988,41 @@
     function cellAttention(row, field) {
       const attention = row.attention;
       if (!attention) return null;
-      const keys = attention.keys || [];
-      return keys.includes(field.key) ? attention : null;
+      const labelKeys = attention.keys || [];
+      const valueKeys = attention.valueKeys || [];
+      if (!labelKeys.includes(field.key) && !valueKeys.includes(field.key)) return null;
+      return {
+        ...attention,
+        showNote: labelKeys.includes(field.key),
+      };
     }
 
     function attentionNote(attention) {
       if (!attention) return '';
-      const noteClass = attention.severity === 'bad' ? 'bad-note' : 'warn-note';
+      const noteClass = (attention.severity === 'bad' || attention.severity === 'warn' || attention.severity === 'ok')
+        ? attention.severity + '-note'
+        : 'warn-note';
       return '<small class="sku-alert-note ' + noteClass + '" title="' + esc(attention.reason || '') + '">' + esc(attention.note || '') + '</small>';
+    }
+
+    function attentionValueClass(attention) {
+      if (!attention) return '';
+      if (attention.severity === 'bad') return ' bad-value';
+      if (attention.severity === 'warn') return ' warn-value';
+      if (attention.severity === 'ok') return ' ok-value';
+      return '';
     }
 
     function renderSkuCell(row, field) {
       const cell = (row.cells || []).find((item) => item.key === field.key);
       const text = cell?.display ?? '-';
       const attention = cellAttention(row, field);
-      const note = attentionNote(attention);
+      const note = attention?.showNote ? attentionNote(attention) : '';
       if (field.label === '产品名称') {
         return '<td><div class="sku-name" title="' + esc(text) + '"><span class="sku-name-text">' + esc(text) + '</span>' + note + '</div></td>';
       }
-      if (note) return '<td><div class="cell-with-note"><span class="sku-cell-value">' + esc(text) + '</span>' + note + '</div></td>';
+      if (note) return '<td><div class="cell-with-note"><span class="sku-cell-value' + attentionValueClass(attention) + '">' + esc(text) + '</span>' + note + '</div></td>';
+      if (attention) return '<td><div><span class="sku-cell-value' + attentionValueClass(attention) + '">' + esc(text) + '</span></div></td>';
       return '<td><div>' + esc(text) + '</div></td>';
     }
 
