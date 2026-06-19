@@ -8,6 +8,7 @@ import {
   PDD_PAGE_SIZE,
   setPddPageSize,
 } from './pdd-page-tools.mjs';
+import { pddStorageStatePath, savePddStorageState } from './pdd-api-client.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = path.resolve(process.env.MAO_WORKSPACE_PATH || APP_ROOT);
@@ -74,6 +75,7 @@ function config() {
     headless: envBool(process.env.PDD_REPORT_HEADLESS, false),
     outputDir: path.resolve(ROOT, process.env.PDD_REPORT_OUTPUT_DIR || 'data/reports'),
     reportConfigPath: path.resolve(ROOT, process.env.PDD_REPORT_CONFIG_PATH || DEFAULT_REPORT_CONFIG_PATH),
+    storageStatePath: pddStorageStatePath(ROOT),
   };
 }
 
@@ -823,6 +825,9 @@ async function captureScreenshot(cfg, reportItem = null) {
     }
     console.log(`截图报表行数：${rendered.rowCount}/${tableState.visibleRows}。`);
     await closeBlockingModals(page);
+    await savePddStorageState(reportContext, cfg.storageStatePath)
+      .then((storagePath) => console.log(`Refreshed PDD storageState at ${storagePath}.`))
+      .catch((error) => console.warn(`Could not refresh PDD storageState: ${error.message}`));
     await mkdir(cfg.outputDir, { recursive: true });
     const suffix = reportItem ? `-${reportItem.id}-${(reportItem.warehouse || reportItem.groupName || reportItem.chatName).replace(/[\\/:*?"<>|\s]+/g, '_')}` : '';
     const stamp = fileTimestamp();

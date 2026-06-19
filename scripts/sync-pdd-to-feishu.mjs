@@ -17,6 +17,7 @@ import { rowsToCsv, writeFeishuMirrorCsv } from '../pdd-automation/storage/local
 import {
   pddStorageStatePath,
   readJsonEnv,
+  savePddStorageState,
 } from './pdd-api-client.mjs';
 
 const ROOT = process.cwd();
@@ -1182,6 +1183,9 @@ async function main() {
           if (feishuWrite.fallback) {
             console.warn(`Feishu write skipped/failed; local fallback is ready at ${feishuWrite.fallbackCsv}`);
           }
+          await savePddStorageState(context, cfg.storageStatePath)
+            .then((storagePath) => console.log(`Refreshed PDD storageState at ${storagePath}.`))
+            .catch((error) => console.warn(`Could not refresh PDD storageState: ${error.message}`));
           succeeded = true;
           break;
         } catch (err) {

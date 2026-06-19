@@ -188,6 +188,8 @@ const DEFAULT_REPORT_CONFIG = {
 const APP_CONFIG_FIELDS = [
   'FEISHU_APP_ID',
   'FEISHU_APP_SECRET',
+  'FEISHU_REPORT_CHAT_NAME',
+  'FEISHU_REPORT_CHAT_ID',
   'FEISHU_WIKI_URL',
   'FEISHU_SPREADSHEET_TOKEN',
   'FEISHU_SHEET_ID',
@@ -636,7 +638,8 @@ async function sendMonitorErrorNotification(failure) {
     const adminGroup = config.notification?.adminGroup || DEFAULT_REPORT_CONFIG.notification.adminGroup;
     appendMonitorNotificationLog(`队列 1/1：管理通知群 ${adminGroup} -> 发送监控错误的上报。`);
     const token = await feishuTenantToken();
-    const chat = await findFeishuChat(token, adminGroup);
+    const chat = await findFeishuChatWithFallback(token, adminGroup, '管理通知群');
+    if (chat.fallbackReason) appendMonitorNotificationLog(chat.fallbackReason);
     const content = {
       zh_cn: {
         title: '多多数字管家监控错误',
@@ -1131,6 +1134,15 @@ function appendHeartbeatLog(message) {
   appendLogs(heartbeatMonitor, `[心跳] ${beijingTimestamp()} ${message}`);
 }
 
+async function pathExists(targetPath) {
+  try {
+    await stat(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function feishuJson(url, options = {}) {
   const response = await fetch(url, options);
   const body = await response.json().catch(() => ({}));
@@ -1158,7 +1170,7 @@ async function feishuTenantToken() {
 
 async function findFeishuChat(token, chatName) {
   const targetName = String(chatName || '').trim();
-  if (!targetName) throw new Error('心跳监控未配置飞书群。');
+  if (!targetName) throw new Error('未配置飞书群。');
   let pageToken = '';
   do {
     const query = new URLSearchParams({ page_size: '100' });
@@ -1173,6 +1185,35 @@ async function findFeishuChat(token, chatName) {
     pageToken = body.data?.has_more ? body.data.page_token : '';
   } while (pageToken);
   throw new Error(`飞书机器人不在群聊：${targetName}`);
+}
+
+async function findFeishuChatWithFallback(token, chatName, label = '飞书通知群') {
+  const targetName = String(chatName || '').trim();
+  try {
+    return await findFeishuChat(token, targetName);
+  } catch (primaryError) {
+    const fallbackChatId = String(process.env.FEISHU_REPORT_CHAT_ID || '').trim();
+    const fallbackChatName = String(process.env.FEISHU_REPORT_CHAT_NAME || '').trim();
+    if (fallbackChatId) {
+      return {
+        chat_id: fallbackChatId,
+        name: fallbackChatName || fallbackChatId,
+        fallbackReason: `${label} ${targetName || '-'} 不可用，已使用 FEISHU_REPORT_CHAT_ID 兜底。`,
+      };
+    }
+    if (fallbackChatName && fallbackChatName !== targetName) {
+      try {
+        const chat = await findFeishuChat(token, fallbackChatName);
+        return {
+          ...chat,
+          fallbackReason: `${label} ${targetName || '-'} 不可用，已使用 FEISHU_REPORT_CHAT_NAME=${fallbackChatName} 兜底。`,
+        };
+      } catch (fallbackError) {
+        throw new Error(`${label}配置错误：${primaryError.message}；兜底群 ${fallbackChatName} 也不可用：${fallbackError.message}`);
+      }
+    }
+    throw new Error(`${label}配置错误：${primaryError.message}。请在页面里填写机器人已加入的飞书群名，或在 .env 配置 FEISHU_REPORT_CHAT_ID。`);
+  }
 }
 
 async function findFeishuMember(token, chatId, mentionName) {
@@ -1197,7 +1238,7 @@ async function findFeishuMember(token, chatId, mentionName) {
 
 async function sendHeartbeatAlert(heartbeatConfig, failedChecks, allChecks) {
   const token = await feishuTenantToken();
-  const chat = await findFeishuChat(token, heartbeatConfig.feishuChatName);
+  const chat = await findFeishuChatWithFallback(token, heartbeatConfig.feishuChatName, '心跳告警飞书群');
   const members = [];
   for (const name of heartbeatConfig.mentionNames) {
     members.push(await findFeishuMember(token, chat.chat_id, name));
@@ -1225,7 +1266,7 @@ async function sendHeartbeatAlert(heartbeatConfig, failedChecks, allChecks) {
     body: JSON.stringify({ receive_id: chat.chat_id, msg_type: 'post', content: JSON.stringify(content) }),
     signal: AbortSignal.timeout(10_000),
   });
-  return { chatName: chat.name, mentionNames: members.map((member) => member.name) };
+  return { chatName: chat.name, mentionNames: members.map((member) => member.name), fallbackReason: chat.fallbackReason || '' };
 }
 
 function formatHeartbeatCheckState(check) {
@@ -1237,9 +1278,22 @@ function formatHeartbeatCheckState(check) {
 async function checkPddLoginStatus() {
   await loadDotEnv('.env', true);
   const storageStatePath = pddStorageStatePath(ROOT);
+  const profileDir = path.resolve(ROOT, process.env.PDD_BROWSER_PROFILE_DIR || '.cache/pdd-chrome-profile');
   try {
     const storageState = await loadPddStorageState(storageStatePath);
     if (!storageState) {
+      if (await pathExists(profileDir)) {
+        return {
+          id: 'pdd',
+          name: '拼多多',
+          loggedIn: null,
+          ok: false,
+          alertable: false,
+          detail: `未找到 PDD 登录态文件：${path.relative(ROOT, storageStatePath)}；已发现浏览器登录目录：${path.relative(ROOT, profileDir)}，请执行一次同步或上报来刷新登录态文件`,
+          storageStatePath,
+          profileDir,
+        };
+      }
       return {
         id: 'pdd',
         name: '拼多多',
@@ -1247,6 +1301,7 @@ async function checkPddLoginStatus() {
         ok: false,
         detail: `未找到 PDD 登录态文件：${path.relative(ROOT, storageStatePath)}`,
         storageStatePath,
+        profileDir,
       };
     }
 
@@ -1258,6 +1313,7 @@ async function checkPddLoginStatus() {
       ok: loggedIn,
       detail: loggedIn ? 'storageState 中存在可用 PDD Cookie' : 'storageState 中没有可用 PDD Cookie，请重新登录拼多多',
       storageStatePath,
+      profileDir,
     };
   } catch (error) {
     return {
@@ -1268,6 +1324,7 @@ async function checkPddLoginStatus() {
       alertable: false,
       detail: `检测异常：${error.message}`,
       storageStatePath,
+      profileDir,
     };
   }
 }
@@ -1385,6 +1442,7 @@ async function runHeartbeatCheck({ manual = false } = {}) {
       appendHeartbeatLog(`检测异常不作为未登录告警：${indeterminateChecks.map((check) => `${check.name}（${check.detail}）`).join('；')}。`);
     }
     const alertResult = await sendHeartbeatAlert(latestHeartbeatConfig, failedChecks, results);
+    if (alertResult.fallbackReason) appendHeartbeatLog(alertResult.fallbackReason);
     appendHeartbeatLog(`已发送飞书告警到 ${alertResult.chatName}，@${alertResult.mentionNames.join(', ')}。`);
     heartbeatMonitor.status = 'failed';
     return heartbeatMonitor.lastResult;
