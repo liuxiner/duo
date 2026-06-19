@@ -1617,8 +1617,7 @@ function enrichRows(rows, rules) {
     const safetyGap = stock - safetyStock;
     const dailyGap = stock - expected;
     const availableStock = stock - expected;
-    const rawTurnoverDays = tenDayAverageSales > 0 ? stock / tenDayAverageSales : expected > 0 ? stock / expected : null;
-    const turnoverDays = availableStock < 0 ? null : rawTurnoverDays;
+    const turnoverDays = stock > expected && expected > 0 ? stock / expected : null;
     const status = statusFor({ availableStock, turnoverDays });
     const attention = attentionForRow({ availableStock, turnoverDays });
     const settlementPrice = firstFinite(row.settlementPrice, row.price);
@@ -1784,7 +1783,9 @@ function addToAggregate(aggregate, row) {
 }
 
 function finishAggregate(aggregate) {
-  const turnoverDays = aggregate.expected > 0 ? aggregate.stock / aggregate.expected : null;
+  const turnoverDays = aggregate.stock > aggregate.expected && aggregate.expected > 0
+    ? aggregate.stock / aggregate.expected
+    : null;
   const safetyGap = aggregate.stock - aggregate.safetyStock;
   const achievement = aggregate.expected > 0 ? aggregate.sales / aggregate.expected : null;
   const status = aggregate.criticalSkuCount ? 'bad' : aggregate.riskSkuCount ? 'warn' : aggregate.expected > 0 ? 'ok' : 'info';
@@ -2017,7 +2018,7 @@ function reviewFormulaForLabel(label, headers, rowNumber) {
 
   if (key === fieldKey('产品日销额') && settlementPrice && sales) return `=${settlementPrice}*${sales}`;
   if (key === fieldKey('累计可用库存') && stock && expected) return `=${stock}-${expected}`;
-  if (key === fieldKey('周转天数') && stock && expected) return `=IF(${expected}>0,${stock}/${expected},"")`;
+  if (key === fieldKey('周转天数') && stock && expected) return `=IF(${stock}>${expected},${stock}/${expected},"-")`;
   if (key === fieldKey('技术服务费') && sales) return `=${sales}*0.165`;
   if (key === fieldKey('多货费') && stock && sales) return `=(${stock}-${sales})*0.1`;
   if (key === fieldKey('云仓费用')) {
