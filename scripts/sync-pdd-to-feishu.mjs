@@ -4,13 +4,20 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
   closeBlockingModals,
-  disconnectPddBrowser,
   getPddPageSize,
   getUniqueServicePage,
   installBlockingModalGuard,
   PDD_PAGE_SIZE,
   setPddPageSize,
 } from './pdd-page-tools.mjs';
+import { createPddBrowserContext, closePddBrowserContext } from '../pdd-automation/auth/login.mjs';
+import { collectAppointmentPayload } from '../pdd-automation/jobs/sync-appointment.mjs';
+import { writeAppointmentRowsToFeishu } from '../pdd-automation/storage/feishu.mjs';
+import { rowsToCsv, writeFeishuMirrorCsv } from '../pdd-automation/storage/local-csv.mjs';
+import {
+  pddStorageStatePath,
+  readJsonEnv,
+} from './pdd-api-client.mjs';
 
 const ROOT = process.cwd();
 const DEFAULT_PDD_ORDER_MANAGEMENT_URL = 'https://mc.pinduoduo.com/ddmc-mms/order/management';
@@ -78,9 +85,19 @@ function config() {
     autoWaitForLogin: envBool(process.env.PDD_AUTO_WAIT_FOR_LOGIN, false),
     loginWaitMs: envInt(process.env.PDD_LOGIN_WAIT_MS, 5 * 60 * 1000),
     waitForLogin: envBool(process.env.PDD_WAIT_FOR_LOGIN, true),
+    syncMode: String(process.env.PDD_SYNC_MODE || 'dom').toLowerCase(),
+    apiRequestBody: readJsonEnv('PDD_APPOINTMENT_GOODS_BODY_JSON', null),
+    apiWarehouseIds: String(process.env.PDD_API_WAREHOUSE_IDS || '')
+      .split(/[,，\s]+/)
+      .map((value) => Number(value))
+      .filter(Number.isFinite),
+    apiSnapshotJson: path.resolve(ROOT, process.env.PDD_API_SNAPSHOT_JSON || 'data/pdd/latest-api-response.json'),
+    storageStatePath: pddStorageStatePath(ROOT),
     outputDir: path.resolve(ROOT, process.env.PDD_OUTPUT_DIR || 'data/pdd'),
     latestJson: path.resolve(ROOT, process.env.PDD_LATEST_JSON || 'data/latest.json'),
     latestCsv: path.resolve(ROOT, process.env.PDD_LATEST_CSV || 'data/latest.csv'),
+    feishuFallbackDir: path.resolve(ROOT, process.env.PDD_FEISHU_FALLBACK_DIR || 'data/feishu-fallback'),
+    feishuFallbackLatestCsv: path.resolve(ROOT, process.env.PDD_FEISHU_FALLBACK_LATEST_CSV || 'data/feishu-fallback/appointment-feishu-latest.csv'),
     feishuAppId: process.env.FEISHU_APP_ID || '',
     feishuAppSecret: process.env.FEISHU_APP_SECRET || '',
     feishuWikiUrl: process.env.FEISHU_WIKI_URL || '',
@@ -90,6 +107,7 @@ function config() {
     feishuStartCell: process.env.FEISHU_START_CELL || 'A1',
     feishuDailySheetNameFormat: process.env.FEISHU_DAILY_SHEET_NAME_FORMAT || 'YYYY-MM-DD',
     feishuClearExtraRows: envInt(process.env.FEISHU_CLEAR_EXTRA_ROWS, 200),
+    feishuStrictWrite: envBool(process.env.FEISHU_STRICT_WRITE, false),
   };
 }
 
@@ -162,15 +180,6 @@ function timestampForFile(date = new Date()) {
     pad(date.getMinutes()),
     pad(date.getSeconds()),
   ].join('');
-}
-
-function csvEscape(value) {
-  const text = String(value ?? '');
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
-function toCsv(headers, rows) {
-  return [headers, ...rows].map((row) => row.map(csvEscape).join(',')).join('\n');
 }
 
 function dedupeRows(rows) {
@@ -748,42 +757,6 @@ async function clickNextPage(page) {
   return true;
 }
 
-async function createBrowserContext(cfg) {
-  const { chromium } = await import('playwright');
-  let browser;
-  let context;
-
-  if (cfg.cdpUrl) {
-    try {
-      browser = await chromium.connectOverCDP(cfg.cdpUrl);
-      context = browser.contexts()[0] || await browser.newContext({
-        viewport: { width: 1440, height: 960 },
-        locale: 'zh-CN',
-      });
-      return { browser, context };
-    } catch (cdpErr) {
-      console.error(`CDP connection failed (${cdpErr.message || cdpErr}), falling back to persistent context.`);
-    }
-  }
-  context = await chromium.launchPersistentContext(cfg.profileDir, {
-    headless: cfg.headless,
-    channel: cfg.browserChannel || undefined,
-    chromiumSandbox: cfg.chromiumSandbox,
-    viewport: { width: 1440, height: 960 },
-    locale: 'zh-CN',
-  });
-  return { browser: null, context };
-}
-
-async function closeBrowserContext(browser, context) {
-  try {
-    if (browser) disconnectPddBrowser(browser);
-    else await context.close();
-  } catch (cleanupErr) {
-    console.error('Browser cleanup error (safe to ignore):', cleanupErr.message || cleanupErr);
-  }
-}
-
 async function collectPddRows(cfg, context) {
   const page = await getUniqueServicePage(context, cfg.pddUrl);
   await installBlockingModalGuard(page);
@@ -880,6 +853,13 @@ function extractWikiNodeToken(value) {
   return match ? match[1] : text;
 }
 
+function extractSpreadsheetToken(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const match = text.match(/\/sheets\/([A-Za-z0-9]+)/);
+  return match?.[1] || '';
+}
+
 function formatDailySheetName(date, format) {
   const pad = (value) => String(value).padStart(2, '0');
   const yyyy = String(date.getFullYear());
@@ -904,6 +884,12 @@ async function resolveSpreadsheetToken(cfg, token) {
   if (cfg.feishuSpreadsheetToken) {
     console.log(`Using configured Feishu spreadsheet token: ${cfg.feishuSpreadsheetToken}`);
     return cfg.feishuSpreadsheetToken;
+  }
+
+  const directSpreadsheetToken = extractSpreadsheetToken(cfg.feishuWikiUrl);
+  if (directSpreadsheetToken) {
+    console.log(`Using spreadsheet token from Feishu URL: ${directSpreadsheetToken}`);
+    return directSpreadsheetToken;
   }
 
   const wikiNodeToken = extractWikiNodeToken(cfg.feishuWikiNodeToken || cfg.feishuWikiUrl);
@@ -944,6 +930,57 @@ function sheetTitle(sheet) {
 
 function sheetId(sheet) {
   return sheet.sheet_id || sheet.sheetId || sheet.properties?.sheet_id || sheet.properties?.sheetId || '';
+}
+
+function sheetDateKey(title) {
+  const match = String(title || '').trim().match(/^(?:看板复盘-)?(\d{4}-\d{2}-\d{2})$/);
+  return match ? match[1] : '';
+}
+
+async function updateFeishuSheetIndex(spreadsheetToken, token, sheetIdForMove, index) {
+  await feishuJson(
+    `https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/sheets_batch_update`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json; charset=utf-8',
+      },
+      body: JSON.stringify({
+        requests: [
+          {
+            updateSheet: {
+              properties: {
+                sheetId: sheetIdForMove,
+                index,
+              },
+            },
+          },
+        ],
+      }),
+    }
+  );
+}
+
+async function sortFeishuSheetsByDate(spreadsheetToken, token) {
+  const sheets = await listFeishuSheets(spreadsheetToken, token);
+  const datedSheets = sheets
+    .map((sheet, index) => ({
+      index,
+      id: sheetId(sheet),
+      title: sheetTitle(sheet),
+      dateKey: sheetDateKey(sheetTitle(sheet)),
+    }))
+    .filter((sheet) => sheet.id && sheet.dateKey)
+    .sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+
+  const alreadySorted = datedSheets.every((sheet, index) => sheet.index === index);
+  if (alreadySorted) return { moved: 0, total: datedSheets.length };
+
+  for (let index = 0; index < datedSheets.length; index += 1) {
+    await updateFeishuSheetIndex(spreadsheetToken, token, datedSheets[index].id, index);
+  }
+  return { moved: datedSheets.length, total: datedSheets.length };
 }
 
 async function createFeishuSheet(spreadsheetToken, title, token) {
@@ -1053,6 +1090,12 @@ async function writeToFeishu(cfg, headers, rows) {
   if (!response.ok || body.code !== 0) {
     throw new Error(`Failed to write Feishu sheet: HTTP ${response.status} ${JSON.stringify(body)}`);
   }
+  if (!cfg.feishuSheetId) {
+    const sortResult = await sortFeishuSheetsByDate(spreadsheetToken, token);
+    if (sortResult.total) {
+      console.log(`Ensured Feishu sheet tabs are sorted by date descending (${sortResult.total} dated sheets).`);
+    }
+  }
   console.log(`Wrote ${rows.length} rows to Feishu range ${range}.`);
 }
 
@@ -1062,12 +1105,21 @@ async function writeLocalFiles(cfg, payload) {
   await mkdir(path.dirname(cfg.latestCsv), { recursive: true });
 
   const stamp = payload.collectedAt || timestampForFile();
-  const csv = toCsv(payload.headers, payload.rows);
+  const csv = rowsToCsv(payload.headers, payload.rows);
   const json = JSON.stringify(payload, null, 2);
-  const rawCsv = payload.rawHeaders && payload.rawRows ? toCsv(payload.rawHeaders, payload.rawRows) : '';
+  const rawCsv = payload.rawHeaders && payload.rawRows ? rowsToCsv(payload.rawHeaders, payload.rawRows) : '';
   const snapshotCsv = path.join(cfg.outputDir, `pdd-orders-calculated-${stamp}.csv`);
   const snapshotJson = path.join(cfg.outputDir, `pdd-orders-${stamp}.json`);
   const snapshotRawCsv = path.join(cfg.outputDir, `pdd-orders-raw-${stamp}.csv`);
+  const salesDate = payload.salesDate || payload.rows?.[0]?.[1] || formatBeijingDate(new Date());
+  const feishuMirror = await writeFeishuMirrorCsv({
+    dir: cfg.feishuFallbackDir,
+    latestCsv: cfg.feishuFallbackLatestCsv,
+    source: 'appointment',
+    dateKey: salesDate,
+    stamp,
+    values: buildFeishuValues(payload.headers, payload.rows, cfg.feishuClearExtraRows),
+  });
 
   await writeFile(snapshotCsv, csv, 'utf8');
   await writeFile(snapshotJson, json, 'utf8');
@@ -1077,7 +1129,16 @@ async function writeLocalFiles(cfg, payload) {
 
   console.log(`Wrote ${payload.rows.length} calculated rows to ${cfg.latestCsv}`);
   if (rawCsv) console.log(`Wrote ${payload.rawRows.length} raw rows to ${snapshotRawCsv}`);
+  console.log(`Wrote Feishu-compatible fallback CSV to ${feishuMirror.dailyCsv}`);
   console.log(`Wrote JSON to ${cfg.latestJson}`);
+  return {
+    snapshotCsv,
+    snapshotJson,
+    snapshotRawCsv: rawCsv ? snapshotRawCsv : '',
+    latestCsv: cfg.latestCsv,
+    latestJson: cfg.latestJson,
+    feishuMirror,
+  };
 }
 
 const MAX_RETRIES = 3;
@@ -1092,7 +1153,7 @@ async function main() {
 
   console.log(`Syncing ${dates.length} date(s): ${dates[0]} -> ${dates[dates.length - 1]}`);
 
-  const { browser, context } = await createBrowserContext(cfg);
+  const { browser, context } = await createPddBrowserContext(cfg);
   const failedDates = [];
   try {
     for (const date of dates) {
@@ -1100,9 +1161,27 @@ async function main() {
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
         console.log(`\n=== Sync ${date} (attempt ${attempt}/${MAX_RETRIES}) ===`);
         try {
-          const payload = await collectPddRows({ ...cfg, syncDate: date }, context);
-          await writeLocalFiles(cfg, payload);
-          await writeToFeishu(cfg, payload.headers, payload.rows);
+          const runCfg = { ...cfg, syncDate: date };
+          const payload = await collectAppointmentPayload({
+            cfg: runCfg,
+            context,
+            collectViaUi: collectPddRows,
+            collectViaApiOptions: {
+              calculateRows: calculatedRowsFromRecords,
+              calculatedHeaders: CALCULATED_HEADERS,
+            },
+          });
+          const localFiles = await writeLocalFiles(cfg, payload);
+          const feishuWrite = await writeAppointmentRowsToFeishu({
+            cfg,
+            headers: payload.headers,
+            rows: payload.rows,
+            writeToFeishu,
+            fallbackCsv: localFiles.feishuMirror.dailyCsv,
+          });
+          if (feishuWrite.fallback) {
+            console.warn(`Feishu write skipped/failed; local fallback is ready at ${feishuWrite.fallbackCsv}`);
+          }
           succeeded = true;
           break;
         } catch (err) {
@@ -1119,7 +1198,7 @@ async function main() {
       }
     }
   } finally {
-    await closeBrowserContext(browser, context);
+    await closePddBrowserContext(browser, context);
   }
   if (failedDates.length) {
     throw new Error(`Failed dates: ${failedDates.join(', ')}`);

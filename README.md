@@ -52,6 +52,26 @@ PORT=4174 pnpm run web
 http://127.0.0.1:4174/kanban.html
 ```
 
+生产部署前构建 Kanban 前端静态包：
+
+```bash
+pnpm run kanban:build
+```
+
+检查飞书 App 凭证和表格读取权限：
+
+```bash
+pnpm run kanban:auth-check
+```
+
+真实读取 Kanban 并强制写回复盘：
+
+```bash
+pnpm run kanban:smoke
+```
+
+阿里云 RockyLinux + Nginx + PM2 部署说明见 [docs/DEPLOY_ALIYUN_ROCKY.md](docs/DEPLOY_ALIYUN_ROCKY.md)。
+
 ## 看板数据
 
 - Raw data source: `FEISHU_KANBAN_RAW_URL`
@@ -62,6 +82,8 @@ http://127.0.0.1:4174/kanban.html
 - Review writeback: `FEISHU_KANBAN_REVIEW_URL`
 
 看板页面里的 `飞书表配置` 可以直接修改 raw 数据源、规则表、手动输入表和复盘表 URL。点击 `保存配置` 后会写入 `.env`，并立即重新读取和写回复盘。
+
+如果开放给个人用户自用，用户可以在看板右上角配置弹窗里填写自己的飞书自建应用 `App ID / App Secret`。`App Secret` 只会写入当前实例的 `.env`，接口不会明文回显；再次保存时 Secret 留空表示保留原值。当前实现适合“一人一套部署/个人实例”，多人共用同一域名时需要额外做账号登录和凭证隔离。
 
 看板会按日期拆分数据：
 
@@ -95,6 +117,8 @@ http://127.0.0.1:4174/kanban.html
 ```bash
 pnpm run sync:pdd
 ```
+
+Electron/Web UI 的 `飞书数据同步` 页面也会执行同一条 Playwright 采集链路。点击 `开始同步` 后会先刷新 Order Management/raw 销售数据表，再强制刷新看板数据并写回 `FEISHU_KANBAN_REVIEW_URL` 的 Kanban Review 复盘表。
 
 指定日期范围同步：
 

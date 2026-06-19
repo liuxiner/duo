@@ -658,6 +658,8 @@
       </div>
       <div id="configStatus" class="status-line">-</div>
       <div class="config-grid">
+        <label>飞书 App ID <input id="appIdInput" autocomplete="off" placeholder="cli_xxx / app id"></label>
+        <label>飞书 App Secret <input id="appSecretInput" type="password" autocomplete="new-password" placeholder="留空表示不修改"></label>
         <label>原始数据 <input id="rawUrlInput" placeholder="raw source URL"></label>
         <label>规则表 <input id="rulesUrlInput" placeholder="rules URL"></label>
         <label>手动输入表 <input id="manualUrlInput" placeholder="manual input URL"></label>
@@ -783,12 +785,17 @@
 
     function renderConfig() {
       const config = state.config || {};
+      document.getElementById('appIdInput').value = config.appId || '';
+      document.getElementById('appSecretInput').value = '';
+      document.getElementById('appSecretInput').placeholder = config.hasAppSecret ? '已配置，留空不修改' : '请输入 App Secret';
       document.getElementById('rawUrlInput').value = config.rawUrl || '';
       document.getElementById('rulesUrlInput').value = config.rulesUrl || '';
       document.getElementById('manualUrlInput').value = config.manualUrl || '';
       document.getElementById('reviewUrlInput').value = config.reviewUrl || '';
       document.getElementById('writebackInput').checked = config.writebackEnabled !== false;
-      document.getElementById('configStatus').textContent = config.reviewUrl ? '复盘表已配置' : '-';
+      const authText = config.authReady ? '飞书凭证已配置' : '请配置飞书 App ID / Secret';
+      const reviewText = config.reviewUrl ? '复盘表已配置' : '复盘表未配置';
+      document.getElementById('configStatus').textContent = authText + ' · ' + reviewText;
     }
 
     async function loadConfig() {
@@ -805,16 +812,20 @@
       button.textContent = '保存中';
       document.getElementById('configStatus').textContent = '保存中';
       try {
+        const appSecret = document.getElementById('appSecretInput').value.trim();
+        const requestBody = {
+          appId: document.getElementById('appIdInput').value.trim(),
+          rawUrl: document.getElementById('rawUrlInput').value.trim(),
+          rulesUrl: document.getElementById('rulesUrlInput').value.trim(),
+          manualUrl: document.getElementById('manualUrlInput').value.trim(),
+          reviewUrl: document.getElementById('reviewUrlInput').value.trim(),
+          writebackEnabled: document.getElementById('writebackInput').checked,
+        };
+        if (appSecret) requestBody.appSecret = appSecret;
         const response = await fetch('/api/kanban-config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json; charset=utf-8' },
-          body: JSON.stringify({
-            rawUrl: document.getElementById('rawUrlInput').value.trim(),
-            rulesUrl: document.getElementById('rulesUrlInput').value.trim(),
-            manualUrl: document.getElementById('manualUrlInput').value.trim(),
-            reviewUrl: document.getElementById('reviewUrlInput').value.trim(),
-            writebackEnabled: document.getElementById('writebackInput').checked,
-          }),
+          body: JSON.stringify(requestBody),
         });
         const payload = await response.json();
         if (!response.ok || payload.error) throw new Error(payload.error || '飞书表配置保存失败');

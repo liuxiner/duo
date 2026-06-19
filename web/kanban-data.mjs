@@ -2188,7 +2188,7 @@ function buildDailyPayload(rawRows, rules, boardFields) {
   return { dates, days };
 }
 
-export async function loadKanbanData({ forceRefresh = false } = {}) {
+export async function loadKanbanData({ forceRefresh = false, forceWriteback = false } = {}) {
   const now = Date.now();
   const rawSourceUrl = process.env.FEISHU_KANBAN_RAW_URL || process.env.FEISHU_WIKI_URL || DEFAULT_RAW_SOURCE_URL;
   const rulesSourceUrl = process.env.FEISHU_KANBAN_RULES_URL || DEFAULT_RULES_SOURCE_URL;
@@ -2284,7 +2284,7 @@ export async function loadKanbanData({ forceRefresh = false } = {}) {
 
   if (writebackEnabled) {
     try {
-      payload.writeback = await writeKanbanReviewSheets(payload, reviewTargetUrl, tenantToken);
+      payload.writeback = await writeKanbanReviewSheets(payload, reviewTargetUrl, tenantToken, { force: forceWriteback });
     } catch (error) {
       const message = friendlyFeishuError(error);
       payload.writeback = { skipped: false, targetUrl: reviewTargetUrl, error: message };

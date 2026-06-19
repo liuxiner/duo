@@ -11,6 +11,7 @@ const entries = [
   'package.json',
   'web',
   'scripts',
+  'pdd-automation',
 ];
 const webWechatRuntimePackages = ['file-box', 'qrcode', 'wechaty', 'wechaty-puppet-wechat'];
 
