@@ -27,7 +27,8 @@
     "package:mac:release": "pnpm desktop:prepare && pnpm --dir desktop package:mac:release",
     "package:win": "pnpm desktop:prepare && pnpm --dir desktop package:win",
     "build:runtime-update": "pnpm desktop:prepare && node scripts/build-runtime-update.mjs",
-    "create:update-feed": "node scripts/create-update-feed.mjs"
+    "create:update-feed": "node scripts/create-update-feed.mjs",
+    "release:version": "node scripts/prepare-release-version.mjs"
   },
   "dependencies": {
     "file-box": "1.4.15",

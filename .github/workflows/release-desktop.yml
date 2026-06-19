@@ -1,0 +1,158 @@
+name: Release Desktop Apps
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "指定版本号，例如 0.1.1；留空则按 bump 自动递增"
+        required: false
+        type: string
+      bump:
+        description: "version 留空时的递增方式"
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      release_notes:
+        description: "Release notes"
+        required: false
+        type: string
+      draft:
+        description: "创建为 draft release"
+        required: true
+        default: false
+        type: boolean
+      prerelease:
+        description: "标记为 prerelease"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Resolve Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      baseVersion: ${{ steps.version.outputs.baseVersion }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - id: version
+        name: Compute release version
+        run: node scripts/prepare-release-version.mjs --dry-run --check-tag --version "${{ inputs.version }}" --bump "${{ inputs.bump }}"
+
+  macos:
+    name: Build macOS
+    runs-on: macos-latest
+    needs: version
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Apply release version
+        run: node scripts/prepare-release-version.mjs --version "${{ needs.version.outputs.version }}"
+      - run: pnpm install --frozen-lockfile
+      - name: Package macOS app
+        run: pnpm package:mac:release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          compression-level: 0
+          path: |
+            release/DuoduoDigitalManager-${{ needs.version.outputs.version }}-*.dmg
+            release/DuoduoDigitalManager-${{ needs.version.outputs.version }}-*.dmg.blockmap
+            release/DuoduoDigitalManager-${{ needs.version.outputs.version }}-*.zip
+            release/DuoduoDigitalManager-${{ needs.version.outputs.version }}-*.zip.blockmap
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows
+    runs-on: windows-latest
+    needs: version
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Apply release version
+        run: node scripts/prepare-release-version.mjs --version "${{ needs.version.outputs.version }}"
+      - run: pnpm install --frozen-lockfile
+      - name: Package Windows app
+        run: pnpm package:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          compression-level: 0
+          path: |
+            release/DuoduoDigitalManager-${{ needs.version.outputs.version }}-*-setup.exe
+            release/DuoduoDigitalManager-${{ needs.version.outputs.version }}-*-setup.exe.blockmap
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - version
+      - macos
+      - windows
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-release"
+          path: release
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+          RELEASE_DRAFT: ${{ inputs.draft }}
+          RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes="${RELEASE_NOTES}"
+          if [ -z "$notes" ]; then
+            notes="多多数字管家 ${RELEASE_VERSION}"
+          fi
+
+          flags=()
+          if [ "$RELEASE_DRAFT" = "true" ]; then
+            flags+=(--draft)
+          fi
+          if [ "$RELEASE_PRERELEASE" = "true" ]; then
+            flags+=(--prerelease)
+          fi
+
+          gh release create "$RELEASE_TAG" release/* \
+            --target "$GITHUB_SHA" \
+            --title "多多数字管家 ${RELEASE_TAG}" \
+            --notes "$notes" \
+            "${flags[@]}"

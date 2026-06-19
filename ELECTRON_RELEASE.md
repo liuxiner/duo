@@ -103,3 +103,11 @@ v0.1.1/runtime-duoduo-0.1.1-win32-x64.zip
 更新包会校验平台、最低桌面壳版本和每个文件的 SHA-256。新版本服务启动失败时，下次启动自动回退到安装包内置版本。
 
 Electron、原生依赖、预加载 API 或打包配置发生变化时，提升 `desktop/package.json` 版本并发布新的完整安装包；同时更新根 `package.json` 的 `mao.minShellVersion`。
+
+## GitHub Release
+
+完整安装包使用 `.github/workflows/release-desktop.yml` 发布。到 GitHub Actions 里手动运行 `Release Desktop Apps`：
+
+- `version` 留空时，按最新稳定 `v*` tag 自动递增，默认 `patch`。
+- `version` 填写 `0.2.0` 或 `v0.2.0` 时，使用指定版本。
+- workflow 会临时同步根 `package.json`、`desktop/package.json` 和 `mao.minShellVersion`，打包 macOS / Windows，然后创建 GitHub Release 并上传安装包。
