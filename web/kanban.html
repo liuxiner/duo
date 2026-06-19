@@ -415,23 +415,26 @@
       white-space: nowrap;
     }
 
-    .bar {
-      height: 8px;
-      overflow: hidden;
-      border-radius: 2px;
-      background: #f1f5f9;
+    .forecast-accuracy {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
     }
 
-    .bar > i {
-      display: block;
-      height: 100%;
-      border-radius: inherit;
-      background: var(--green);
+    .forecast-accuracy span {
+      color: var(--muted);
+      font-size: 12px;
     }
 
-    .warehouse-card.bad .bar > i { background: var(--red); }
-    .warehouse-card.warn .bar > i { background: var(--amber); }
-    .warehouse-card.info .bar > i { background: var(--blue); }
+    .forecast-accuracy strong {
+      color: #1f2937;
+      font-size: 13px;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+    }
 
     .warehouse-status {
       line-height: 1.45;
@@ -890,11 +893,6 @@
       document.getElementById('kpiRiskHint').textContent = '补货 ' + formatNum(kpis.criticalSkuCount);
     }
 
-    function barWidth(row) {
-      if (!Number.isFinite(row.achievement)) return 0;
-      return Math.max(3, Math.min(100, row.achievement * 100));
-    }
-
     function renderWarehouseCards() {
       const current = day();
       const rows = current.kanban?.big?.rows || [];
@@ -923,7 +921,7 @@
               '</div>'
             )).join('') +
           '</div>' +
-          '<div class="bar" aria-hidden="true"><i style="width:' + barWidth(metrics) + '%"></i></div>' +
+          '<div class="forecast-accuracy" title="销量 / 仓库预估总销售数"><span>销量预估准确率</span><strong>' + esc(formatPct(metrics.achievement)) + '</strong></div>' +
           '<div class="status-line warehouse-status">' + esc(stockWarningText) + '</div>' +
         '</button>'
           );
@@ -953,6 +951,22 @@
       return (row.warehouses || []).join(' / ') || '-';
     }
 
+    function cellValue(row, label) {
+      if (row.values && Object.prototype.hasOwnProperty.call(row.values, label)) return row.values[label];
+      const cell = (row.cells || []).find((item) => item.label === label);
+      return cell?.value;
+    }
+
+    function rowAvailableStock(row) {
+      const value = Number(cellValue(row, '累计可用库存'));
+      return Number.isFinite(value) ? value : null;
+    }
+
+    function rowTurnoverDays(row) {
+      const value = Number(cellValue(row, '周转天数'));
+      return Number.isFinite(value) ? value : null;
+    }
+
     function selectedSkuRows() {
       const current = day();
       let rows = current.kanban?.small?.rows || [];
@@ -972,6 +986,10 @@
     }
 
     function skuAttentionRank(row) {
+      const availableStock = rowAvailableStock(row);
+      if (Number.isFinite(availableStock) && availableStock < 0) return 0;
+      const turnoverDays = rowTurnoverDays(row);
+      if (Number.isFinite(turnoverDays) && turnoverDays < 2) return 1;
       if (row.status === 'bad') return 0;
       if (row.status === 'warn') return 1;
       return 2;
@@ -986,15 +1004,37 @@
     }
 
     function cellAttention(row, field) {
-      const attention = row.attention;
+      const computedAttention = computedRowAttention(row);
+      const attention = computedAttention || row.attention;
       if (!attention) return null;
       const labelKeys = attention.keys || [];
       const valueKeys = attention.valueKeys || [];
-      if (!labelKeys.includes(field.key) && !valueKeys.includes(field.key)) return null;
+      const labelNames = attention.labels || [];
+      const valueNames = attention.valueLabels || [];
+      const hasLabel = labelKeys.includes(field.key) || labelNames.includes(field.label);
+      const hasValue = valueKeys.includes(field.key) || valueNames.includes(field.label);
+      if (!hasLabel && !hasValue) return null;
       return {
         ...attention,
-        showNote: labelKeys.includes(field.key),
+        showNote: hasLabel,
       };
+    }
+
+    function computedRowAttention(row) {
+      const labels = ['周转天数'];
+      const valueLabels = ['累计可用库存', '周转天数'];
+      const availableStock = rowAvailableStock(row);
+      if (Number.isFinite(availableStock) && availableStock < 0) {
+        return { severity: 'bad', note: '补货', labels, valueLabels, reason: '累计可用库存为负' };
+      }
+      const turnoverDays = rowTurnoverDays(row);
+      if (Number.isFinite(turnoverDays) && turnoverDays < 2) {
+        return { severity: 'warn', note: '关注', labels, valueLabels, reason: '周转天数低于2天' };
+      }
+      if (Number.isFinite(availableStock) || Number.isFinite(turnoverDays)) {
+        return { severity: 'ok', note: '充足', labels, valueLabels, reason: '累计可用库存和周转天数充足' };
+      }
+      return null;
     }
 
     function attentionNote(attention) {
@@ -1015,7 +1055,11 @@
 
     function renderSkuCell(row, field) {
       const cell = (row.cells || []).find((item) => item.key === field.key);
-      const text = cell?.display ?? '-';
+      let text = cell?.display ?? '-';
+      if (field.label === '周转天数') {
+        const availableStock = rowAvailableStock(row);
+        if (Number.isFinite(availableStock) && availableStock < 0) text = '-';
+      }
       const attention = cellAttention(row, field);
       const note = attention?.showNote ? attentionNote(attention) : '';
       if (field.label === '产品名称') {
