@@ -4,6 +4,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $Utf8NoBom
+$OutputEncoding = $Utf8NoBom
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -84,7 +87,7 @@ function Parse-Options {
       $name = $arg.Substring('--mention='.Length).Trim()
       if ($name) { $options.Mentions.Add($name) }
     } elseif ($arg.StartsWith('--mentions=')) {
-      $names = $arg.Substring('--mentions='.Length) -split '[,，]'
+      $names = $arg.Substring('--mentions='.Length) -split '[,\uFF0C]'
       foreach ($name in $names) {
         $trimmed = $name.Trim()
         if ($trimmed) { $options.Mentions.Add($trimmed) }
@@ -108,7 +111,7 @@ function Parse-Options {
 
 function Find-WeChatProcess {
   $process = Get-Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.MainWindowHandle -ne 0 -and ($_.ProcessName -match '^(WeChat|Weixin|WeChatAppEx)$' -or $_.MainWindowTitle -match 'WeChat|微信') } |
+    Where-Object { $_.MainWindowHandle -ne 0 -and ($_.ProcessName -match '^(WeChat|Weixin|WeChatAppEx)$' -or $_.MainWindowTitle -match 'WeChat|\u5FAE\u4FE1') } |
     Select-Object -First 1
 
   if ($process) { return $process }
@@ -140,7 +143,7 @@ function Find-WeChatProcess {
     for ($i = 0; $i -lt 20; $i += 1) {
       Start-Sleep -Milliseconds 500
       $process = Get-Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.MainWindowHandle -ne 0 -and ($_.ProcessName -match '^(WeChat|Weixin|WeChatAppEx)$' -or $_.MainWindowTitle -match 'WeChat|微信') } |
+        Where-Object { $_.MainWindowHandle -ne 0 -and ($_.ProcessName -match '^(WeChat|Weixin|WeChatAppEx)$' -or $_.MainWindowTitle -match 'WeChat|\u5FAE\u4FE1') } |
         Select-Object -First 1
       if ($process) { return $process }
     }
@@ -227,18 +230,18 @@ function Normalize-RoomText {
   param([string]$Value)
   if ($null -eq $Value) { return '' }
   return ($Value `
-    -replace '～','~' `
-    -replace '〜','~' `
-    -replace '－','-' `
-    -replace '—','-' `
-    -replace '–','-' `
-    -replace '…','' `
-    -replace '⋯','' `
+    -replace '\uFF5E','~' `
+    -replace '\u301C','~' `
+    -replace '\uFF0D','-' `
+    -replace '\u2014','-' `
+    -replace '\u2013','-' `
+    -replace '\u2026','' `
+    -replace '\u22EF','' `
     -replace '\|','' `
-    -replace '｜','' `
-    -replace '丨','' `
-    -replace '［','' `
-    -replace '］','' `
+    -replace '\uFF5C','' `
+    -replace '\u4E28','' `
+    -replace '\uFF3B','' `
+    -replace '\uFF3D','' `
     -replace '[\s\u00A0\u2005\u2006]+','')
 }
 
@@ -295,7 +298,9 @@ function Test-RoomTextMatches {
   if (-not $normalized.StartsWith($target)) { return $false }
   $rest = $normalized.Substring($target.Length)
   if (-not $rest) { return $true }
-  foreach ($prefix in @('[', '(', '（', '@', '昨天', 'Yesterday')) {
+  $fullWidthLeftParen = [string]([char]0xFF08)
+  $yesterday = [string]([char]0x6628) + [string]([char]0x5929)
+  foreach ($prefix in @('[', '(', $fullWidthLeftParen, '@', $yesterday, 'Yesterday')) {
     if ($rest.StartsWith($prefix)) { return $true }
   }
   return ($rest[0] -match '\d')
@@ -409,8 +414,11 @@ function Test-UsefulSearchRowText {
   if ([string]::IsNullOrWhiteSpace($trimmed)) { return $false }
   $compact = Normalize-RoomText $trimmed
   if ([string]::IsNullOrWhiteSpace($compact)) { return $false }
-  if (@('Q', '搜索', '搜一搜', 'x', 'X', '×', 'AI') -contains $trimmed) { return $false }
-  if (@('Q', '搜索', '搜一搜', 'x', 'X', '×', 'AI') -contains $compact) { return $false }
+  $searchText = [string]([char]0x641C) + [string]([char]0x7D22)
+  $searchWebText = [string]([char]0x641C) + [string]([char]0x4E00) + [string]([char]0x641C)
+  $multiplySign = [string]([char]0x00D7)
+  if (@('Q', $searchText, $searchWebText, 'x', 'X', $multiplySign, 'AI') -contains $trimmed) { return $false }
+  if (@('Q', $searchText, $searchWebText, 'x', 'X', $multiplySign, 'AI') -contains $compact) { return $false }
   if ($trimmed -match '^\d{1,2}:\d{2}$') { return $false }
   if ($trimmed -match '^\d+$') { return $false }
   return $true
@@ -605,7 +613,7 @@ function Get-MessageInputPoint {
     if ($item.X -le $minX -or $item.X -gt ($Rect.Right - 16)) { continue }
     if ($item.Y -lt $minY -or $item.Y -gt $maxY) { continue }
     if ($item.Width -lt 90 -or $item.Height -lt 20) { continue }
-    if (($item.Name -as [string]) -match '搜索|Search') { continue }
+    if (($item.Name -as [string]) -match '\u641C\u7D22|Search') { continue }
     $looksEditable = (($item.ControlType -as [string]) -match 'Edit|Document') -or [bool]$item.IsKeyboardFocusable
     if (-not $looksEditable) { continue }
     $clickX = [int][Math]::Min($item.Left + $item.Width - 42, $item.Left + [Math]::Min(92, [Math]::Max(56, $item.Width * 0.14)))

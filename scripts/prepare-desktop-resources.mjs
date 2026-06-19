@@ -64,7 +64,12 @@ function compileMacHelpers() {
 async function copyWindowsHelpers() {
   const source = path.join(root, 'desktop', 'native', 'windows', 'wechat-automation.ps1');
   const output = path.join(runtimeDir, 'bin', 'mao-wechat-automation.ps1');
-  await cp(source, output);
+  const sourceBytes = await readFile(source);
+  const utf8Bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+  const outputBytes = sourceBytes.subarray(0, 3).equals(utf8Bom)
+    ? sourceBytes
+    : Buffer.concat([utf8Bom, sourceBytes]);
+  await writeFile(output, outputBytes);
 }
 
 async function removeOptionalPath(targetPath) {
