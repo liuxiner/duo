@@ -65,20 +65,142 @@ function installNavigationCompatibility(puppet, {
   };
 }
 
-async function findRoomMember(room, targetName) {
-  const target = String(targetName || '').trim();
-  if (!target) return null;
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[char]));
+}
 
-  const direct = await room.member(target).catch(() => null);
-  if (direct) return direct;
+function textToWechatHtml(value) {
+  return escapeHtml(value).replace(/\r?\n/g, '<br>');
+}
 
-  const members = await room.memberAll().catch(() => []);
-  for (const member of members) {
-    const name = member.name();
-    const alias = await member.alias().catch(() => '');
-    if (name === target || alias === target) return member;
+async function sendTextWithRealMentions(bot, room, text, mentionNames) {
+  const bridgePage = bot?.puppet?.bridge?.page;
+  if (!bridgePage) {
+    throw new Error('Wechaty browser bridge is not available for real @ mention sending.');
   }
-  return null;
+
+  const result = await bridgePage.evaluate(async ({ roomId, textHtml, mentionNames: targetNames }) => {
+    if (typeof angular === 'undefined') throw new Error('Angular is not available in WeChat page.');
+    const injector = angular.element(document).injector();
+    if (!injector) throw new Error('Angular injector is not available in WeChat page.');
+    const chatFactory = injector.get('chatFactory');
+    const contactFactory = injector.get('contactFactory');
+    const confFactory = injector.get('confFactory');
+
+    const decodeHtml = (value) => {
+      const node = document.createElement('textarea');
+      node.innerHTML = String(value || '');
+      return node.value;
+    };
+    const normalizeName = (value) => decodeHtml(value)
+      .replace(/<[^>]*>/g, '')
+      .replace(/\s+/g, '')
+      .trim();
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const getRoomContact = async () => {
+      let roomContact = contactFactory.getContact(roomId);
+      if (roomContact?.MemberList?.length) return roomContact;
+
+      try { contactFactory.addBatchgetChatroomContact(roomId); } catch {}
+      try { contactFactory.addBatchgetChatroomMembersContact(roomId); } catch {}
+      try {
+        const batchResult = contactFactory.batchGetContact();
+        if (batchResult && typeof batchResult.then === 'function') await batchResult;
+      } catch {}
+
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        roomContact = contactFactory.getContact(roomId);
+        if (roomContact?.MemberList?.length) return roomContact;
+        await wait(100);
+      }
+      return contactFactory.getContact(roomId);
+    };
+    const roomContact = await getRoomContact();
+    if (!roomContact) throw new Error(`WeChat room not found in page cache: ${roomId}`);
+    const members = roomContact.MemberList || [];
+    const resolvedMentions = [];
+    const missingNames = [];
+    for (const name of targetNames) {
+      const normalizedTarget = normalizeName(name);
+      const member = members.find((candidate) => {
+        const fullContact = contactFactory.getContact(candidate.UserName, roomId, true) || {};
+        const aliases = [
+          candidate.NickName,
+          candidate.DisplayName,
+          candidate.RemarkName,
+          candidate.Alias,
+          fullContact.NickName,
+          fullContact.DisplayName,
+          fullContact.RemarkName,
+          fullContact.Alias,
+        ].map(normalizeName).filter(Boolean);
+        return aliases.includes(normalizedTarget);
+      });
+      if (!member?.UserName) {
+        missingNames.push(name);
+        continue;
+      }
+      resolvedMentions.push({
+        id: member.UserName,
+        label: name,
+        nickName: decodeHtml(member.NickName || ''),
+        displayName: decodeHtml(member.DisplayName || ''),
+      });
+    }
+    if (missingNames.length) {
+      throw new Error(`WeChat members not found in room ${decodeHtml(roomContact.NickName || roomId)}: ${missingNames.join(', ')}`);
+    }
+
+    const mentionInputs = resolvedMentions.map((mention) => (
+      `<input type="button" class="emoji emoji_at" un="${mention.id}" value="@${mention.label}\u2005">`
+    )).join('');
+    const content = `${mentionInputs}${textHtml ? `<br>${textHtml}` : ''}`;
+    const message = chatFactory.createMessage({
+      ToUserName: roomId,
+      Content: content,
+      MsgType: confFactory.MSGTYPE_TEXT,
+    });
+    const actualMentionIds = String(message.MMAtContacts || '').split(',').filter(Boolean);
+    const expectedMentionIds = resolvedMentions.map((mention) => mention.id);
+    const missingMentionIds = expectedMentionIds.filter((id) => !actualMentionIds.includes(id));
+    if (missingMentionIds.length) {
+      throw new Error(`WeChat mention token creation failed: ${missingMentionIds.join(', ')}`);
+    }
+    const originalPostMessage = chatFactory._postMessage;
+    let capturedMsgSource = '';
+    chatFactory._postMessage = function(api, data, msg) {
+      capturedMsgSource = data?.MsgSource || '';
+      return originalPostMessage.apply(this, arguments);
+    };
+    try {
+      chatFactory.appendMessage(message);
+      chatFactory.sendMessage(message);
+    } finally {
+      chatFactory._postMessage = originalPostMessage;
+    }
+    if (!capturedMsgSource || !expectedMentionIds.every((id) => capturedMsgSource.includes(id))) {
+      throw new Error('WeChat mention MsgSource was not sent with all expected @ members.');
+    }
+    return {
+      mmAtContacts: message.MMAtContacts || '',
+      mmSendContent: message.MMSendContent || '',
+      msgSource: capturedMsgSource,
+      resolvedMentions,
+    };
+  }, {
+    roomId: room.id,
+    textHtml: textToWechatHtml(text || ''),
+    mentionNames,
+  });
+
+  return result;
 }
 
 export class WechatyBot {
@@ -244,17 +366,7 @@ export class WechatyBot {
       }));
     }
 
-    const contacts = [];
-    const missingMentionNames = [];
     const normalizedMentionNames = mentionNames.map((name) => String(name).trim()).filter(Boolean);
-    for (const name of normalizedMentionNames) {
-      const contact = await findRoomMember(room, name);
-      if (contact) contacts.push(contact);
-      else missingMentionNames.push(name);
-    }
-    if (missingMentionNames.length) {
-      throw new Error(`WeChat members not found in room ${roomName}: ${missingMentionNames.join(', ')}`);
-    }
 
     if (imageFiles.length > 0) {
       for (let index = 0; index < imageFiles.length; index += 1) {
@@ -268,12 +380,16 @@ export class WechatyBot {
     }
 
     if (text) {
-      if (contacts.length > 0) {
-        await room.say(text, ...contacts);
+      if (normalizedMentionNames.length > 0) {
+        const result = await sendTextWithRealMentions(this.bot, room, text, normalizedMentionNames);
+        const mentionSummary = result.resolvedMentions
+          .map((mention) => `${mention.label}=>${mention.id}`)
+          .join(', ');
+        console.log(`[Wechaty] sent text with real mentions to room ${roomName}: ${mentionSummary}`);
       } else {
         await room.say(text);
+        console.log(`[Wechaty] sent text to room ${roomName}`);
       }
-      console.log(`[Wechaty] sent text to room ${roomName}`);
     }
 
     return {
