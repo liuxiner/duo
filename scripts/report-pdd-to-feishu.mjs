@@ -13,15 +13,17 @@ const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const ROOT = path.resolve(process.env.MAO_WORKSPACE_PATH || APP_ROOT);
 const REPORT_URL = 'https://mc.pinduoduo.com/ddmc-mms/order/management';
 const DEFAULT_REPORT_CONFIG_PATH = 'data/report-config.json';
-const REPORT_ROWS_PER_IMAGE = 8;
 const REPORT_MAX_ATTEMPTS = 3;
 const REPORT_RETRY_DELAY_MS = 2000;
 let reportBrowser = null;
 let reportContext = null;
-const REQUIRED_COLUMNS = [
-  '商品信息', '销售区域', '仓库信息', '委托属性', '销售日期', '销售规格',
-  '仓库销售库存', '仓库总库存', '仓库预估总销售数',
-];
+const DEFAULT_NOTIFICATION_CONFIG = {
+  adminGroup: '杭州交仓',
+  senderStrategy: 'desktop_wechat',
+  sendIntervalSeconds: { min: 2, max: 5 },
+  maxRetries: REPORT_MAX_ATTEMPTS - 1,
+  retryDelaySeconds: REPORT_RETRY_DELAY_MS / 1000,
+};
 const DEFAULT_REPORT_ITEMS = [
   { id: '1', region: '浙江省', warehouse: '杭州仓组', groupName: '杭州交仓', chatName: '杭州交仓', memberName: '翱翔巍澜', mentionNames: ['翱翔巍澜'], sendTimes: ['06:00', '07:00', '08:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
   { id: '2', region: '浙江省', warehouse: '杭州仓组', groupName: '杭州交仓', chatName: '杭州交仓', memberName: '翱翔巍澜', mentionNames: ['翱翔巍澜'], sendTimes: ['12:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
@@ -88,6 +90,11 @@ function fileTimestamp() {
   return beijingTimestamp().replace(/[ :]/g, '-');
 }
 
+function compactReportTimestamp(date = new Date()) {
+  const p = beijingTimeParts(date);
+  return `${p.year.slice(-2)}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+}
+
 function beijingTimeParts(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
@@ -119,12 +126,58 @@ function normalizeTime(value) {
 }
 
 function normalizeTimeList(value) {
-  const values = Array.isArray(value) ? value : String(value || '').split(/[,\s]+/);
+  const values = (Array.isArray(value) ? value : [value])
+    .flatMap((item) => String(item || '').split(/[,\s，、-]+/));
   return [...new Set(values.map(normalizeTime).filter(Boolean))];
 }
 
+function positiveInteger(value, fallback) {
+  const next = Number(value);
+  return Number.isFinite(next) && next > 0 ? Math.round(next) : fallback;
+}
+
+function enabledConfigValue(value, fallback = false) {
+  if (typeof value === 'boolean') return value;
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) return fallback;
+  return ['1', 'true', 'yes', 'y', 'on', '启', '启动', '启用', 'enable', 'enabled'].includes(text);
+}
+
+function normalizeNotificationConfig(input = {}) {
+  const defaults = DEFAULT_NOTIFICATION_CONFIG;
+  const min = positiveInteger(input.sendIntervalSeconds?.min ?? input.sendIntervalMin, defaults.sendIntervalSeconds.min);
+  const max = positiveInteger(input.sendIntervalSeconds?.max ?? input.sendIntervalMax, defaults.sendIntervalSeconds.max);
+  return {
+    adminGroup: String(input.adminGroup || defaults.adminGroup).trim(),
+    senderStrategy: String(input.senderStrategy || defaults.senderStrategy).trim(),
+    sendIntervalSeconds: {
+      min: Math.min(min, max),
+      max: Math.max(min, max),
+    },
+    maxRetries: positiveInteger(input.maxRetries, defaults.maxRetries),
+    retryDelaySeconds: positiveInteger(input.retryDelaySeconds, defaults.retryDelaySeconds),
+  };
+}
+
+function randomSendDelayMs(notification) {
+  const interval = notification?.sendIntervalSeconds || DEFAULT_NOTIFICATION_CONFIG.sendIntervalSeconds;
+  const min = Math.max(0, Number(interval.min || 0));
+  const max = Math.max(min, Number(interval.max || min));
+  return Math.round((min + Math.random() * (max - min)) * 1000);
+}
+
+function formatQuantity(value) {
+  if (!Number.isFinite(value)) return '0';
+  const rounded = Math.round(value * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded).replace(/\.?0+$/, '');
+}
+
 function defaultReportConfig() {
-  return { schedulerEnabled: false, items: DEFAULT_REPORT_ITEMS.map(normalizeReportItem) };
+  return {
+    schedulerEnabled: false,
+    notification: normalizeNotificationConfig(),
+    items: DEFAULT_REPORT_ITEMS.map(normalizeReportItem),
+  };
 }
 
 function normalizeReportItem(item, index = 0) {
@@ -147,8 +200,8 @@ function normalizeReportItem(item, index = 0) {
       : String(item.wechatMentionNames || '').split(/[,，]/).map((name) => name.trim()).filter(Boolean),
     sendTimes: normalizeTimeList(item.sendTimes || item['发送时间']),
     cutoffTime: normalizeTime(item.cutoffTime || item['截单时间']) || String(item.cutoffTime || item['截单时间'] || ''),
-    topOfHour: typeof item.topOfHour === 'boolean' ? item.topOfHour : ['是', 'true', '1', 'yes'].includes(String(item.topOfHour || item['是否整点'] || '').toLowerCase()),
-    enabled: typeof item.enabled === 'boolean' ? item.enabled : ['启', 'true', '1', 'yes', 'enable'].includes(String(item.enabled || item['状态(启/停)'] || item['状态'] || '').toLowerCase()),
+    topOfHour: enabledConfigValue(item.topOfHour ?? item['是否整点'], false),
+    enabled: enabledConfigValue(item.enabled ?? item['状态(启/停)'] ?? item['状态'], false),
   };
 }
 
@@ -165,12 +218,9 @@ async function loadReportConfig(cfg) {
   const items = Array.isArray(parsed) ? parsed : parsed.items || [];
   return {
     schedulerEnabled: Boolean(parsed.schedulerEnabled),
+    notification: normalizeNotificationConfig(parsed.notification || {}),
     items: items.map(normalizeReportItem),
   };
-}
-
-async function loadReportConfigs(cfg) {
-  return (await loadReportConfig(cfg)).items;
 }
 
 function enabledReportConfigs(configs) {
@@ -431,66 +481,6 @@ async function selectWarehouseFilter(page, reportItem) {
   return state;
 }
 
-async function prepareReportTable(page) {
-  await closeBlockingModals(page);
-  const result = await page.evaluate((requiredColumns) => {
-    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-    const tables = Array.from(document.querySelectorAll('[data-testid="beast-core-table"] table, table'));
-    let kept = 0;
-    for (const table of tables) {
-      const headers = Array.from(table.querySelectorAll('thead th'));
-      if (!headers.length) continue;
-      const keepIndexes = new Set();
-      headers.forEach((header, index) => {
-        const name = normalize(header.textContent);
-        if (requiredColumns.includes(name)) {
-          keepIndexes.add(index);
-          kept += 1;
-        }
-      });
-      if (!keepIndexes.size) {
-        table.style.display = 'none';
-        continue;
-      }
-      for (const row of table.querySelectorAll('tr')) {
-        Array.from(row.children).forEach((cell, index) => {
-          if (!keepIndexes.has(index)) cell.style.display = 'none';
-        });
-      }
-    }
-    document.querySelectorAll('[class*="pagination"], [data-testid*="pagination"]').forEach((node) => {
-      node.style.display = 'none';
-    });
-    const root = document.querySelector('[data-testid="beast-core-table"]');
-    if (root) {
-      root.style.width = 'max-content';
-      root.style.maxWidth = 'none';
-      root.style.overflow = 'visible';
-      root.style.height = 'auto';
-      root.style.maxHeight = 'none';
-    }
-    root?.querySelectorAll('*').forEach((node) => {
-      const style = getComputedStyle(node);
-      if (style.overflowX === 'auto' || style.overflowX === 'scroll' || style.overflowX === 'hidden') {
-        node.style.overflowX = 'visible';
-        node.style.maxWidth = 'none';
-      }
-      if (
-        node.matches('[data-testid$="-body"], [class*="TB_body"], [class*="TB_scrollXY"]')
-        || style.overflowY === 'auto'
-        || style.overflowY === 'scroll'
-        || style.overflowY === 'hidden'
-      ) {
-        node.style.height = 'auto';
-        node.style.maxHeight = 'none';
-        node.style.overflowY = 'visible';
-      }
-    });
-    return { kept };
-  }, REQUIRED_COLUMNS);
-  if (!result.kept) throw new Error('Could not find any required report columns in the PDD table.');
-}
-
 async function collectReplenishmentWarnings(page) {
   return page.evaluate(() => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -516,40 +506,276 @@ async function collectReplenishmentWarnings(page) {
         const stock = parseQuantity(cells[stockIndex]?.textContent);
         const estimatedSales = parseQuantity(cells[estimateIndex]?.textContent);
         if (!Number.isFinite(stock) || !Number.isFinite(estimatedSales)) return null;
-        const safetyStock = estimatedSales * 0.8;
+        const safetyStock = estimatedSales;
         if (stock >= safetyStock) return null;
-        return { productName, warehouse, stock, estimatedSales, safetyStock };
+        const replenishment = safetyStock - stock;
+        const regionIndex = headers.indexOf('销售区域');
+        const region = regionIndex >= 0 ? normalize(cells[regionIndex]?.textContent) : '';
+        return { productName, region, warehouse, stock, estimatedSales, safetyStock, replenishment };
       })
       .filter(Boolean);
   });
 }
 
-async function showReportRowChunk(page, start, end) {
-  const clip = await page.evaluate(({ requiredColumns, start, end }) => {
+async function renderCompactReport(page, { reportItem = null, timestamp = compactReportTimestamp() } = {}) {
+  const result = await page.evaluate(({ reportItem, timestamp }) => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const normalizeHeader = (value) => normalize(value)
+      .replace(/（/g, '(')
+      .replace(/）/g, ')')
+      .replace(/\s+/g, '');
+    const parseQuantity = (value) => {
+      const match = normalize(value).replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
+      return match ? Number(match[0]) : null;
+    };
+    const formatQuantityText = (value) => {
+      if (!Number.isFinite(value)) return '0';
+      const rounded = Math.round(value * 100) / 100;
+      return Number.isInteger(rounded) ? String(rounded) : String(rounded).replace(/\.?0+$/, '');
+    };
+    const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[char]));
+    const cellText = (cells, index) => index >= 0 ? normalize(cells[index]?.innerText || cells[index]?.textContent) : '';
+    const findIndex = (headers, names) => {
+      const targets = names.map(normalizeHeader);
+      return headers.findIndex((header) => targets.some((target) => header === target || header.includes(target)));
+    };
     const root = document.querySelector('[data-testid="beast-core-table"]');
-    const tables = Array.from(root?.querySelectorAll('table') || []);
-    for (const table of tables) {
-      if (getComputedStyle(table).display === 'none') continue;
-      Array.from(table.querySelectorAll('tbody tr')).forEach((row, index) => {
-        row.style.display = index >= start && index < end ? '' : 'none';
-      });
+    const header = root?.querySelector('[data-testid="beast-core-table-middle-header"]')
+      || root?.querySelector('thead');
+    const body = root?.querySelector('[data-testid="beast-core-table-middle-body"]')
+      || root?.querySelector('tbody');
+    const headers = Array.from(header?.querySelectorAll('th') || []).map((cell) => normalizeHeader(cell.textContent));
+    const indexes = {
+      product: findIndex(headers, ['商品信息']),
+      region: findIndex(headers, ['销售区域']),
+      warehouse: findIndex(headers, ['仓库信息', '所属仓库']),
+      spec: findIndex(headers, ['销售规格', '规格']),
+      sales: findIndex(headers, ['仓库总销售数', '销售数(份)', '销售数（份）', '实时销量']),
+      estimate: findIndex(headers, ['仓库预估总销售数', '预计缺单销量', '预估销量']),
+      stock: findIndex(headers, ['仓库总库存', '实际入库量', '仓库剩余量']),
+      diff: findIndex(headers, ['仓库分拣差异量', '分拣差异量']),
+    };
+    const missing = [
+      ['商品信息', indexes.product],
+      ['仓库信息', indexes.warehouse],
+      ['仓库预估总销售数', indexes.estimate],
+      ['仓库总库存', indexes.stock],
+    ].filter(([, index]) => index < 0).map(([label]) => label);
+    if (missing.length) return { error: `截图表格缺少必要列：${missing.join(', ')}` };
+
+    const sourceRows = Array.from(body?.querySelectorAll('tbody tr[data-testid="beast-core-table-body-tr"], tr[data-testid="beast-core-table-body-tr"], tbody tr, tr') || []);
+    const rows = sourceRows.map((tr) => {
+      const cells = Array.from(tr.querySelectorAll('td'));
+      const productCell = cells[indexes.product];
+      const productText = cellText(cells, indexes.product);
+      const idMatch = productText.match(/ID[:：]?\s*(\d+)/i);
+      const productId = idMatch?.[1] || '';
+      const productName = productText
+        .replace(/ID[:：]?\s*\d+/ig, '')
+        .replace(/查看详情|复制/ig, '')
+        .trim() || productText;
+      const region = cellText(cells, indexes.region);
+      const warehouse = cellText(cells, indexes.warehouse).replace(/查看地址/g, '').replace(/\s+/g, '');
+      const spec = cellText(cells, indexes.spec) || '-';
+      const sales = parseQuantity(cellText(cells, indexes.sales));
+      const estimate = parseQuantity(cellText(cells, indexes.estimate));
+      const stock = parseQuantity(cellText(cells, indexes.stock));
+      const diff = parseQuantity(cellText(cells, indexes.diff));
+      const shortage = Number.isFinite(estimate) && Number.isFinite(stock) ? Math.max(0, estimate - stock) : 0;
+      const image = productCell?.querySelector('img')?.currentSrc || productCell?.querySelector('img')?.src || '';
+      return {
+        productId,
+        productName,
+        image,
+        region,
+        warehouse,
+        spec,
+        sales,
+        estimate,
+        shortage,
+        stock,
+        diff,
+      };
+    }).filter((row) => row.productName && row.warehouse);
+
+    if (!rows.length) return { error: '截图表格没有可渲染的数据行。' };
+
+    const groups = [];
+    for (const row of rows) {
+      const key = row.productId || row.productName;
+      const last = groups[groups.length - 1];
+      if (last && last.key === key) {
+        last.rows.push(row);
+      } else {
+        groups.push({ key, rows: [row] });
+      }
     }
-    const requiredHeaders = Array.from(root?.querySelectorAll('thead th') || [])
-      .filter((header) => requiredColumns.includes(normalize(header.textContent)));
-    const rootRect = root?.getBoundingClientRect();
-    const right = Math.max(...requiredHeaders.map((header) => header.getBoundingClientRect().right));
-    return rootRect && Number.isFinite(right) ? {
-      x: Math.max(0, rootRect.left),
-      y: Math.max(0, rootRect.top),
-      width: Math.ceil(right - rootRect.left),
-      height: Math.ceil(rootRect.height),
+
+    const regionTitle = reportItem?.region || rows.find((row) => row.region)?.region || '';
+    const title = ['商品销售汇总表', regionTitle, timestamp].filter(Boolean).join(' - ');
+    const tbody = groups.map((group) => group.rows.map((row, index) => {
+      const warn = row.shortage > 0;
+      const product = index === 0 ? `
+        <td class="product-cell" rowspan="${group.rows.length}">
+          <div class="product">
+            ${row.image ? `<img src="${escapeHtml(row.image)}" alt="">` : '<span class="image-placeholder"></span>'}
+            <div>
+              ${row.productId ? `<div class="product-id">ID:${escapeHtml(row.productId)}</div>` : ''}
+              <div class="product-name">${escapeHtml(row.productName)}</div>
+            </div>
+          </div>
+        </td>
+      ` : '';
+      return `
+        <tr class="${warn ? 'warn' : ''}">
+          ${product}
+          <td class="warehouse">${escapeHtml(row.warehouse || '-')}</td>
+          <td>${escapeHtml(row.spec || '-')}</td>
+          <td>${formatQuantityText(row.sales)}</td>
+          <td>${formatQuantityText(row.estimate)}</td>
+          <td class="${warn ? 'shortage' : ''}">${formatQuantityText(row.shortage)}</td>
+          <td>${formatQuantityText(row.stock)}</td>
+          <td>${formatQuantityText(row.diff)}</td>
+        </tr>
+      `;
+    }).join('')).join('');
+
+    document.body.innerHTML = `
+      <div id="pdd-compact-report">
+        <h1>${escapeHtml(title)}</h1>
+        <table>
+          <colgroup>
+            <col class="col-product">
+            <col class="col-warehouse">
+            <col class="col-spec">
+            <col class="col-num">
+            <col class="col-num">
+            <col class="col-num">
+            <col class="col-num">
+            <col class="col-num">
+          </colgroup>
+          <thead>
+            <tr>
+              <th>商品信息</th>
+              <th>所属仓库</th>
+              <th>规格</th>
+              <th>实时销量</th>
+              <th>预计缺单销量</th>
+              <th>预计缺货量</th>
+              <th>实际入库量</th>
+              <th>分拣差异量</th>
+            </tr>
+          </thead>
+          <tbody>${tbody}</tbody>
+        </table>
+      </div>
+    `;
+
+    const style = document.createElement('style');
+    style.textContent = `
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; background: #fff; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+        color: #4b5563;
+      }
+      #pdd-compact-report { width: 900px; background: #fff; }
+      h1 {
+        margin: 0;
+        padding: 16px 10px 14px;
+        text-align: center;
+        color: #2f2f2f;
+        font-size: 28px;
+        line-height: 1.15;
+        font-weight: 700;
+      }
+      table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+      .col-product { width: 330px; }
+      .col-warehouse { width: 126px; }
+      .col-spec { width: 86px; }
+      .col-num { width: 71px; }
+      th {
+        height: 50px;
+        padding: 6px 5px;
+        background: #e5e5e5;
+        border-bottom: 1px solid #d8d8d8;
+        color: #555;
+        font-size: 14px;
+        line-height: 1.18;
+        text-align: center;
+        font-weight: 700;
+      }
+      td {
+        min-height: 52px;
+        padding: 8px 6px;
+        border-bottom: 1px solid #e5e7eb;
+        color: #4b5563;
+        font-size: 14px;
+        line-height: 1.25;
+        text-align: center;
+        vertical-align: middle;
+        word-break: break-word;
+      }
+      tr.warn td:not(.product-cell) { background: #fff1c7; }
+      .shortage { color: #ef4444; font-weight: 800; }
+      .warehouse { color: #555; font-weight: 500; }
+      .product-cell { background: #fff; text-align: left; }
+      .product { display: flex; align-items: center; gap: 8px; min-height: 58px; }
+      .product img, .image-placeholder {
+        width: 52px;
+        height: 52px;
+        flex: 0 0 52px;
+        object-fit: contain;
+        background: #f8fafc;
+      }
+      .image-placeholder { display: inline-block; border: 1px solid #e5e7eb; }
+      .product-id {
+        margin-bottom: 2px;
+        color: #6b7280;
+        font-size: 13px;
+        line-height: 1.12;
+        font-weight: 700;
+      }
+      .product-name {
+        color: #ef5b5b;
+        font-size: 14px;
+        line-height: 1.15;
+        font-weight: 600;
+      }
+    `;
+    document.head.appendChild(style);
+
+    const report = document.querySelector('#pdd-compact-report');
+    return {
+      rowCount: rows.length,
+      warningCount: rows.filter((row) => row.shortage > 0).length,
+      width: Math.ceil(report.scrollWidth),
+      height: Math.ceil(report.scrollHeight),
+    };
+  }, { reportItem, timestamp });
+
+  if (result.error) throw new Error(result.error);
+  await page.setViewportSize({
+    width: Math.max(900, result.width),
+    height: Math.min(Math.max(900, result.height), 12000),
+  }).catch(() => {});
+  await page.waitForFunction(() => Array.from(document.images).every((image) => image.complete), null, { timeout: 10000 }).catch(() => {});
+  const clip = await page.evaluate(() => {
+    const report = document.querySelector('#pdd-compact-report');
+    const rect = report?.getBoundingClientRect();
+    return rect ? {
+      x: Math.max(0, rect.left),
+      y: Math.max(0, rect.top),
+      width: Math.ceil(rect.width),
+      height: Math.ceil(report.scrollHeight),
     } : null;
-  }, { requiredColumns: REQUIRED_COLUMNS, start, end });
+  });
   if (!clip || clip.width <= 0 || clip.height <= 0) {
-    throw new Error(`无法确定第 ${Math.floor(start / REPORT_ROWS_PER_IMAGE) + 1} 张截图范围。`);
+    throw new Error('无法确定完整截图范围。');
   }
-  return clip;
+  return { ...result, clip };
 }
 
 async function captureScreenshot(cfg, reportItem = null) {
@@ -587,24 +813,22 @@ async function captureScreenshot(cfg, reportItem = null) {
       }
     }
     const warnings = await collectReplenishmentWarnings(page);
-    console.log(`紧急补货预警：${warnings.length} 项。`);
-    await prepareReportTable(page);
+    console.log(`仓库剩余量预警：${warnings.length} 项。`);
+    const rendered = await renderCompactReport(page, {
+      reportItem,
+      timestamp: compactReportTimestamp(),
+    });
+    if (rendered.rowCount !== tableState.visibleRows) {
+      throw new Error(`截图生成校验失败：页面抓取 ${tableState.visibleRows} 条，长图渲染 ${rendered.rowCount} 条。`);
+    }
+    console.log(`截图报表行数：${rendered.rowCount}/${tableState.visibleRows}。`);
     await closeBlockingModals(page);
     await mkdir(cfg.outputDir, { recursive: true });
     const suffix = reportItem ? `-${reportItem.id}-${(reportItem.warehouse || reportItem.groupName || reportItem.chatName).replace(/[\\/:*?"<>|\s]+/g, '_')}` : '';
     const stamp = fileTimestamp();
-    const partCount = Math.ceil(tableState.total / REPORT_ROWS_PER_IMAGE);
-    const outputs = [];
-    for (let part = 0; part < partCount; part += 1) {
-      const start = part * REPORT_ROWS_PER_IMAGE;
-      const end = Math.min(start + REPORT_ROWS_PER_IMAGE, tableState.total);
-      const clip = await showReportRowChunk(page, start, end);
-      const partSuffix = partCount > 1 ? `-part-${part + 1}-of-${partCount}` : '';
-      const output = path.join(cfg.outputDir, `pdd-order-report-${stamp}${suffix}${partSuffix}.png`);
-      await page.screenshot({ path: output, clip, animations: 'disabled' });
-      outputs.push(output);
-    }
-    return { screenshots: outputs, warnings, total: tableState.total };
+    const output = path.join(cfg.outputDir, `pdd-order-report-${stamp}${suffix}.png`);
+    await page.screenshot({ path: output, clip: rendered.clip, animations: 'disabled' });
+    return { screenshots: [output], warnings, total: tableState.total };
   } finally {
     await page.bringToFront().catch(() => {});
   }
@@ -621,6 +845,31 @@ async function uploadImage(token, file) {
   return body.data?.image_key;
 }
 
+function groupedWarningLines(warnings, reportItem = null) {
+  const groups = [];
+  const byProduct = new Map();
+  for (const warning of warnings) {
+    const productName = warning.productName || '未知商品';
+    let group = byProduct.get(productName);
+    if (!group) {
+      group = { productName, rows: [] };
+      groups.push(group);
+      byProduct.set(productName, group);
+    }
+    group.rows.push(warning);
+  }
+  const lines = [];
+  for (const group of groups) {
+    lines.push(group.productName);
+    for (const warning of group.rows) {
+      const region = warning.region || reportItem?.region || '';
+      const place = [region, warning.warehouse].filter(Boolean).join('  ');
+      lines.push(`${place} 补货 ${formatQuantity(warning.replenishment)}份`);
+    }
+  }
+  return lines;
+}
+
 async function sendReport(token, chatId, members, imageKeys, warnings = [], reportItem = null) {
   const titleParts = ['多多订单管理上报'];
   if (reportItem?.warehouse) titleParts.push(reportItem.warehouse);
@@ -632,13 +881,13 @@ async function sendReport(token, chatId, members, imageKeys, warnings = [], repo
   ]);
   const warningRows = warnings.length
     ? [
-      [{ tag: 'text', text: `⚠️ 紧急补货预警（${warnings.length} 项）：仓库总库存低于仓库预估总销售数的 80%` }],
+      [{ tag: 'text', text: `仓库剩余量预警（${warnings.length} 项）：仓库总库存低于仓库预估总销售数` }],
       ...warnings.map((warning) => [{
         tag: 'text',
-        text: `⚠️ ${warning.productName}｜${warning.warehouse}｜库存 ${warning.stock}｜预估 ${warning.estimatedSales}｜80%安全线 ${Number(warning.safetyStock.toFixed(2))}`,
+        text: `${warning.productName}｜${warning.region || reportItem?.region || ''} ${warning.warehouse}｜补货 ${formatQuantity(warning.replenishment)}份`,
       }]),
     ]
-    : [[{ tag: 'text', text: '暂无紧急补货预警' }]];
+    : [[{ tag: 'text', text: '暂无仓库剩余量预警' }]];
   const content = {
     zh_cn: {
       title: titleParts.join(' - '),
@@ -673,23 +922,8 @@ async function runLegacyReport(cfg, token, { dryRun = false } = {}) {
 }
 
 function formatWechatText(reportItem, warnings, total, imageCount, timestamp) {
-  const parts = [];
-  const titleParts = ['多多订单管理上报'];
-  if (reportItem?.warehouse) titleParts.push(reportItem.warehouse);
-  if (reportItem?.groupName && reportItem.groupName !== reportItem.warehouse) titleParts.push(reportItem.groupName);
-  if (reportItem?.cutoffTime) titleParts.push(`截单 ${reportItem.cutoffTime}`);
-  parts.push(titleParts.join(' - '));
-  parts.push(`${timestamp} 数据截图，共 ${imageCount} 张，总计 ${total} 条商品`);
-
-  if (warnings.length > 0) {
-    parts.push(`\n紧急补货预警（${warnings.length} 项）：仓库总库存低于预估总销售数的 80%`);
-    for (const w of warnings) {
-      parts.push(`- ${w.productName}｜${w.warehouse}｜库存 ${w.stock}｜预估 ${w.estimatedSales}｜80%安全线 ${Number(w.safetyStock.toFixed(2))}`);
-    }
-  } else {
-    parts.push('\n暂无紧急补货预警');
-  }
-  return parts.join('\n');
+  if (!warnings.length) return `暂无仓库剩余量预警\n${timestamp} 数据截图，共 ${imageCount} 张，总计 ${total} 条商品`;
+  return groupedWarningLines(warnings, reportItem).join('\n');
 }
 
 async function sendToWechat(reportItem, text, imagePaths) {
@@ -729,12 +963,73 @@ async function sendToWechat(reportItem, text, imagePaths) {
   return true;
 }
 
+function compactAlertText(value, maxLength = 1800) {
+  const text = String(value || '').trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength)}\n...（已截断，完整内容见上报日志）`;
+}
+
+async function sendReportFailureAlert(cfg, token, notification, failure) {
+  const adminGroup = notification?.adminGroup || DEFAULT_NOTIFICATION_CONFIG.adminGroup;
+  if (!adminGroup) return;
+  try {
+    const alertToken = token || await tenantToken(cfg);
+    const chat = await findChat(alertToken, cfg, adminGroup);
+    const rows = [
+      [{ tag: 'text', text: `${beijingTimestamp()} 定时上报失败` }],
+      [{ tag: 'text', text: `原因：${failure.reason || '未知错误'}` }],
+    ];
+    const ruleInfo = [
+      failure.ruleLabel ? `规则 ${failure.ruleLabel}` : '',
+      failure.warehouse || failure.groupName || '',
+    ].filter(Boolean).join(' ');
+    if (ruleInfo) rows.push([{ tag: 'text', text: ruleInfo }]);
+    if (failure.wechatRoomName) {
+      rows.push([{ tag: 'text', text: `应该发送的微信群：${failure.wechatRoomName}` }]);
+    }
+    if (failure.mentionNames?.length) {
+      rows.push([{ tag: 'text', text: `应 @ 成员：${failure.mentionNames.join(', ')}` }]);
+    }
+    if (failure.wechatText) {
+      rows.push([{ tag: 'text', text: `应发文字：\n${compactAlertText(failure.wechatText)}` }]);
+    }
+    if (failure.imagePaths?.length) {
+      rows.push([{ tag: 'text', text: `应发图片路径：\n${failure.imagePaths.join('\n')}` }]);
+      for (const imagePath of failure.imagePaths) {
+        try {
+          const imageKey = await uploadImage(alertToken, imagePath);
+          if (imageKey) rows.push([{ tag: 'img', image_key: imageKey }]);
+        } catch (error) {
+          rows.push([{ tag: 'text', text: `图片上传到飞书失败：${imagePath}（${error.message}）` }]);
+        }
+      }
+    }
+    const content = {
+      zh_cn: {
+        title: '多多数字管家上报失败',
+        content: rows,
+      },
+    };
+    await feishuJson('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${alertToken}`, 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ receive_id: chat.chat_id, msg_type: 'post', content: JSON.stringify(content) }),
+    });
+    console.log(`上报失败告警已发送到管理通知群 ${chat.name}。`);
+  } catch (error) {
+    console.error(`上报失败告警发送失败：${error.message}`);
+  }
+}
+
 async function runConfiguredReports(cfg, token, configs, {
   dryRun = false,
   all = false,
   ids = [],
   channel = 'both',
+  notification = normalizeNotificationConfig(),
 } = {}) {
+  const maxAttempts = Math.max(1, positiveInteger(notification.maxRetries, DEFAULT_NOTIFICATION_CONFIG.maxRetries) + 1);
+  const retryDelayMs = positiveInteger(notification.retryDelaySeconds, DEFAULT_NOTIFICATION_CONFIG.retryDelaySeconds) * 1000;
   const active = enabledReportConfigs(configs);
   const due = mergeDuplicateReports(active.filter((item) => reportIsDue(item, { all, ids })));
   if (!due.length) {
@@ -761,9 +1056,10 @@ async function runConfiguredReports(cfg, token, configs, {
     console.log(`队列 ${queueIndex + 1}/${due.length}：${item.warehouse || item.groupName} -> ${targets.join('、') || '未配置目标群'}.`);
     let completed = false;
     let lastError;
-    for (let attempt = 1; attempt <= REPORT_MAX_ATTEMPTS && !completed; attempt += 1) {
+    let lastFailureContext = null;
+    for (let attempt = 1; attempt <= maxAttempts && !completed; attempt += 1) {
       try {
-        console.log(`开始上报规则 ${ruleLabel}（第 ${attempt}/${REPORT_MAX_ATTEMPTS} 次）：@${item.mentionNames.join(', ')}.`);
+        console.log(`开始上报规则 ${ruleLabel}（第 ${attempt}/${maxAttempts} 次）：@${item.mentionNames.join(', ')}.`);
         const sendFeishu = channel !== 'wechat';
         const sendWechat = channel !== 'feishu' && item.wechatEnabled && item.wechatRoomName;
         const chat = !sendFeishu || dryRun
@@ -774,6 +1070,18 @@ async function runConfiguredReports(cfg, token, configs, {
           : await findMentionMembers(token, chat.chat_id, cfg, item.mentionNames);
         const report = await captureScreenshot(cfg, item);
         console.log(`截图已生成（${report.screenshots.length} 张）：${report.screenshots.join(', ')}`);
+        const wechatText = sendWechat
+          ? formatWechatText(item, report.warnings, report.total, report.screenshots.length, beijingTimestamp())
+          : '';
+        lastFailureContext = {
+          ruleLabel,
+          warehouse: item.warehouse,
+          groupName: item.groupName,
+          wechatRoomName: sendWechat ? item.wechatRoomName : '',
+          mentionNames: sendWechat ? (item.wechatMentionNames || []) : [],
+          wechatText,
+          imagePaths: sendWechat ? report.screenshots : [],
+        };
         if (!dryRun && sendFeishu) {
           const imageKeys = [];
           for (const screenshot of report.screenshots) imageKeys.push(await uploadImage(token, screenshot));
@@ -782,7 +1090,6 @@ async function runConfiguredReports(cfg, token, configs, {
         }
         // WeChat send (if configured)
         if (!dryRun && sendWechat) {
-          const wechatText = formatWechatText(item, report.warnings, report.total, report.screenshots.length, beijingTimestamp());
           await sendToWechat(item, wechatText, report.screenshots);
         } else if (dryRun && sendWechat) {
           console.log(`微信预览模式：不会发送到微信群；目标 ${item.wechatRoomName}，@${item.wechatMentionNames.join(', ') || '无'}。`);
@@ -795,15 +1102,32 @@ async function runConfiguredReports(cfg, token, configs, {
           console.error(`规则 ${ruleLabel} 微信发送失败，不自动重试，避免重复发送。`);
           break;
         }
-        if (attempt < REPORT_MAX_ATTEMPTS) {
-          console.log(`${REPORT_RETRY_DELAY_MS / 1000} 秒后重试规则 ${ruleLabel}。`);
-          await new Promise((resolve) => setTimeout(resolve, REPORT_RETRY_DELAY_MS));
+        if (attempt < maxAttempts) {
+          console.log(`${retryDelayMs / 1000} 秒后重试规则 ${ruleLabel}。`);
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         }
       }
     }
     if (!completed) {
-      failures.push(`${ruleLabel} ${item.warehouse || item.groupName}: ${lastError?.message || '未知错误'}`);
+      const reason = lastError?.message || '未知错误';
+      failures.push(`${ruleLabel} ${item.warehouse || item.groupName}: ${reason}`);
       console.error(`规则 ${ruleLabel} 已达到最大重试次数，继续下一个仓库。`);
+      if (!dryRun) {
+        await sendReportFailureAlert(cfg, token, notification, {
+          ruleLabel,
+          warehouse: item.warehouse,
+          groupName: item.groupName,
+          reason,
+          ...lastFailureContext,
+        });
+      }
+    }
+    if (queueIndex < due.length - 1 && !dryRun && channel !== 'feishu') {
+      const delayMs = randomSendDelayMs(notification);
+      if (delayMs > 0) {
+        console.log(`等待 ${Math.round(delayMs / 1000)} 秒后继续下一个通知任务。`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
     }
   }
   if (failures.length) {
@@ -815,9 +1139,16 @@ async function runConfiguredReports(cfg, token, configs, {
 async function runOnce({ dryRun = false, all = false, ids = [], channel = 'both' } = {}) {
   const cfg = config();
   const token = dryRun || channel === 'wechat' ? null : await tenantToken(cfg);
-  const reportConfigs = await loadReportConfigs(cfg);
+  const reportConfig = await loadReportConfig(cfg);
+  const reportConfigs = reportConfig.items;
   if (reportConfigs.length) {
-    await runConfiguredReports(cfg, token, reportConfigs, { dryRun, all, ids, channel });
+    await runConfiguredReports(cfg, token, reportConfigs, {
+      dryRun,
+      all,
+      ids,
+      channel,
+      notification: reportConfig.notification,
+    });
   } else if (dryRun) {
     const report = await captureScreenshot(cfg);
     console.log(`Saved screenshots: ${report.screenshots.join(', ')}`);

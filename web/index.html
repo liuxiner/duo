@@ -28,8 +28,10 @@
     nav { display: grid; gap: 8px; }
     nav a { color: #344054; text-decoration: none; padding: 9px 10px; border-radius: 8px; font-weight: 700; }
     nav a:hover { background: #f2f4f7; }
+    nav a[aria-current="page"] { background: #eef4ff; color: #1849a9; }
     main { display: grid; gap: 16px; min-width: 0; }
     section { min-width: 0; border: 1px solid #d7dee8; border-radius: 8px; background: #fff; padding: 18px; box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }
+    [data-route-panel][hidden] { display: none; }
     .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
     .section-head > div { min-width: 0; }
     h2 { margin: 0; font-size: 17px; }
@@ -77,12 +79,10 @@
     .wide { min-width: 180px; }
     .times { min-width: 260px; }
     .row-actions { display: flex; gap: 6px; }
-    .log-panel { border: 1px solid #dbe4f0; border-radius: 10px; background: #f8fbff; overflow: hidden; }
-    .log-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; }
-    .log-lines { display: grid; gap: 6px; max-height: var(--log-preview-max-height); overflow: auto; padding: 0 12px 12px; color: #344054; }
-    .log-line { padding: 8px 10px; border-radius: 8px; background: #fff; border: 1px solid #e4e7ec; }
-    .log-full { display: none; max-height: var(--log-max-height); overflow: auto; padding: 12px; border-top: 1px solid #dbe4f0; background: #fff; }
-    .log-full.open { display: grid; gap: 6px; }
+    .log-panel { border-top: 1px solid #dbe4f0; background: transparent; overflow: visible; }
+    .log-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
+    .log-lines { max-height: var(--log-max-height); overflow: auto; padding: 8px 10px; color: #344054; border: 1px solid #d0d5dd; border-radius: 8px; background: #fff; box-shadow: inset 0 1px 2px rgba(16, 24, 40, .10), inset 0 -10px 18px rgba(16, 24, 40, .035); }
+    .log-line { padding: 1px 0; border: 0; background: transparent; white-space: pre-wrap; overflow-wrap: anywhere; }
     .pill { display: inline-flex; align-items: center; height: 24px; border-radius: 999px; padding: 0 9px; font-weight: 800; background: #ecfdf3; color: #067647; }
     .pill.off { background: #f2f4f7; color: #475467; }
     .pill.fail { background: #fef3f2; color: #b42318; }
@@ -210,7 +210,8 @@
       font-weight: 650;
     }
     nav a:hover,
-    nav a:focus-visible {
+    nav a:focus-visible,
+    nav a[aria-current="page"] {
       background: #f0f0ed;
       color: var(--text);
       outline: none;
@@ -237,6 +238,13 @@
       font-size: 15px;
       font-weight: 760;
       line-height: 1.3;
+    }
+    h3 {
+      margin: 0;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 760;
+      line-height: 1.35;
     }
     .hint {
       color: var(--muted);
@@ -432,31 +440,27 @@
     }
     .log-panel {
       border-color: var(--line);
-      border-radius: 8px;
-      background: #fff;
+      border-radius: 0;
+      background: transparent;
     }
     .log-summary {
-      min-height: 58px;
-      padding: 11px 12px;
-      border-bottom: 1px solid var(--line);
+      min-height: 0;
+      padding: 8px 0 6px;
+      border-bottom: 0;
     }
     .log-lines {
-      gap: 5px;
-      padding: 10px 12px 12px;
+      padding: 2px 0 8px;
       color: var(--muted-strong);
     }
     .log-line {
-      border-color: transparent;
-      border-radius: 6px;
-      background: #f6f6f3;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
       color: var(--muted-strong);
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       font-size: 12px;
-      line-height: 1.5;
-      padding: 7px 9px;
-    }
-    .log-full {
-      border-top-color: var(--line);
+      line-height: 1.35;
+      padding: 1px 0;
     }
     .pill {
       height: 22px;
@@ -522,6 +526,44 @@
       color: var(--muted);
       font-size: 12px;
     }
+    .config-stack {
+      display: grid;
+      gap: 12px;
+    }
+    .config-band {
+      display: grid;
+      gap: 10px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .config-band:first-of-type {
+      padding-top: 0;
+    }
+    .config-band:last-of-type {
+      border-bottom: 0;
+    }
+    .config-fields {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(140px, 1fr));
+      gap: 10px;
+      align-items: end;
+    }
+    .config-fields .span-2 {
+      grid-column: span 2;
+    }
+    .config-fields .switch {
+      width: fit-content;
+      min-width: 0;
+    }
+    .subhead {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    table.reservation-config-table {
+      min-width: 1180px;
+    }
     #wechat-qr-container img {
       border-color: var(--line) !important;
       border-radius: 8px !important;
@@ -579,6 +621,12 @@
       .status-card {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
+      .config-fields {
+        grid-template-columns: repeat(2, minmax(140px, 1fr));
+      }
+      .config-fields .span-2 {
+        grid-column: span 2;
+      }
     }
     @media (max-width: 680px) {
       .layout {
@@ -595,6 +643,11 @@
       }
       .status-card {
         grid-template-columns: 1fr;
+      }
+      .config-fields,
+      .config-fields .span-2 {
+        grid-template-columns: 1fr;
+        grid-column: auto;
       }
     }
   </style>
@@ -629,12 +682,7 @@
           <input name="PDD_CDP_URL" value="http://127.0.0.1:9222" list="pdd-cdp-options" required>
           <small>优先使用 `9222`，不可用时会自动切到附近可用端口。</small>
         </label>
-        <label>微信 Chrome 地址
-          <input name="WECHATY_CDP_URL" value="http://127.0.0.1:9333" list="wechat-cdp-options" required>
-          <small>优先使用 `9333`，不可用时会自动切到附近可用端口，且不能与 PDD 共用。</small>
-        </label>
         <datalist id="pdd-cdp-options"><option value="http://127.0.0.1:9222">本机 PDD Chrome</option></datalist>
-        <datalist id="wechat-cdp-options"><option value="http://127.0.0.1:9333">本机微信 Chrome</option></datalist>
       </form>
       <div class="preflight-actions">
         <button id="config-cancel" class="secondary" type="button">取消</button>
@@ -646,23 +694,24 @@
     <aside>
       <div class="brand">
         <h1>多多数字管家</h1>
-        <p>数据同步、分仓库截图上报和定时任务管理。</p>
+        <p>数据同步、微信群上报和心跳监控。</p>
       </div>
       <nav>
-        <a href="#sync">飞书数据同步</a>
-        <a href="#report">分仓库上报</a>
-        <a href="#wechat">微信群上报</a>
-        <a href="#logs">运行日志</a>
-        <a id="desktop-nav" href="#desktop" hidden>桌面客户端</a>
+        <a href="/sync" data-route-link="sync">飞书数据同步</a>
+        <a href="/config" data-route-link="config">配置中心</a>
+        <a href="/wechat" data-route-link="wechat">微信群上报</a>
+        <a href="/heartbeat" data-route-link="heartbeat">心跳监控</a>
+        <a href="/logs" data-route-link="logs">运行日志</a>
+        <a id="desktop-nav" href="/desktop" data-route-link="desktop" hidden>桌面客户端</a>
       </nav>
     </aside>
 
     <main>
-      <section id="sync">
+      <section id="sync" data-route-panel="sync">
         <div class="section-head">
           <div>
             <h2>飞书数据同步</h2>
-            <p class="hint">选择销售日期范围，逐日抓取并写入飞书 Sheet。</p>
+            <p class="hint">选择销售日期范围，逐日抓取 PDD Order Management，写入飞书后刷新 Kanban Review。</p>
           </div>
         </div>
         <form class="grid-form" id="sync-form">
@@ -677,56 +726,130 @@
         </div>
       </section>
 
-      <section id="report">
+      <section id="config" data-route-panel="config" hidden>
         <div class="section-head">
           <div>
-            <h2>分仓库上报配置</h2>
-            <p class="hint">发送时间用英文逗号分隔，支持 HH:MM；@ 多人也用英文逗号分隔。</p>
+            <h2>配置中心</h2>
+            <p class="hint">按任务、仓组、通知队列和预约规则维护运营流水线。</p>
           </div>
           <label class="switch"><input id="scheduler-enabled" type="checkbox">定时上报</label>
         </div>
-        <div class="toolbar">
-          <button id="add-row" class="light" type="button">新增规则</button>
-          <button id="save-config" type="button">保存配置</button>
-          <button id="run-selected" class="success" type="button">多选立即上报</button>
-          <button id="dry-run-selected" class="secondary" type="button">多选测试截图</button>
-        </div>
-        <div id="config-table-wrap" class="table-wrap" style="margin-top: 12px;">
-          <table>
-            <thead>
-              <tr>
-                <th class="narrow">选择</th>
-                <th class="narrow">序号</th>
-                <th>区域</th>
-                <th>仓库</th>
-                <th>群名</th>
-                <th>发送群名</th>
-                <th>成员名</th>
-                <th>@群成员</th>
-                <th>发送时间</th>
-                <th>截单时间</th>
-                <th>整点</th>
-                <th>状态</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="config-body"></tbody>
-          </table>
+        <div class="config-stack">
+          <div class="config-band">
+            <div class="subhead">
+              <h3>通知队列</h3>
+              <button id="save-config" type="button">保存配置</button>
+            </div>
+            <div class="config-fields">
+              <label class="span-2">管理通知群<input id="notification-admin-group" autocomplete="off"></label>
+              <label>发送通道
+                <select id="notification-sender-strategy">
+                  <option value="desktop_wechat">桌面微信</option>
+                  <option value="http_api">HTTP API</option>
+                  <option value="weixin_v4">微信 v4</option>
+                </select>
+              </label>
+              <label>最大重试<input id="notification-max-retries" type="number" min="1" step="1"></label>
+              <label>最小间隔(秒)<input id="notification-interval-min" type="number" min="1" step="1"></label>
+              <label>最大间隔(秒)<input id="notification-interval-max" type="number" min="1" step="1"></label>
+              <label>重试等待(秒)<input id="notification-retry-delay" type="number" min="1" step="1"></label>
+            </div>
+          </div>
+
+          <div class="config-band">
+            <h3>任务编排</h3>
+            <div class="config-fields">
+              <label class="switch"><input id="reservation-enabled" type="checkbox">预约任务</label>
+              <label class="span-2">首约时间<input id="reservation-first-run-times" autocomplete="off"></label>
+              <label class="span-2">尾约时间<input id="reservation-last-run-times" autocomplete="off"></label>
+              <label class="switch"><input id="reservation-dry-run" type="checkbox">预约演练</label>
+              <label class="switch"><input id="reservation-last-enabled" type="checkbox">生成尾约</label>
+              <label class="switch"><input id="reservation-notify-admin" type="checkbox">通知管理群</label>
+              <label class="switch"><input id="schedule-monitor-enabled" type="checkbox">排期监控</label>
+              <label>监控时间<input id="schedule-monitor-run-times" autocomplete="off"></label>
+              <label>监控天数<input id="schedule-monitor-days-ahead" type="number" min="1" step="1"></label>
+              <label class="switch"><input id="schedule-monitor-change-only" type="checkbox">仅变更通知</label>
+              <label class="switch"><input id="violation-check-enabled" type="checkbox">违规检查</label>
+              <label>检查时间<input id="violation-check-run-times" autocomplete="off"></label>
+              <label class="switch"><input id="violation-only-pending" type="checkbox">只看待申诉</label>
+              <label class="switch"><input id="violation-notify-empty" type="checkbox">空结果通知</label>
+            </div>
+          </div>
+
+          <div class="config-band">
+            <div class="subhead">
+              <h3>报量规则</h3>
+              <div class="toolbar">
+                <button id="add-row" class="light" type="button">新增规则</button>
+                <button id="run-selected" class="success" type="button">多选立即上报</button>
+                <button id="dry-run-selected" class="secondary" type="button">多选测试截图</button>
+              </div>
+            </div>
+            <div id="config-table-wrap" class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th class="narrow">选择</th>
+                    <th class="narrow">序号</th>
+                    <th>区域</th>
+                    <th>仓库</th>
+                    <th>群名</th>
+                    <th>发送群名</th>
+                    <th>成员名</th>
+                    <th>@群成员</th>
+                    <th>发送时间</th>
+                    <th>截单时间</th>
+                    <th>整点</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="config-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="config-band">
+            <div class="subhead">
+              <h3>预约规则</h3>
+              <button id="add-reservation-row" class="light" type="button">新增预约</button>
+            </div>
+            <div id="reservation-config-table-wrap" class="table-wrap">
+              <table class="reservation-config-table">
+                <thead>
+                  <tr>
+                    <th class="narrow">序号</th>
+                    <th>销售区域</th>
+                    <th>仓组</th>
+                    <th>中心仓</th>
+                    <th>司机号码</th>
+                    <th>预约数量</th>
+                    <th>预约时间</th>
+                    <th>首约通知群</th>
+                    <th>尾约通知群</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="reservation-config-body"></tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </section>
 
-      <section id="wechat">
+      <section id="wechat" data-route-panel="wechat" hidden>
         <div class="section-head">
           <div>
             <h2>微信群上报</h2>
-            <p class="hint">管理 Wechaty 机器人，扫码登录后即可向微信群发送上报消息。</p>
+            <p class="hint">通过桌面微信 App 发送图片、消息和真实 @。</p>
           </div>
-          <div class="toolbar">
+          <div class="toolbar" style="display:none;">
             <button id="wechat-start" class="success" type="button">启动机器人</button>
             <button id="wechat-stop" class="danger" type="button">停止机器人</button>
           </div>
         </div>
-        <div class="status-card">
+        <div class="status-card" style="display:none;">
           <div class="metric"><span>机器人状态</span><strong id="wechat-status">未启动</strong></div>
           <div class="metric"><span>登录用户</span><strong id="wechat-user">-</strong></div>
           <div class="metric"><span>说明</span><strong id="wechat-hint" style="font-size:12px;">点击"启动机器人"后扫码登录</strong></div>
@@ -738,7 +861,7 @@
         <div class="section-head" style="margin-top:18px;">
           <div>
             <h2>微信群规则配置</h2>
-            <p class="hint">仓库、发送时间和截单时间沿用飞书规则；微信群名和微信 @成员独立配置。</p>
+            <p class="hint">仓库、发送时间和截单时间沿用上报规则；微信群名和微信 @成员独立配置。</p>
           </div>
           <div class="toolbar">
             <button id="wechat-save-config" type="button">保存微信配置</button>
@@ -765,19 +888,48 @@
         </div>
       </section>
 
-      <section id="logs">
+      <section id="heartbeat" data-route-panel="heartbeat" hidden>
+        <div class="section-head">
+          <div>
+            <h2>心跳监控</h2>
+            <p class="hint">每 5 分钟检查拼多多和微信登录状态，异常时发送飞书提醒。</p>
+          </div>
+          <label class="switch"><input id="heartbeat-enabled" type="checkbox">启用心跳</label>
+        </div>
+        <div class="grid-form">
+          <label>检查间隔(分钟)<input id="heartbeat-interval" type="number" min="1" step="1" value="5"></label>
+          <label>飞书群<input id="heartbeat-chat-name" value="杭州交仓" autocomplete="off"></label>
+          <label>@成员<input id="heartbeat-mention-names" value="鑫" autocomplete="off"></label>
+          <button id="heartbeat-save" type="button">保存心跳配置</button>
+          <button id="heartbeat-run" class="secondary" type="button">立即检查</button>
+        </div>
+        <div class="status-card">
+          <div class="metric"><span>心跳状态</span><strong id="heartbeat-state">空闲</strong></div>
+          <div class="metric"><span>最近结果</span><strong id="heartbeat-result">未检查</strong></div>
+          <div class="metric"><span>下次检查</span><strong id="heartbeat-next">-</strong></div>
+        </div>
+      </section>
+
+      <section id="logs" data-route-panel="logs" hidden>
         <div class="section-head">
           <div>
             <h2>运行日志</h2>
-            <p class="hint">默认只展示最近几条，展开后查看完整日志。</p>
+            <p class="hint">展示完整运行日志，可复制当前面板内容。</p>
           </div>
         </div>
         <div id="sync-log-panel" class="log-panel"></div>
         <div id="report-log-panel" class="log-panel" style="margin-top: 12px;"></div>
-        <div id="scheduler-log-panel" class="log-panel" style="margin-top: 12px;"></div>
+        <div id="monitor-notification-log-panel" class="log-panel" style="margin-top: 12px;"></div>
+        <div id="scheduler-log-panel" class="log-panel" style="margin-top: 12px;" hidden></div>
+        <div id="heartbeat-log-panel" class="log-panel" style="margin-top: 12px;"></div>
+        <div class="toolbar" style="margin-top: 12px;">
+          <select id="desktop-wechat-log-select" aria-label="桌面微信日志日期"></select>
+          <button id="desktop-wechat-log-refresh" class="light" type="button">刷新桌面微信日志</button>
+        </div>
+        <div id="desktop-wechat-log-panel" class="log-panel" style="margin-top: 12px;"></div>
       </section>
 
-      <section id="desktop" hidden>
+      <section id="desktop" data-route-panel="desktop" hidden>
         <div class="section-head">
           <div>
             <h2>桌面客户端</h2>
@@ -785,6 +937,7 @@
           </div>
           <div class="toolbar">
             <button id="desktop-open-workspace" class="light" type="button">打开数据目录</button>
+            <button id="desktop-open-logs" class="light" type="button">打开日志目录</button>
             <button id="desktop-check-update" type="button">检查更新</button>
             <button id="desktop-download-update" class="success" type="button" hidden>下载更新</button>
             <button id="desktop-apply-update" class="success" type="button" hidden>立即应用</button>
@@ -794,6 +947,22 @@
           <div class="metric"><span>桌面壳版本</span><strong id="desktop-shell-version">-</strong></div>
           <div class="metric"><span>业务版本</span><strong id="desktop-runtime-version">-</strong></div>
           <div class="metric"><span>更新状态</span><strong id="desktop-update-status">未检查</strong></div>
+          <div class="metric"><span>微信桌面权限</span><strong id="desktop-wechat-permission">未检查</strong></div>
+          <div class="metric"><span>微信上报自检</span><strong id="desktop-wechat-smoke-status">等待检测</strong></div>
+        </div>
+        <div class="toolbar" style="margin-top:12px;">
+          <button id="desktop-request-wechat-permission" type="button">申请微信桌面权限</button>
+          <button id="desktop-wechat-smoke-test" class="secondary" type="button">重新检测微信上报</button>
+        </div>
+        <div class="grid-form" style="margin-top:12px;">
+          <label>微信群名<input id="desktop-wechat-room" value="杭州交仓" autocomplete="off"></label>
+          <label>@成员<input id="desktop-wechat-mentions" value="得閑斂金" autocomplete="off"></label>
+          <label class="full">测试内容<input id="desktop-wechat-text" value="真实数据桌面微信@测试请忽略" autocomplete="off"></label>
+          <button id="desktop-wechat-keyboard-test" class="secondary" type="button">测试键盘输入</button>
+          <button id="desktop-wechat-enter-test" class="secondary" type="button">测试Enter发送</button>
+          <button id="desktop-wechat-open-retry-test" class="secondary" type="button">测试三次搜索定位</button>
+          <button id="desktop-wechat-draft" type="button">发送微信@消息</button>
+          <strong id="desktop-wechat-draft-status" style="align-self:center;">等待发送</strong>
         </div>
       </section>
     </main>
@@ -816,17 +985,55 @@
     const dryRunSelected = document.querySelector('#dry-run-selected');
     const configBody = document.querySelector('#config-body');
     const configTableWrap = document.querySelector('#config-table-wrap');
+    const notificationAdminGroup = document.querySelector('#notification-admin-group');
+    const notificationSenderStrategy = document.querySelector('#notification-sender-strategy');
+    const notificationIntervalMin = document.querySelector('#notification-interval-min');
+    const notificationIntervalMax = document.querySelector('#notification-interval-max');
+    const notificationMaxRetries = document.querySelector('#notification-max-retries');
+    const notificationRetryDelay = document.querySelector('#notification-retry-delay');
+    const reservationEnabled = document.querySelector('#reservation-enabled');
+    const reservationFirstRunTimes = document.querySelector('#reservation-first-run-times');
+    const reservationLastRunTimes = document.querySelector('#reservation-last-run-times');
+    const reservationDryRun = document.querySelector('#reservation-dry-run');
+    const reservationLastEnabled = document.querySelector('#reservation-last-enabled');
+    const reservationNotifyAdmin = document.querySelector('#reservation-notify-admin');
+    const scheduleMonitorEnabled = document.querySelector('#schedule-monitor-enabled');
+    const scheduleMonitorRunTimes = document.querySelector('#schedule-monitor-run-times');
+    const scheduleMonitorDaysAhead = document.querySelector('#schedule-monitor-days-ahead');
+    const scheduleMonitorChangeOnly = document.querySelector('#schedule-monitor-change-only');
+    const violationCheckEnabled = document.querySelector('#violation-check-enabled');
+    const violationCheckRunTimes = document.querySelector('#violation-check-run-times');
+    const violationOnlyPending = document.querySelector('#violation-only-pending');
+    const violationNotifyEmpty = document.querySelector('#violation-notify-empty');
+    const addReservationRow = document.querySelector('#add-reservation-row');
+    const reservationConfigBody = document.querySelector('#reservation-config-body');
+    const reservationConfigTableWrap = document.querySelector('#reservation-config-table-wrap');
     const syncLogPanel = document.querySelector('#sync-log-panel');
     const reportLogPanel = document.querySelector('#report-log-panel');
+    const monitorNotificationLogPanel = document.querySelector('#monitor-notification-log-panel');
     const wechatRunSelected = document.querySelector('#wechat-run-selected');
     const wechatDryRunSelected = document.querySelector('#wechat-dry-run-selected');
     const wechatSaveConfig = document.querySelector('#wechat-save-config');
     const wechatConfigBody = document.querySelector('#wechat-config-body');
     const wechatConfigTableWrap = document.querySelector('#wechat-config-table-wrap');
     const schedulerLogPanel = document.querySelector('#scheduler-log-panel');
-    let config = { schedulerEnabled: false, items: [] };
-    let expandedLogs = { sync: false, report: false, scheduler: false };
+    const heartbeatEnabled = document.querySelector('#heartbeat-enabled');
+    const heartbeatInterval = document.querySelector('#heartbeat-interval');
+    const heartbeatChatName = document.querySelector('#heartbeat-chat-name');
+    const heartbeatMentionNames = document.querySelector('#heartbeat-mention-names');
+    const heartbeatSave = document.querySelector('#heartbeat-save');
+    const heartbeatRun = document.querySelector('#heartbeat-run');
+    const heartbeatState = document.querySelector('#heartbeat-state');
+    const heartbeatResult = document.querySelector('#heartbeat-result');
+    const heartbeatNext = document.querySelector('#heartbeat-next');
+    const heartbeatLogPanel = document.querySelector('#heartbeat-log-panel');
+    const desktopWechatLogSelect = document.querySelector('#desktop-wechat-log-select');
+    const desktopWechatLogRefresh = document.querySelector('#desktop-wechat-log-refresh');
+    const desktopWechatLogPanel = document.querySelector('#desktop-wechat-log-panel');
+    let config = { schedulerEnabled: false, items: [], reservation: { items: [] } };
+    let selectedDesktopWechatLog = '';
     let reportRequestPending = false;
+    let desktopWechatSmokeGate = { status: 'unknown', ok: null, disabled: true, reason: '等待微信上报自检' };
     let wechatEventSource = null;
     let refreshTimer = null;
     let refreshInFlight = false;
@@ -842,6 +1049,19 @@
     const desktopDownloadUpdate = document.querySelector('#desktop-download-update');
     const desktopApplyUpdate = document.querySelector('#desktop-apply-update');
     const desktopOpenWorkspace = document.querySelector('#desktop-open-workspace');
+    const desktopOpenLogs = document.querySelector('#desktop-open-logs');
+    const desktopWechatPermission = document.querySelector('#desktop-wechat-permission');
+    const desktopRequestWechatPermission = document.querySelector('#desktop-request-wechat-permission');
+    const desktopWechatSmokeStatus = document.querySelector('#desktop-wechat-smoke-status');
+    const desktopWechatSmokeTest = document.querySelector('#desktop-wechat-smoke-test');
+    const desktopWechatRoom = document.querySelector('#desktop-wechat-room');
+    const desktopWechatMentions = document.querySelector('#desktop-wechat-mentions');
+    const desktopWechatText = document.querySelector('#desktop-wechat-text');
+    const desktopWechatKeyboardTest = document.querySelector('#desktop-wechat-keyboard-test');
+    const desktopWechatEnterTest = document.querySelector('#desktop-wechat-enter-test');
+    const desktopWechatOpenRetryTest = document.querySelector('#desktop-wechat-open-retry-test');
+    const desktopWechatDraft = document.querySelector('#desktop-wechat-draft');
+    const desktopWechatDraftStatus = document.querySelector('#desktop-wechat-draft-status');
     const preflightOverlay = document.querySelector('#preflight-overlay');
     const preflightList = document.querySelector('#preflight-list');
     const preflightRetry = document.querySelector('#preflight-retry');
@@ -851,6 +1071,52 @@
     const configCancel = document.querySelector('#config-cancel');
     const configSave = document.querySelector('#config-save');
     createResponsiveLayoutController({ window, document });
+
+    const routeLinks = Array.from(document.querySelectorAll('[data-route-link]'));
+    const routePanels = Array.from(document.querySelectorAll('[data-route-panel]'));
+    const baseRoutes = new Set(['sync', 'config', 'wechat', 'heartbeat', 'logs']);
+    let desktopRouteAvailable = false;
+
+    function routeFromLocation() {
+      const pathRoute = window.location.pathname.replace(/^\/+|\/+$/g, '');
+      if (pathRoute) return pathRoute;
+      return window.location.hash.replace(/^#\/?/, '').trim() || 'sync';
+    }
+    function isRouteAvailable(route) {
+      return baseRoutes.has(route) || (route === 'desktop' && desktopRouteAvailable);
+    }
+    function applyRoute() {
+      const requestedRoute = routeFromLocation();
+      const route = isRouteAvailable(requestedRoute) ? requestedRoute : 'sync';
+      for (const panel of routePanels) {
+        panel.hidden = panel.dataset.routePanel !== route;
+      }
+      for (const link of routeLinks) {
+        const current = link.dataset.routeLink === route;
+        if (current) link.setAttribute('aria-current', 'page');
+        else link.removeAttribute('aria-current');
+      }
+      document.body.dataset.route = route;
+      if (route === 'logs') refreshDesktopWechatLogs().catch(() => {});
+      const shouldNormalizeUrl = window.location.pathname === '/'
+        || (!isRouteAvailable(requestedRoute) && (requestedRoute !== 'desktop' || !desktopApi));
+      if (shouldNormalizeUrl) {
+        window.history.replaceState({ route }, '', `/${route}`);
+      }
+    }
+    function navigateToRoute(route) {
+      if (!isRouteAvailable(route)) return;
+      window.history.pushState({ route }, '', `/${route}`);
+      applyRoute();
+    }
+    document.addEventListener('click', (event) => {
+      const link = event.target.closest('[data-route-link]');
+      if (!link) return;
+      event.preventDefault();
+      navigateToRoute(link.dataset.routeLink);
+    });
+    window.addEventListener('popstate', applyRoute);
+    window.addEventListener('hashchange', applyRoute);
 
     async function openAppConfig() {
       const response = await fetch('/api/app-config');
@@ -864,7 +1130,6 @@
 
     function preflightAction(check) {
       if (check.id === 'pddChrome') return '<button class="light preflight-launch" data-service="pdd" type="button">启动 PDD Chrome</button>';
-      if (check.id === 'wechatChrome') return '<button class="light preflight-launch" data-service="wechat" type="button">启动微信 Chrome</button>';
       return '<button class="light preflight-configure" type="button">配置</button>';
     }
 
@@ -898,15 +1163,46 @@
       }
     }
 
+    function renderDesktopWechatAutomationStatus(status) {
+      if (!status) {
+        desktopWechatPermission.textContent = '未检查';
+        return;
+      }
+      if (!status.supported) {
+        desktopWechatPermission.textContent = '当前系统不支持';
+      } else if (!status.implemented) {
+        desktopWechatPermission.textContent = 'Windows 适配待启用';
+      } else if (!status.helperInstalled) {
+        desktopWechatPermission.textContent = '缺少桌面驱动';
+      } else if (!status.wechatInstalled) {
+        desktopWechatPermission.textContent = '未找到桌面微信';
+      } else if (status.accessibilityTrusted) {
+        desktopWechatPermission.textContent = '已授权';
+      } else {
+        desktopWechatPermission.textContent = '待授权';
+      }
+    }
+
+    async function refreshDesktopWechatAutomationStatus() {
+      if (!desktopApi?.getWechatAutomationStatus) return;
+      try {
+        renderDesktopWechatAutomationStatus(await desktopApi.getWechatAutomationStatus());
+      } catch (error) {
+        desktopWechatPermission.textContent = error.message;
+      }
+    }
+
     async function initializeDesktop() {
       if (!desktopApi) return;
-      desktopSection.hidden = false;
+      desktopRouteAvailable = true;
       desktopNav.hidden = false;
+      applyRoute();
       const info = await desktopApi.getInfo();
       desktopShellVersion.textContent = info.shellVersion;
       desktopRuntimeVersion.textContent = info.runtimeVersion;
-      desktopPath.textContent = `数据目录：${info.workspacePath}`;
+      desktopPath.textContent = `数据目录：${info.workspacePath}${info.logsPath ? `；日志目录：${info.logsPath}` : ''}`;
       if (!info.updateConfigured) desktopUpdateStatus.textContent = '未配置更新服务器';
+      await refreshDesktopWechatAutomationStatus();
       await runPreflight();
 
       desktopApi.onUpdateStatus((status) => {
@@ -940,6 +1236,105 @@
     desktopDownloadUpdate.addEventListener('click', () => desktopApi.downloadUpdate());
     desktopApplyUpdate.addEventListener('click', () => desktopApi.applyUpdate());
     desktopOpenWorkspace.addEventListener('click', () => desktopApi.openWorkspace());
+    desktopOpenLogs.addEventListener('click', () => desktopApi?.openLogs?.());
+    desktopRequestWechatPermission.addEventListener('click', async () => {
+      desktopRequestWechatPermission.disabled = true;
+      try {
+        renderDesktopWechatAutomationStatus(await desktopApi.requestWechatAutomationPermissions());
+        await refreshWechatSmoke(true);
+      } catch (error) {
+        desktopWechatPermission.textContent = error.message;
+      } finally {
+        desktopRequestWechatPermission.disabled = false;
+      }
+    });
+    async function refreshWechatSmoke(force = false) {
+      if (desktopWechatSmokeTest) desktopWechatSmokeTest.disabled = true;
+      try {
+        const response = await fetch('/api/desktop-wechat-smoke', { method: force ? 'POST' : 'GET' });
+        const body = await response.json();
+        applyWechatSmokeGate(body.smoke || desktopWechatSmokeGate);
+        if (!response.ok) throw new Error(body.error || body.smoke?.reason || '微信上报自检失败');
+        renderConfig();
+      } catch (error) {
+        applyWechatSmokeGate({ status: 'failed', ok: false, disabled: true, reason: error.message });
+        alert(error.message);
+      } finally {
+        if (desktopWechatSmokeTest) desktopWechatSmokeTest.disabled = desktopWechatSmokeGate.status === 'running';
+      }
+    }
+    desktopWechatSmokeTest.addEventListener('click', async () => {
+      await refreshWechatSmoke(true);
+      await refresh();
+    });
+    desktopWechatDraft.addEventListener('click', async () => {
+      if (!assertWechatSmokeReady()) return;
+      desktopWechatDraft.disabled = true;
+      desktopWechatDraftStatus.textContent = '发送中';
+      try {
+        const result = await desktopApi.createWechatDraft({
+          roomName: desktopWechatRoom.value,
+          mentionNames: desktopWechatMentions.value.split(/[,，]/).map((name) => name.trim()).filter(Boolean),
+          text: desktopWechatText.value,
+          send: true,
+        });
+        desktopWechatDraftStatus.textContent = result.ok ? '已触发发送' : '发送失败';
+        await refreshDesktopWechatAutomationStatus();
+      } catch (error) {
+        desktopWechatDraftStatus.textContent = error.message;
+      } finally {
+        desktopWechatDraft.disabled = isWechatSmokeBlocked();
+      }
+    });
+    desktopWechatKeyboardTest.addEventListener('click', async () => {
+      desktopWechatKeyboardTest.disabled = true;
+      desktopWechatDraftStatus.textContent = '键盘测试中';
+      try {
+        const result = await desktopApi.testWechatKeyboard({
+          roomName: desktopWechatRoom.value,
+        });
+        desktopWechatDraftStatus.textContent = result.text ? `已输入：${result.text}` : '已触发键盘测试';
+        await refreshDesktopWechatAutomationStatus();
+      } catch (error) {
+        desktopWechatDraftStatus.textContent = error.message;
+      } finally {
+        desktopWechatKeyboardTest.disabled = isWechatSmokeBlocked();
+      }
+    });
+    desktopWechatEnterTest.addEventListener('click', async () => {
+      desktopWechatEnterTest.disabled = true;
+      desktopWechatDraftStatus.textContent = 'Enter测试中';
+      try {
+        const result = await desktopApi.testWechatKeyboard({
+          roomName: desktopWechatRoom.value,
+          pressEnter: true,
+        });
+        desktopWechatDraftStatus.textContent = result.text ? `已按Enter：${result.text}` : '已触发Enter测试';
+        await refreshDesktopWechatAutomationStatus();
+      } catch (error) {
+        desktopWechatDraftStatus.textContent = error.message;
+      } finally {
+        desktopWechatEnterTest.disabled = isWechatSmokeBlocked();
+      }
+    });
+    desktopWechatOpenRetryTest.addEventListener('click', async () => {
+      desktopWechatOpenRetryTest.disabled = true;
+      desktopWechatDraftStatus.textContent = '三次搜索定位测试中';
+      try {
+        const result = await desktopApi.testWechatKeyboard({
+          roomName: desktopWechatRoom.value,
+          openRetry: true,
+        });
+        desktopWechatDraftStatus.textContent = result.selection
+          ? `定位成功：${result.selection}`
+          : '定位成功';
+        await refreshDesktopWechatAutomationStatus();
+      } catch (error) {
+        desktopWechatDraftStatus.textContent = error.message;
+      } finally {
+        desktopWechatOpenRetryTest.disabled = isWechatSmokeBlocked();
+      }
+    });
     preflightOpenConfig.addEventListener('click', openAppConfig);
     configCancel.addEventListener('click', () => { configOverlay.hidden = true; });
     appConfigForm.addEventListener('submit', async (event) => {
@@ -1063,8 +1458,89 @@
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
     }
+    function splitCommaList(value) {
+      return String(value || '').split(/[,，、]+/).map((item) => item.trim()).filter(Boolean);
+    }
+    function splitTimeList(value) {
+      return String(value || '').split(/[,，、\s-]+/).map((item) => item.trim()).filter(Boolean);
+    }
+    function splitConfigList(value) {
+      return String(value || '').split(/[,，、\s-]+/).map((item) => item.trim()).filter(Boolean);
+    }
+    async function copyText(text) {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      textarea.style.top = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
+    }
+    function positiveNumber(value, fallback) {
+      const next = Number(value);
+      return Number.isFinite(next) && next > 0 ? Math.round(next) : fallback;
+    }
+    function setControlGroupDisabled(elements, disabled) {
+      for (const element of elements) {
+        if (element) element.disabled = disabled;
+      }
+    }
+    function isWechatSmokeBlocked() {
+      return Boolean(desktopWechatSmokeGate?.disabled);
+    }
+    function formatWechatSmokeStatus(smoke = desktopWechatSmokeGate) {
+      if (smoke.ok === true) return '通过';
+      if (smoke.status === 'running') return '检测中';
+      if (smoke.ok === false) return '失败';
+      return '等待检测';
+    }
+    function applyWechatSmokeGate(smoke = desktopWechatSmokeGate) {
+      desktopWechatSmokeGate = smoke || desktopWechatSmokeGate;
+      const blocked = isWechatSmokeBlocked();
+      const reason = desktopWechatSmokeGate.reason || '';
+      if (desktopWechatSmokeGate.ok === false) {
+        config.schedulerEnabled = false;
+        if (schedulerEnabled) schedulerEnabled.checked = false;
+      }
+      if (desktopWechatSmokeStatus) {
+        desktopWechatSmokeStatus.textContent = reason
+          ? `${formatWechatSmokeStatus(desktopWechatSmokeGate)}：${reason}`
+          : formatWechatSmokeStatus(desktopWechatSmokeGate);
+      }
+      if (desktopWechatSmokeTest) desktopWechatSmokeTest.disabled = desktopWechatSmokeGate.status === 'running';
+      setControlGroupDisabled([
+        schedulerEnabled,
+        runSelected,
+        wechatRunSelected,
+        wechatDryRunSelected,
+        desktopWechatKeyboardTest,
+        desktopWechatEnterTest,
+        desktopWechatOpenRetryTest,
+        desktopWechatDraft,
+      ], blocked);
+      for (const element of document.querySelectorAll('.wechat-run-one, .wechat-test-one, .select-wechat-rule')) {
+        element.disabled = blocked;
+      }
+    }
+    function assertWechatSmokeReady() {
+      if (!isWechatSmokeBlocked()) return true;
+      alert(`微信 App 上报 smoke test 未通过：${desktopWechatSmokeGate.reason || '请先重新检测微信上报'}`);
+      return false;
+    }
     function nextId() {
       const max = Math.max(0, ...config.items.map((item) => Number(item.id) || 0));
+      return String(max + 1);
+    }
+    function nextReservationId() {
+      const items = config.reservation?.items || [];
+      const max = Math.max(0, ...items.map((item) => Number(item.id) || 0));
       return String(max + 1);
     }
     function selectedIds() {
@@ -1079,8 +1555,8 @@
       item.groupName = row.querySelector('[data-field="groupName"]').value.trim();
       item.chatName = row.querySelector('[data-field="chatName"]').value.trim();
       item.memberName = row.querySelector('[data-field="memberName"]').value.trim();
-      item.mentionNames = row.querySelector('[data-field="mentionNames"]').value.split(/[,，]/).map((value) => value.trim()).filter(Boolean);
-      item.sendTimes = row.querySelector('[data-field="sendTimes"]').value.split(',').map((value) => value.trim()).filter(Boolean);
+      item.mentionNames = splitCommaList(row.querySelector('[data-field="mentionNames"]').value);
+      item.sendTimes = splitTimeList(row.querySelector('[data-field="sendTimes"]').value);
       item.cutoffTime = row.querySelector('[data-field="cutoffTime"]').value.trim();
       item.topOfHour = row.querySelector('[data-field="topOfHour"]').checked;
       item.enabled = row.querySelector('[data-field="enabled"]').checked;
@@ -1098,17 +1574,167 @@
         if (!item) continue;
         item.wechatEnabled = row.querySelector('[data-wechat-field="enabled"]').checked;
         item.wechatRoomName = row.querySelector('[data-wechat-field="roomName"]').value.trim();
-        item.wechatMentionNames = row.querySelector('[data-wechat-field="mentionNames"]').value
-          .split(/[,，]/).map((value) => value.trim()).filter(Boolean);
+        item.wechatMentionNames = splitCommaList(row.querySelector('[data-wechat-field="mentionNames"]').value);
       }
+    }
+    function syncHeartbeatConfigFromForm() {
+      config.heartbeat = {
+        enabled: heartbeatEnabled.checked,
+        intervalMinutes: Math.max(1, Number(heartbeatInterval.value || 5)),
+        feishuChatName: heartbeatChatName.value.trim(),
+        mentionNames: splitCommaList(heartbeatMentionNames.value),
+      };
+    }
+    function syncAdvancedConfigFromForm() {
+      const minInterval = positiveNumber(notificationIntervalMin.value, 2);
+      const maxInterval = positiveNumber(notificationIntervalMax.value, 5);
+      config.notification = {
+        adminGroup: notificationAdminGroup.value.trim(),
+        senderStrategy: notificationSenderStrategy.value,
+        sendIntervalSeconds: {
+          min: Math.min(minInterval, maxInterval),
+          max: Math.max(minInterval, maxInterval),
+        },
+        maxRetries: positiveNumber(notificationMaxRetries.value, 2),
+        retryDelaySeconds: positiveNumber(notificationRetryDelay.value, 10),
+      };
+      config.reservation = {
+        ...(config.reservation || {}),
+        enabled: reservationEnabled.checked,
+        firstRunTimes: splitTimeList(reservationFirstRunTimes.value),
+        lastRunTimes: splitTimeList(reservationLastRunTimes.value),
+        createLastAppointmentEnabled: reservationLastEnabled.checked,
+        dryRun: reservationDryRun.checked,
+        notifyAdmin: reservationNotifyAdmin.checked,
+        items: config.reservation?.items || [],
+      };
+      config.scheduleMonitor = {
+        enabled: scheduleMonitorEnabled.checked,
+        runTimes: splitTimeList(scheduleMonitorRunTimes.value),
+        daysAhead: positiveNumber(scheduleMonitorDaysAhead.value, 1),
+        notifyOnChangeOnly: scheduleMonitorChangeOnly.checked,
+      };
+      config.violationCheck = {
+        enabled: violationCheckEnabled.checked,
+        runTimes: splitTimeList(violationCheckRunTimes.value),
+        onlyPendingAppeals: violationOnlyPending.checked,
+        notifyWhenEmpty: violationNotifyEmpty.checked,
+      };
+    }
+    function syncReservationItemFromRow(row, item) {
+      item.region = row.querySelector('[data-reservation-field="region"]').value.trim();
+      item.warehouseGroup = row.querySelector('[data-reservation-field="warehouseGroup"]').value.trim();
+      item.centerWarehouses = splitConfigList(row.querySelector('[data-reservation-field="centerWarehouses"]').value);
+      item.driverMobile = row.querySelector('[data-reservation-field="driverMobile"]').value.trim();
+      item.quantity = positiveNumber(row.querySelector('[data-reservation-field="quantity"]').value, 100);
+      item.preferredHour = row.querySelector('[data-reservation-field="preferredHour"]').value.trim();
+      item.firstNotifyGroup = row.querySelector('[data-reservation-field="firstNotifyGroup"]').value.trim();
+      item.lastNotifyGroup = row.querySelector('[data-reservation-field="lastNotifyGroup"]').value.trim();
+      item.enabled = row.querySelector('[data-reservation-field="enabled"]').checked;
+    }
+    function syncReservationConfigFromTable() {
+      if (!config.reservation) config.reservation = { items: [] };
+      const items = config.reservation.items || [];
+      for (const row of reservationConfigBody.querySelectorAll('tr')) {
+        const item = items.find((candidate) => candidate.id === row.dataset.id);
+        if (item) syncReservationItemFromRow(row, item);
+      }
+      config.reservation.items = items;
+    }
+    function renderHeartbeatConfig() {
+      const heartbeat = config.heartbeat || {};
+      heartbeatEnabled.checked = heartbeat.enabled !== false;
+      heartbeatInterval.value = heartbeat.intervalMinutes || 5;
+      heartbeatChatName.value = heartbeat.feishuChatName || '杭州交仓';
+      heartbeatMentionNames.value = (heartbeat.mentionNames || ['鑫']).join(', ');
+    }
+    function renderAdvancedConfig() {
+      const locked = Boolean(config.schedulerEnabled);
+      const notification = config.notification || {};
+      const interval = notification.sendIntervalSeconds || {};
+      notificationAdminGroup.value = notification.adminGroup || '杭州交仓';
+      notificationSenderStrategy.value = notification.senderStrategy || 'desktop_wechat';
+      notificationIntervalMin.value = interval.min || 2;
+      notificationIntervalMax.value = interval.max || 5;
+      notificationMaxRetries.value = notification.maxRetries || 2;
+      notificationRetryDelay.value = notification.retryDelaySeconds || 10;
+
+      const reservation = config.reservation || {};
+      reservationEnabled.checked = Boolean(reservation.enabled);
+      reservationFirstRunTimes.value = (reservation.firstRunTimes || ['21:30', '22:05']).join(', ');
+      reservationLastRunTimes.value = (reservation.lastRunTimes || ['23:10']).join(', ');
+      reservationDryRun.checked = reservation.dryRun !== false;
+      reservationLastEnabled.checked = reservation.createLastAppointmentEnabled !== false;
+      reservationNotifyAdmin.checked = reservation.notifyAdmin !== false;
+
+      const scheduleMonitor = config.scheduleMonitor || {};
+      scheduleMonitorEnabled.checked = Boolean(scheduleMonitor.enabled);
+      scheduleMonitorRunTimes.value = (scheduleMonitor.runTimes || ['22:45']).join(', ');
+      scheduleMonitorDaysAhead.value = scheduleMonitor.daysAhead || 1;
+      scheduleMonitorChangeOnly.checked = Boolean(scheduleMonitor.notifyOnChangeOnly);
+
+      const violationCheck = config.violationCheck || {};
+      violationCheckEnabled.checked = Boolean(violationCheck.enabled);
+      violationCheckRunTimes.value = (violationCheck.runTimes || ['08:50', '14:50', '20:50']).join(', ');
+      violationOnlyPending.checked = violationCheck.onlyPendingAppeals !== false;
+      violationNotifyEmpty.checked = Boolean(violationCheck.notifyWhenEmpty);
+
+      setControlGroupDisabled([
+        notificationAdminGroup,
+        notificationSenderStrategy,
+        notificationIntervalMin,
+        notificationIntervalMax,
+        notificationMaxRetries,
+        notificationRetryDelay,
+        reservationEnabled,
+        reservationFirstRunTimes,
+        reservationLastRunTimes,
+        reservationDryRun,
+        reservationLastEnabled,
+        reservationNotifyAdmin,
+        scheduleMonitorEnabled,
+        scheduleMonitorRunTimes,
+        scheduleMonitorDaysAhead,
+        scheduleMonitorChangeOnly,
+        violationCheckEnabled,
+        violationCheckRunTimes,
+        violationOnlyPending,
+        violationNotifyEmpty,
+      ], locked);
+    }
+    function renderReservationConfig() {
+      const locked = Boolean(config.schedulerEnabled);
+      const items = config.reservation?.items || [];
+      reservationConfigTableWrap.classList.toggle('locked', locked);
+      addReservationRow.disabled = locked;
+      reservationConfigBody.innerHTML = items.map((item) => `
+        <tr data-id="${escapeHtml(item.id)}">
+          <td><strong>${escapeHtml(item.id)}</strong></td>
+          <td><input data-reservation-field="region" value="${escapeHtml(item.region || '')}" ${locked ? 'disabled' : ''}></td>
+          <td><input class="wide" data-reservation-field="warehouseGroup" value="${escapeHtml(item.warehouseGroup || '')}" ${locked ? 'disabled' : ''}></td>
+          <td><input class="wide" data-reservation-field="centerWarehouses" value="${escapeHtml((item.centerWarehouses || []).join(', '))}" ${locked ? 'disabled' : ''}></td>
+          <td><input data-reservation-field="driverMobile" value="${escapeHtml(item.driverMobile || '')}" ${locked ? 'disabled' : ''}></td>
+          <td><input data-reservation-field="quantity" type="number" min="1" step="1" value="${escapeHtml(item.quantity || 100)}" ${locked ? 'disabled' : ''}></td>
+          <td><input data-reservation-field="preferredHour" value="${escapeHtml(item.preferredHour || '10:00')}" ${locked ? 'disabled' : ''}></td>
+          <td><input class="wide" data-reservation-field="firstNotifyGroup" value="${escapeHtml(item.firstNotifyGroup || '')}" ${locked ? 'disabled' : ''}></td>
+          <td><input class="wide" data-reservation-field="lastNotifyGroup" value="${escapeHtml(item.lastNotifyGroup || '')}" ${locked ? 'disabled' : ''}></td>
+          <td><label class="switch"><input data-reservation-field="enabled" type="checkbox" ${item.enabled ? 'checked' : ''} ${locked ? 'disabled' : ''}>${item.enabled ? '启' : '停'}</label></td>
+          <td><div class="row-actions">
+            <button class="danger delete-reservation-one" data-id="${escapeHtml(item.id)}" type="button" ${locked ? 'disabled' : ''}>删除</button>
+          </div></td>
+        </tr>
+      `).join('');
     }
     function renderWechatConfig() {
       const locked = Boolean(config.schedulerEnabled);
+      const blocked = isWechatSmokeBlocked();
       wechatConfigTableWrap.classList.toggle('locked', locked);
       wechatSaveConfig.disabled = locked;
+      wechatRunSelected.disabled = blocked;
+      wechatDryRunSelected.disabled = blocked;
       wechatConfigBody.innerHTML = config.items.map((item) => `
         <tr data-id="${escapeHtml(item.id)}">
-          <td><input class="select-wechat-rule" data-id="${escapeHtml(item.id)}" type="checkbox"></td>
+          <td><input class="select-wechat-rule" data-id="${escapeHtml(item.id)}" type="checkbox" ${blocked ? 'disabled' : ''}></td>
           <td><strong>${escapeHtml(item.id)}</strong></td>
           <td><strong>${escapeHtml(item.warehouse || item.groupName)}</strong></td>
           <td>${escapeHtml((item.sendTimes || []).join(', '))}</td>
@@ -1116,11 +1742,12 @@
           <td><input class="wide" data-wechat-field="roomName" value="${escapeHtml(item.wechatRoomName || '')}" placeholder="微信群名" ${locked ? 'disabled' : ''}></td>
           <td><input class="wide" data-wechat-field="mentionNames" value="${escapeHtml((item.wechatMentionNames || []).join(', '))}" placeholder="多人用逗号分隔" ${locked ? 'disabled' : ''}></td>
           <td><div class="row-actions">
-            <button class="secondary wechat-test-one" data-id="${escapeHtml(item.id)}" type="button">微信预览</button>
-            <button class="success wechat-run-one" data-id="${escapeHtml(item.id)}" type="button">微信上报</button>
+            <button class="secondary wechat-test-one" data-id="${escapeHtml(item.id)}" type="button" ${blocked ? 'disabled' : ''}>微信预览</button>
+            <button class="success wechat-run-one" data-id="${escapeHtml(item.id)}" type="button" ${blocked ? 'disabled' : ''}>微信上报</button>
           </div></td>
         </tr>
       `).join('');
+      applyWechatSmokeGate(desktopWechatSmokeGate);
     }
     function renderConfig() {
       const locked = Boolean(config.schedulerEnabled);
@@ -1128,6 +1755,7 @@
       configTableWrap.classList.toggle('locked', locked);
       saveConfig.disabled = locked;
       addRow.disabled = locked;
+      renderAdvancedConfig();
       configBody.innerHTML = config.items.map((item) => `
         <tr data-id="${escapeHtml(item.id)}">
           <td><input class="select-rule" data-id="${escapeHtml(item.id)}" type="checkbox"></td>
@@ -1149,58 +1777,113 @@
           </div></td>
         </tr>
       `).join('');
+      renderReservationConfig();
       renderWechatConfig();
+      renderHeartbeatConfig();
     }
     function renderLogPanel(panel, key, title, task) {
       const logs = task.previewLogs || [];
       const allLogs = task.logs || [];
+      const visibleLogs = allLogs.length ? allLogs : logs;
       const state = statusText[task.status] || task.status || '空闲';
       const pillClass = task.status === 'failed' ? 'fail' : (task.status === 'idle' || task.status === 'stopped' ? 'off' : '');
-      const progress = task.lastDate ? `已处理到 ${task.lastDate}` : (task.status === 'running' ? '正在处理' : '暂无进度');
+      const progress = task.progressText || (task.lastDate ? `已处理到 ${task.lastDate}` : (task.status === 'running' ? '正在处理' : '暂无进度'));
       const signature = JSON.stringify({
-        expanded: expandedLogs[key],
         status: task.status,
         lastDate: task.lastDate || '',
         startedAt: task.startedAt || '',
         finishedAt: task.finishedAt || '',
         exitCode: task.exitCode ?? '',
-        logsLength: allLogs.length,
-        logsTail: allLogs.slice(-3),
-        previewLength: logs.length,
-        previewTail: logs.slice(-3),
+        logsLength: visibleLogs.length,
+        logsTail: visibleLogs.slice(-5),
       });
       if (panel.dataset.signature === signature) return;
 
-      const currentFull = panel.querySelector('.log-full');
-      const currentPreview = panel.querySelector('.log-lines');
-      const fullWasAtBottom = currentFull
-        ? currentFull.scrollTop + currentFull.clientHeight >= currentFull.scrollHeight - 8
+      const currentLines = panel.querySelector('.log-lines');
+      const linesWereAtBottom = currentLines
+        ? currentLines.scrollTop + currentLines.clientHeight >= currentLines.scrollHeight - 8
         : true;
-      const previewWasAtBottom = currentPreview
-        ? currentPreview.scrollTop + currentPreview.clientHeight >= currentPreview.scrollHeight - 8
-        : true;
-      const fullScrollTop = currentFull?.scrollTop || 0;
-      const previewScrollTop = currentPreview?.scrollTop || 0;
+      const linesScrollTop = currentLines?.scrollTop || 0;
 
       panel.innerHTML = `
         <div class="log-summary">
           <div><strong>${title}</strong> <span class="pill ${pillClass}">${state}</span><div class="hint">${progress}</div></div>
-          <button class="light toggle-log" data-key="${key}" type="button">${expandedLogs[key] ? '收起日志' : '展开日志'}</button>
+          <button class="secondary copy-log" data-key="${key}" type="button">复制</button>
         </div>
-        <div class="log-lines">${logs.length ? logs.map((line) => `<div class="log-line">${escapeHtml(line)}</div>`).join('') : '<div class="log-line">暂无日志</div>'}</div>
-        <div class="log-full ${expandedLogs[key] ? 'open' : ''}">${allLogs.length ? allLogs.map((line) => `<div class="log-line">${escapeHtml(line)}</div>`).join('') : '<div class="log-line">暂无完整日志</div>'}</div>
+        <div class="log-lines">${visibleLogs.length ? visibleLogs.map((line) => `<div class="log-line">${escapeHtml(line)}</div>`).join('') : '<div class="log-line">暂无日志</div>'}</div>
       `;
       panel.dataset.signature = signature;
 
-      const nextFull = panel.querySelector('.log-full');
-      const nextPreview = panel.querySelector('.log-lines');
-      if (nextFull) nextFull.scrollTop = fullWasAtBottom ? nextFull.scrollHeight : fullScrollTop;
-      if (nextPreview) nextPreview.scrollTop = previewWasAtBottom ? nextPreview.scrollHeight : previewScrollTop;
+      const nextLines = panel.querySelector('.log-lines');
+      if (nextLines) nextLines.scrollTop = linesWereAtBottom ? nextLines.scrollHeight : linesScrollTop;
+    }
+    async function refreshDesktopWechatLogs(name = selectedDesktopWechatLog) {
+      if (!desktopWechatLogPanel) return;
+      try {
+        const query = name ? `?name=${encodeURIComponent(name)}` : '';
+        const response = await fetch(`/api/desktop-wechat-logs${query}`);
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || '读取桌面微信日志失败');
+        const logs = body.logs || [];
+        const currentName = body.current?.name || '';
+        selectedDesktopWechatLog = currentName;
+        if (desktopWechatLogSelect) {
+          const signature = logs.map((item) => `${item.name}:${item.size}:${item.updatedAt}`).join('|');
+          if (desktopWechatLogSelect.dataset.signature !== signature) {
+            desktopWechatLogSelect.innerHTML = logs.length
+              ? logs.map((item) => `<option value="${escapeHtml(item.name)}">${escapeHtml(item.date)} (${Math.ceil((item.size || 0) / 1024)} KB)</option>`).join('')
+              : `<option value="${escapeHtml(currentName)}">${escapeHtml(body.current?.date || '今天')} (暂无日志)</option>`;
+            desktopWechatLogSelect.dataset.signature = signature;
+          }
+          desktopWechatLogSelect.value = currentName;
+        }
+        const lines = body.lines || [];
+        renderLogPanel(desktopWechatLogPanel, 'desktopWechat', `桌面微信日志 ${body.current?.date || ''}`.trim(), {
+          status: lines.length ? 'completed' : 'idle',
+          lastDate: body.current?.date || '',
+          logs: lines,
+          previewLogs: body.previewLines || lines.slice(-8),
+        });
+      } catch (error) {
+        renderLogPanel(desktopWechatLogPanel, 'desktopWechat', '桌面微信日志', {
+          status: 'failed',
+          logs: [error.message],
+          previewLogs: [error.message],
+        });
+      }
+    }
+    function formatShortTime(value) {
+      if (!value) return '-';
+      return new Date(value).toLocaleString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    }
+    function renderHeartbeatStatus(heartbeat) {
+      const task = heartbeat || { status: 'idle' };
+      heartbeatState.textContent = statusText[task.status] || task.status || '空闲';
+      heartbeatNext.textContent = formatShortTime(task.nextCheckAt);
+      const result = task.lastResult;
+      if (!result) {
+        heartbeatResult.textContent = '未检查';
+      } else if (result.skipped) {
+        heartbeatResult.textContent = '未启用';
+      } else if (result.ok) {
+        heartbeatResult.textContent = '全部已登录';
+      } else {
+        const failed = (result.results || []).filter((check) => check.loggedIn === false).map((check) => check.name);
+        const indeterminate = (result.results || []).filter((check) => check.loggedIn == null).map((check) => check.name);
+        heartbeatResult.textContent = failed.length
+          ? `${failed.join('、')}未登录`
+          : `${indeterminate.join('、') || '登录状态'}检测异常`;
+      }
     }
     async function loadConfig() {
       const response = await fetch('/api/report-config');
       const body = await response.json();
-      config = body.config || { schedulerEnabled: false, items: [] };
+      config = body.config || { schedulerEnabled: false, items: [], reservation: { items: [] } };
       renderConfig();
     }
     async function refresh() {
@@ -1212,13 +1895,20 @@
         const sync = state.sync || { status: 'idle', logs: [], previewLogs: [] };
         const report = state.report || { status: 'idle', logs: [], previewLogs: [] };
         const scheduler = state.scheduler || { status: 'idle', logs: [], previewLogs: [] };
+        const heartbeat = state.heartbeat || { status: 'idle', logs: [], previewLogs: [] };
+        const monitorNotification = state.monitorNotification || { status: 'idle', logs: [], previewLogs: [] };
+        applyWechatSmokeGate(state.desktopWechat?.smoke || desktopWechatSmokeGate);
         submit.disabled = sync.status === 'running';
         syncState.textContent = statusText[sync.status] || sync.status;
         syncRange.textContent = sync.from ? `${sync.from} 至 ${sync.to}` : '未选择';
-        syncProgress.textContent = sync.lastDate ? `已处理到 ${sync.lastDate}` : (sync.status === 'running' ? '正在同步' : '等待任务');
+        syncProgress.textContent = sync.progressText || (sync.lastDate ? `已处理到 ${sync.lastDate}` : (sync.status === 'running' ? '正在同步' : '等待任务'));
         renderLogPanel(syncLogPanel, 'sync', '同步日志', sync);
-        renderLogPanel(reportLogPanel, 'report', '立即上报日志', report);
+        renderLogPanel(reportLogPanel, 'report', '微信上报日志', report);
+        renderLogPanel(monitorNotificationLogPanel, 'monitorNotification', '监控错误通知队列', monitorNotification);
         renderLogPanel(schedulerLogPanel, 'scheduler', '定时上报日志', scheduler);
+        renderLogPanel(heartbeatLogPanel, 'heartbeat', '心跳监控日志', heartbeat);
+        if (document.body.dataset.route === 'logs') await refreshDesktopWechatLogs();
+        renderHeartbeatStatus(heartbeat);
         updateWechatUI(state.wechat);
         return state;
       } finally {
@@ -1231,7 +1921,7 @@
         let nextDelay = 5000;
         try {
           const state = await refresh();
-          const tasks = [state?.sync, state?.report, state?.scheduler];
+          const tasks = [state?.sync, state?.report, state?.scheduler, state?.heartbeat, state?.monitorNotification];
           nextDelay = tasks.some((task) => task?.status === 'running') ? 1500 : 5000;
         } catch {
           nextDelay = 8000;
@@ -1242,6 +1932,9 @@
     async function saveCurrentConfig() {
       syncConfigFromTable();
       syncWechatConfigFromTable();
+      syncHeartbeatConfigFromForm();
+      syncAdvancedConfigFromForm();
+      syncReservationConfigFromTable();
       const response = await fetch('/api/report-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1253,6 +1946,10 @@
       renderConfig();
     }
     async function setScheduler(enabled) {
+      if (enabled && !assertWechatSmokeReady()) {
+        schedulerEnabled.checked = false;
+        return;
+      }
       if (!enabled) {
         const response = await fetch('/api/report-scheduler', {
           method: 'POST',
@@ -1278,6 +1975,7 @@
     }
     async function startReport(ids, dryRun = false, channel = 'both') {
       if (reportRequestPending) return;
+      if (channel !== 'feishu' && !assertWechatSmokeReady()) return;
       if (!ids.length) {
         alert('请先选择至少一条规则。');
         return;
@@ -1340,7 +2038,30 @@
     });
     addRow.addEventListener('click', () => {
       syncConfigFromTable();
+      syncAdvancedConfigFromForm();
+      syncReservationConfigFromTable();
       config.items.push({ id: nextId(), region: '', warehouse: '', groupName: '', chatName: '', memberName: '', mentionNames: [], wechatEnabled: false, wechatRoomName: '', wechatMentionNames: [], sendTimes: ['08:30'], cutoffTime: '23:00', topOfHour: false, enabled: true });
+      renderConfig();
+    });
+    addReservationRow.addEventListener('click', () => {
+      syncConfigFromTable();
+      syncWechatConfigFromTable();
+      syncHeartbeatConfigFromForm();
+      syncAdvancedConfigFromForm();
+      syncReservationConfigFromTable();
+      if (!config.reservation) config.reservation = { items: [] };
+      config.reservation.items.push({
+        id: nextReservationId(),
+        region: '',
+        warehouseGroup: '',
+        centerWarehouses: [],
+        driverMobile: '',
+        quantity: 100,
+        preferredHour: '10:00',
+        firstNotifyGroup: '',
+        lastNotifyGroup: '',
+        enabled: true,
+      });
       renderConfig();
     });
     runSelected.addEventListener('click', () => startReport(selectedIds(), false));
@@ -1355,19 +2076,66 @@
         alert(error.message);
       }
     });
-    document.addEventListener('click', (event) => {
-      const key = event.target.closest('.toggle-log')?.dataset.key;
-      if (key) {
-        expandedLogs[key] = !expandedLogs[key];
-        const panels = { sync: syncLogPanel, report: reportLogPanel, scheduler: schedulerLogPanel };
-        if (panels[key]) delete panels[key].dataset.signature;
-        refresh();
+    heartbeatSave.addEventListener('click', async () => {
+      try {
+        await saveCurrentConfig();
+        alert('心跳配置已保存');
+        await refresh();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+    heartbeatRun.addEventListener('click', async () => {
+      heartbeatRun.disabled = true;
+      try {
+        await saveCurrentConfig();
+        const response = await fetch('/api/heartbeat/run', { method: 'POST' });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || '启动心跳检查失败');
+        await refresh();
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        heartbeatRun.disabled = false;
+      }
+    });
+    desktopWechatLogSelect.addEventListener('change', async () => {
+      selectedDesktopWechatLog = desktopWechatLogSelect.value;
+      await refreshDesktopWechatLogs(selectedDesktopWechatLog);
+    });
+    desktopWechatLogRefresh.addEventListener('click', () => refreshDesktopWechatLogs(selectedDesktopWechatLog));
+    document.addEventListener('click', async (event) => {
+      const copyButton = event.target.closest('.copy-log');
+      if (copyButton) {
+        const panel = copyButton.closest('.log-panel');
+        const text = [...(panel?.querySelectorAll('.log-line') || [])].map((line) => line.textContent).join('\n');
+        try {
+          await copyText(text);
+          const originalText = copyButton.textContent;
+          copyButton.textContent = '已复制';
+          setTimeout(() => { copyButton.textContent = originalText; }, 1200);
+        } catch (error) {
+          alert(`复制失败：${error.message}`);
+        }
         return;
       }
       const deleteId = event.target.closest('.delete-one')?.dataset.id;
       if (deleteId) {
         syncConfigFromTable();
+        syncAdvancedConfigFromForm();
+        syncReservationConfigFromTable();
         config.items = config.items.filter((item) => item.id !== deleteId);
+        renderConfig();
+        return;
+      }
+      const deleteReservationId = event.target.closest('.delete-reservation-one')?.dataset.id;
+      if (deleteReservationId) {
+        syncConfigFromTable();
+        syncWechatConfigFromTable();
+        syncHeartbeatConfigFromForm();
+        syncAdvancedConfigFromForm();
+        syncReservationConfigFromTable();
+        config.reservation.items = (config.reservation.items || []).filter((item) => item.id !== deleteReservationId);
         renderConfig();
         return;
       }
@@ -1381,6 +2149,7 @@
       if (dryId) startReport([dryId], true);
     });
 
+    applyRoute();
     loadConfig();
     initializeDesktop();
     scheduleRefresh(0);

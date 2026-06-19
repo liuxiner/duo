@@ -1,16 +1,18 @@
-import { cp, mkdir, readdir, rm } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const root = process.cwd();
 const runtimeDir = path.join(root, 'dist', 'runtime');
 const desktopRuntimeDir = path.join(root, 'desktop', 'resources', 'runtime');
+const swiftModuleCacheDir = path.join(root, 'dist', '.swift-module-cache');
 const entries = [
   '.env.example',
   'package.json',
   'web',
   'scripts',
 ];
+const webWechatRuntimePackages = ['file-box', 'qrcode', 'wechaty', 'wechaty-puppet-wechat'];
 
 function runPnpm(args) {
   const npmExecPath = process.env.npm_execpath || '';
@@ -45,13 +47,57 @@ async function removeBinDirs(dir) {
   }
 }
 
+function compileMacHelpers() {
+  if (process.platform !== 'darwin') return;
+  const source = path.join(root, 'desktop', 'native', 'macos', 'wechat-automation.swift');
+  const outputDir = path.join(runtimeDir, 'bin');
+  const output = path.join(outputDir, 'mao-wechat-automation');
+  const result = spawnSync('xcrun', ['swiftc', '-module-cache-path', swiftModuleCacheDir, source, '-o', output], {
+    cwd: root,
+    stdio: 'inherit',
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`swiftc failed with exit code ${result.status}`);
+}
+
+async function copyWindowsHelpers() {
+  const source = path.join(root, 'desktop', 'native', 'windows', 'wechat-automation.ps1');
+  const output = path.join(runtimeDir, 'bin', 'mao-wechat-automation.ps1');
+  await cp(source, output);
+}
+
+async function removeOptionalPath(targetPath) {
+  await rm(targetPath, { recursive: true, force: true });
+}
+
+async function pruneWebWechatRuntime() {
+  await removeOptionalPath(path.join(runtimeDir, 'scripts', 'wechaty-bot.mjs'));
+  const packagePath = path.join(runtimeDir, 'package.json');
+  try {
+    const pkg = JSON.parse(await readFile(packagePath, 'utf8'));
+    for (const packageName of webWechatRuntimePackages) {
+      delete pkg.dependencies?.[packageName];
+      delete pkg.devDependencies?.[packageName];
+      await removeOptionalPath(path.join(runtimeDir, 'node_modules', packageName));
+    }
+    await writeFile(packagePath, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+}
+
 await rm(runtimeDir, { recursive: true, force: true });
 await rm(desktopRuntimeDir, { recursive: true, force: true });
 await rm(path.join(root, 'desktop', 'resources', 'app'), { recursive: true, force: true });
 await mkdir(runtimeDir, { recursive: true });
+await mkdir(path.join(runtimeDir, 'bin'), { recursive: true });
+await mkdir(swiftModuleCacheDir, { recursive: true });
 for (const entry of entries) {
   await cp(path.join(root, entry), path.join(runtimeDir, entry), { recursive: true });
 }
+compileMacHelpers();
+await copyWindowsHelpers();
+await pruneWebWechatRuntime();
 const deployDir = path.join(root, 'dist', '.runtime-deploy');
 try {
   await rm(deployDir, { recursive: true, force: true });
@@ -71,6 +117,7 @@ try {
     verbatimSymlinks: true,
   });
   await removeBinDirs(path.join(runtimeDir, 'node_modules'));
+  await pruneWebWechatRuntime();
 } finally {
   await rm(deployDir, { recursive: true, force: true });
 }

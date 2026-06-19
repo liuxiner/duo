@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, systemPreferences } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const http = require('node:http');
@@ -13,6 +13,7 @@ let pendingUpdate = null;
 let quitting = false;
 
 const DEFAULT_SERVICE_START_TIMEOUT_MS = process.platform === 'win32' ? 90_000 : 45_000;
+const WECHAT_DESKTOP_AUTOMATION_TIMEOUT_MS = 45_000;
 
 function desktopPackage() {
   return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
@@ -23,6 +24,7 @@ const feedUrl = process.env.MAO_UPDATE_FEED_URL
   || desktopPkg.mao?.updateFeedUrl
   || '';
 const updater = createRuntimeUpdater({ app, feedUrl, bundledVersion: app.getVersion() });
+const WEB_WECHAT_ENABLED = process.env.MAO_ENABLE_WEB_WECHAT === 'true';
 
 function bundledAppDir() {
   return app.isPackaged
@@ -38,6 +40,22 @@ function workspaceDir() {
   return path.join(app.getPath('userData'), 'workspace');
 }
 
+function logsDir() {
+  return path.join(app.getPath('userData'), 'logs');
+}
+
+function serviceLogPath() {
+  return path.join(logsDir(), 'service.log');
+}
+
+const WEB_WECHAT_CHROME_SERVICE = {
+  envKey: 'WECHATY_CDP_URL',
+  defaultPort: 9333,
+  candidatePorts: 12,
+  profile: 'wechat-chrome',
+  url: 'https://wx.qq.com/',
+};
+
 const CHROME_SERVICES = {
   pdd: {
     envKey: 'PDD_CDP_URL',
@@ -46,13 +64,7 @@ const CHROME_SERVICES = {
     profile: 'pdd-chrome',
     url: 'https://mc.pinduoduo.com/ddmc-mms/order/management',
   },
-  wechat: {
-    envKey: 'WECHATY_CDP_URL',
-    defaultPort: 9333,
-    candidatePorts: 12,
-    profile: 'wechat-chrome',
-    url: 'https://wx.qq.com/',
-  },
+  ...(WEB_WECHAT_ENABLED ? { wechat: WEB_WECHAT_CHROME_SERVICE } : {}),
 };
 
 function chromeExecutable() {
@@ -190,6 +202,233 @@ async function launchChromeService(service) {
   return { ok: true, port: resolved.port, url: resolved.url, profileDir, reused: false, changed: resolved.changed };
 }
 
+function wechatExecutableStatus() {
+  if (process.platform === 'darwin') {
+    const appPath = '/Applications/WeChat.app';
+    return { installed: fs.existsSync(appPath), path: appPath };
+  }
+  if (process.platform === 'win32') {
+    const candidates = [
+      path.join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Tencent', 'WeChat', 'WeChat.exe'),
+      path.join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Tencent', 'Weixin', 'Weixin.exe'),
+      path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Tencent', 'WeChat', 'WeChat.exe'),
+      path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Tencent', 'Weixin', 'Weixin.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Tencent', 'WeChat', 'WeChat.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Tencent', 'Weixin', 'Weixin.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Tencent', 'WeChat', 'WeChat.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Tencent', 'Weixin', 'Weixin.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WindowsApps', 'WeChat.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WindowsApps', 'Weixin.exe'),
+    ];
+    const executable = candidates.find((candidate) => candidate && fs.existsSync(candidate)) || '';
+    return { installed: Boolean(executable), path: executable };
+  }
+  return { installed: false, path: '' };
+}
+
+function wechatDesktopAutomationHelperPath() {
+  const executable = process.platform === 'win32' ? 'mao-wechat-automation.ps1' : 'mao-wechat-automation';
+  return path.join(activeAppDir(), 'bin', executable);
+}
+
+function checkWechatDesktopAutomationHelper() {
+  const helperPath = wechatDesktopAutomationHelperPath();
+  if (!fs.existsSync(helperPath)) {
+    return {
+      installed: false,
+      path: helperPath,
+      error: '桌面微信自动化 helper 不存在，请重新打包或更新客户端。',
+    };
+  }
+  return { installed: true, path: helperPath, error: '' };
+}
+
+function desktopAppAccessibilityTrusted(prompt = false) {
+  if (process.platform !== 'darwin') return true;
+  return systemPreferences.isTrustedAccessibilityClient(prompt);
+}
+
+function desktopWechatAutomationStatus() {
+  const wechat = wechatExecutableStatus();
+  const helper = checkWechatDesktopAutomationHelper();
+  return {
+    platform: process.platform,
+    supported: process.platform === 'darwin' || process.platform === 'win32',
+    implemented: process.platform === 'darwin' || process.platform === 'win32',
+    accessibilityTrusted: desktopAppAccessibilityTrusted(false),
+    permissionRequired: process.platform === 'darwin',
+    wechatInstalled: wechat.installed,
+    wechatPath: wechat.path,
+    helperInstalled: helper.installed,
+    helperPath: helper.path,
+    helperError: helper.error || '',
+  };
+}
+
+async function requestDesktopWechatAutomationPermissions() {
+  if (process.platform === 'darwin') {
+    fs.mkdirSync(logsDir(), { recursive: true });
+    const helper = checkWechatDesktopAutomationHelper();
+    const appTrustedBefore = desktopAppAccessibilityTrusted(false);
+    appendServiceLog(serviceLogPath(), `[desktop-wechat-permission] request started appTrustedBefore=${appTrustedBefore} helperInstalled=${helper.installed} helperPath=${helper.path}`);
+    const appTrustedAfterPrompt = desktopAppAccessibilityTrusted(true);
+    appendServiceLog(serviceLogPath(), `[desktop-wechat-permission] app prompt requested appTrustedAfterPrompt=${appTrustedAfterPrompt}`);
+    if (helper.installed) {
+      try {
+        const helperResult = await runWechatDesktopAutomationHelper(['--check-permission', '--prompt'], 10_000);
+        appendServiceLog(serviceLogPath(), `[desktop-wechat-permission] helper prompt stdout=${JSON.stringify(helperResult.stdout.trim())} stderr=${JSON.stringify(helperResult.stderr.trim())}`);
+      } catch (error) {
+        appendServiceLog(serviceLogPath(), `[desktop-wechat-permission] helper prompt failed ${error.message}`);
+      }
+    }
+    await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
+    appendServiceLog(serviceLogPath(), '[desktop-wechat-permission] opened macOS Accessibility settings');
+  }
+  return desktopWechatAutomationStatus();
+}
+
+function normalizeAutomationText(value, fallback = '') {
+  return String(value || fallback).trim();
+}
+
+function runNodeRuntimeScript(scriptPath, args, timeoutMs = WECHAT_DESKTOP_AUTOMATION_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [scriptPath, ...args], {
+      cwd: workspaceDir(),
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+        MAO_APP_ROOT: activeAppDir(),
+        MAO_WORKSPACE_PATH: workspaceDir(),
+        MAO_LOG_DIR: logsDir(),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error(`桌面微信自动化超时（${Math.round(timeoutMs / 1000)} 秒）。`));
+    }, timeoutMs);
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error((stderr || stdout || `脚本退出 code=${code} signal=${signal}`).trim()));
+    });
+  });
+}
+
+function runWechatDesktopAutomationHelper(args, timeoutMs = WECHAT_DESKTOP_AUTOMATION_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const helperPath = wechatDesktopAutomationHelperPath();
+    const command = process.platform === 'win32' ? 'powershell.exe' : helperPath;
+    const helperArgs = process.platform === 'win32'
+      ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helperPath, ...args]
+      : args;
+    const child = spawn(command, helperArgs, {
+      cwd: workspaceDir(),
+      env: {
+        ...process.env,
+        MAO_APP_ROOT: activeAppDir(),
+        MAO_WORKSPACE_PATH: workspaceDir(),
+        MAO_LOG_DIR: logsDir(),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error(`桌面微信 helper 超时（${Math.round(timeoutMs / 1000)} 秒）。`));
+    }, timeoutMs);
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error((stderr || stdout || `helper 退出 code=${code} signal=${signal}`).trim()));
+    });
+  });
+}
+
+async function createWechatDesktopDraft(options = {}) {
+  const status = desktopWechatAutomationStatus();
+  if (!status.supported) throw new Error('当前系统暂不支持桌面微信自动化。');
+  if (!status.implemented) throw new Error('当前系统的桌面微信自动化入口尚未实现。');
+  if (!status.helperInstalled) throw new Error(status.helperError || '桌面微信自动化 helper 不存在，请重新打包或更新客户端。');
+  if (!status.wechatInstalled) throw new Error('未找到桌面微信，请先安装并登录 WeChat。');
+  if (status.permissionRequired && !status.accessibilityTrusted) throw new Error('桌面应用尚未获得辅助功能权限，请先点击“申请微信桌面权限”。');
+
+  const roomName = normalizeAutomationText(options.roomName);
+  const mentionNames = Array.isArray(options.mentionNames)
+    ? options.mentionNames.map((name) => normalizeAutomationText(name)).filter(Boolean)
+    : String(options.mentionNames || '').split(/[,，]/).map((name) => name.trim()).filter(Boolean);
+  const text = normalizeAutomationText(options.text, '桌面微信自动化@测试，请忽略');
+  if (!roomName) throw new Error('缺少微信群名。');
+
+  const args = [
+    `--room=${roomName}`,
+    `--mentions=${mentionNames.join(',')}`,
+    `--text=${text}`,
+    options.send ? '--send' : '--dry-run',
+    `--select-method=${options.selectMethod || 'click-first'}`,
+  ];
+  const imagePaths = Array.isArray(options.imagePaths) ? options.imagePaths : [];
+  for (const imagePath of imagePaths.map((item) => String(item || '').trim()).filter(Boolean)) {
+    args.push(`--image=${imagePath}`);
+  }
+  const result = await runWechatDesktopAutomationHelper(args, 120_000);
+  return {
+    ok: true,
+    roomName,
+    mentionNames,
+    send: Boolean(options.send),
+    stdout: result.stdout.trim(),
+    stderr: result.stderr.trim(),
+  };
+}
+
+async function testWechatDesktopKeyboard(options = {}) {
+  const status = desktopWechatAutomationStatus();
+  if (!status.supported) throw new Error('当前系统暂不支持桌面微信自动化。');
+  if (!status.implemented) throw new Error('当前系统的桌面微信自动化入口尚未实现。');
+  if (!status.helperInstalled) throw new Error(status.helperError || '桌面微信自动化 helper 不存在，请重新打包或更新客户端。');
+  if (!status.wechatInstalled) throw new Error('未找到桌面微信，请先安装并登录 WeChat。');
+  if (status.permissionRequired && !status.accessibilityTrusted) throw new Error('桌面应用尚未获得辅助功能权限，请先点击“申请微信桌面权限”。');
+
+  const roomName = normalizeAutomationText(options.roomName);
+  const pressEnter = Boolean(options.pressEnter);
+  const openRetry = Boolean(options.openRetry);
+  const args = [openRetry ? '--open-retry-test' : (pressEnter ? '--keyboard-enter-test' : '--keyboard-test')];
+  if (roomName) args.push(`--room=${roomName}`);
+  const result = await runWechatDesktopAutomationHelper(args, openRetry ? 90_000 : 30_000);
+  let payload = null;
+  try {
+    payload = JSON.parse(result.stdout.trim().split('\n').filter(Boolean).at(-1) || '{}');
+  } catch {}
+  return {
+    ok: true,
+    roomName,
+    text: payload?.text || '',
+    action: payload?.action || (openRetry ? 'open-retry-test' : (pressEnter ? 'keyboard-enter-test' : 'keyboard-test')),
+    selection: payload?.selection || '',
+    pressEnter,
+    openRetry,
+    stdout: result.stdout.trim(),
+    stderr: result.stderr.trim(),
+  };
+}
+
 function ensureWorkspace() {
   const root = workspaceDir();
   fs.mkdirSync(path.join(root, 'data'), { recursive: true });
@@ -288,11 +527,11 @@ async function startServer(allowFallback = true) {
   runtimePort = await findPort();
   const appRoot = activeAppDir();
   const entry = path.join(appRoot, 'web', 'server.mjs');
-  const logs = path.join(app.getPath('userData'), 'logs');
+  const logs = logsDir();
   fs.mkdirSync(logs, { recursive: true });
-  const serviceLogPath = path.join(logs, 'service.log');
-  const logStream = fs.createWriteStream(serviceLogPath, { flags: 'a' });
-  appendServiceLog(serviceLogPath, `[desktop] starting service port=${runtimePort} appRoot=${appRoot} workspace=${workspaceDir()}`);
+  const logPath = serviceLogPath();
+  const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+  appendServiceLog(logPath, `[desktop] starting service port=${runtimePort} appRoot=${appRoot} workspace=${workspaceDir()}`);
   const child = spawn(process.execPath, [entry], {
     cwd: workspaceDir(),
     env: {
@@ -301,6 +540,7 @@ async function startServer(allowFallback = true) {
       PORT: String(runtimePort),
       MAO_APP_ROOT: appRoot,
       MAO_WORKSPACE_PATH: workspaceDir(),
+      MAO_LOG_DIR: logs,
       WECHAT_BRIDGE_URL: `http://127.0.0.1:${runtimePort}`,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -309,11 +549,11 @@ async function startServer(allowFallback = true) {
   child.stdout.pipe(logStream, { end: false });
   child.stderr.pipe(logStream, { end: false });
   child.once('error', (error) => {
-    appendServiceLog(serviceLogPath, `[desktop] service spawn error ${error.message}`);
+    appendServiceLog(logPath, `[desktop] service spawn error ${error.message}`);
   });
   child.once('exit', (code, signal) => {
     if (serverProcess === child) serverProcess = null;
-    if (!quitting) appendServiceLog(serviceLogPath, `[desktop] service exited code=${code} signal=${signal}`);
+    if (!quitting) appendServiceLog(logPath, `[desktop] service exited code=${code} signal=${signal}`);
   });
   try {
     await Promise.race([
@@ -323,14 +563,14 @@ async function startServer(allowFallback = true) {
         child.once('exit', (code, signal) => reject(new Error(`本地服务提前退出 code=${code} signal=${signal}`)));
       }),
     ]);
-    appendServiceLog(serviceLogPath, `[desktop] service healthy port=${runtimePort}`);
+    appendServiceLog(logPath, `[desktop] service healthy port=${runtimePort}`);
   } catch (error) {
     child.kill('SIGTERM');
     await closeLogStream(logStream);
     if (allowFallback && updater.currentAppDir() && updater.disableCurrent(error.message)) {
       return startServer(false);
     }
-    throw startupError(error.message, serviceLogPath);
+    throw startupError(error.message, logPath);
   }
 }
 
@@ -365,6 +605,7 @@ ipcMain.handle('desktop:get-info', () => ({
   shellVersion: app.getVersion(),
   runtimeVersion: updater.currentVersion(),
   workspacePath: workspaceDir(),
+  logsPath: logsDir(),
   updateConfigured: Boolean(feedUrl),
 }));
 
@@ -372,7 +613,16 @@ ipcMain.handle('desktop:open-workspace', async () => {
   await shell.openPath(workspaceDir());
 });
 
+ipcMain.handle('desktop:open-logs', async () => {
+  fs.mkdirSync(logsDir(), { recursive: true });
+  await shell.openPath(logsDir());
+});
+
 ipcMain.handle('desktop:launch-chrome-service', (_event, service) => launchChromeService(service));
+ipcMain.handle('desktop:wechat-automation-status', () => desktopWechatAutomationStatus());
+ipcMain.handle('desktop:request-wechat-automation-permissions', () => requestDesktopWechatAutomationPermissions());
+ipcMain.handle('desktop:create-wechat-draft', (_event, options) => createWechatDesktopDraft(options));
+ipcMain.handle('desktop:test-wechat-keyboard', (_event, options) => testWechatDesktopKeyboard(options));
 
 ipcMain.handle('runtime:check', async () => {
   sendUpdateStatus({ state: 'checking' });
