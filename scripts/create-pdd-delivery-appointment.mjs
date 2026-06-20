@@ -5,6 +5,7 @@ import {
   pddStorageStatePath,
   queryWarehouseGroupListWithExpress,
 } from '../pdd-automation/clients/pdd-client.mjs';
+import { closeBlockingModals } from './pdd-page-tools.mjs';
 
 const ROOT = path.resolve(process.env.MAO_WORKSPACE_PATH || process.cwd());
 const APPOINTMENT_DELIVERY_URL = 'https://mc.pinduoduo.com/ddmc-mms/appointment-delivery';
@@ -106,6 +107,61 @@ function maskMobile(value) {
   return digits.length >= 7 ? `${digits.slice(0, 3)}****${digits.slice(-4)}` : digits;
 }
 
+function beijingDateKey(date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+function beijingTimestamp(date = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+function addDaysToDateKey(dateKey, days) {
+  const [year, month, day] = String(dateKey).split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day + days, 0, 0, 0));
+  return date.toISOString().slice(0, 10);
+}
+
+function targetDeliveryDateKey() {
+  return argValue('--delivery-date', '') || argValue('--target-date', '') || addDaysToDateKey(beijingDateKey(), 1);
+}
+
+function deliverySlotFor(rule, deliveryDate) {
+  const [hour, minute] = normalizeTime(rule.preferredHour || '12:00', '12:00').split(':').map(Number);
+  const endHour = (hour + 1) % 24;
+  return {
+    deliveryDate,
+    pageText: `${deliveryDate} ${String(hour).padStart(2, '0')}:00~${String(hour).padStart(2, '0')}:59`,
+    reportText: `${deliveryDate} ${String(hour).padStart(2, '0')}:00-${String(endHour).padStart(2, '0')}:00`,
+    startTime: `${String(hour).padStart(2, '0')}:00`,
+    endTime: `${String(endHour).padStart(2, '0')}:00`,
+    minute,
+  };
+}
+
+function defaultReservationItemFor(item = {}, index = 0) {
+  const id = String(item.id || item.index || item['序号'] || index + 1);
+  const group = normalizeText(item.warehouseGroup || item.warehouse || item['仓组'] || '');
+  return DEFAULT_RESERVATION_ITEMS.find((candidate) => String(candidate.id) === id)
+    || DEFAULT_RESERVATION_ITEMS.find((candidate) => group && normalizeText(candidate.warehouseGroup) === group)
+    || DEFAULT_RESERVATION_ITEMS[index]
+    || {};
+}
+
 async function readReportConfig() {
   const configPath = path.resolve(ROOT, process.env.PDD_REPORT_CONFIG_PATH || 'data/report-config.json');
   try {
@@ -116,16 +172,18 @@ async function readReportConfig() {
 }
 
 function normalizeRule(item = {}, index = 0) {
-  const quantity = Number(item.quantity ?? item['预约数量'] ?? 100);
+  const defaults = defaultReservationItemFor(item, index);
+  const configuredWarehouses = splitList(item.centerWarehouses || item.centerWarehouse || item['中心仓']);
+  const quantity = Number(item.quantity ?? item['预约数量'] ?? defaults.quantity ?? 100);
   return {
-    id: String(item.id || item.index || item['序号'] || index + 1),
-    region: String(item.region || item['销售区域'] || '浙江省').trim(),
-    warehouseGroup: String(item.warehouseGroup || item.warehouse || item['仓组'] || '').trim(),
-    centerWarehouses: splitList(item.centerWarehouses || item.centerWarehouse || item['中心仓']),
-    driverMobile: String(item.driverMobile || item['司机号码'] || '').trim(),
+    id: String(item.id || item.index || item['序号'] || defaults.id || index + 1),
+    region: String(item.region || item['销售区域'] || defaults.region || '浙江省').trim(),
+    warehouseGroup: String(item.warehouseGroup || item.warehouse || item['仓组'] || defaults.warehouseGroup || '').trim(),
+    centerWarehouses: configuredWarehouses.length ? configuredWarehouses : [...(defaults.centerWarehouses || [])],
+    driverMobile: String(item.driverMobile || item['司机号码'] || defaults.driverMobile || '').trim(),
     quantity: Number.isFinite(quantity) && quantity > 0 ? Math.round(quantity) : 100,
-    preferredHour: normalizeTime(item.preferredHour || item['预约时间'], '10:00'),
-    enabled: enabledFromValue(item.enabled ?? item['状态'], false),
+    preferredHour: normalizeTime(item.preferredHour || item['预约时间'] || defaults.preferredHour, '10:00'),
+    enabled: enabledFromValue(item.enabled ?? item['状态'], defaults.enabled ?? false),
   };
 }
 
@@ -219,7 +277,15 @@ async function selectVisibleDropdownByIndex(page, index, targetText) {
   return selected;
 }
 
-async function applyFilters(page, rule, meta) {
+async function applyFilters(page, rule, meta, schedule) {
+  await closeBlockingModals(page);
+  const dateLabel = schedule.deliveryDate === beijingDateKey()
+    ? `${schedule.deliveryDate} （今天）`
+    : `${schedule.deliveryDate} （明天）`;
+  const dateResult = await selectVisibleDropdownByIndex(page, 0, dateLabel).catch((error) => ({ selected: false, reason: error.message }));
+  if (!dateResult.selected) {
+    throw new Error(`销售日期筛选失败：${dateResult.reason || dateLabel}`);
+  }
   const areaResult = await selectVisibleDropdownByIndex(page, 1, rule.region).catch((error) => ({ selected: false, reason: error.message }));
   if (!areaResult.selected) {
     throw new Error(`销售区域筛选失败：${areaResult.reason || rule.region}`);
@@ -231,40 +297,49 @@ async function applyFilters(page, rule, meta) {
   const query = page.getByRole('button', { name: /^查询$/ }).first();
   if (await query.count().catch(() => 0)) await query.click().catch(() => {});
   await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
-  await page.waitForFunction(({ groupName, warehouseNames }) => {
+  await closeBlockingModals(page);
+  await page.waitForFunction(({ dateKey, groupName, warehouseNames }) => {
     const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
     const inputs = Array.from(document.querySelectorAll('input[placeholder="请选择"]'))
       .filter((input) => {
         const rect = input.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
       });
+    const dateValue = inputs[0]?.value || '';
     const groupValue = inputs[2]?.value || '';
     const body = document.body.innerText || '';
     return /共有\s*\d+\s*条/.test(body)
+      && normalize(dateValue).includes(normalize(dateKey))
       && normalize(groupValue).includes(normalize(groupName))
       && warehouseNames.some((name) => normalize(body).includes(normalize(name)));
-  }, { groupName: meta.group.warehouseGroupName, warehouseNames: meta.warehouses.map((item) => item.warehouseName) }, { timeout: 25_000 }).catch(() => {});
+  }, { dateKey: schedule.deliveryDate, groupName: meta.group.warehouseGroupName, warehouseNames: meta.warehouses.map((item) => item.warehouseName) }, { timeout: 25_000 }).catch(() => {});
   await page.waitForTimeout(1500);
-  const filterState = await page.evaluate(({ groupName, warehouseNames }) => {
+  const filterState = await page.evaluate(({ dateKey, groupName, warehouseNames }) => {
     const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
     const inputs = Array.from(document.querySelectorAll('input[placeholder="请选择"]'))
       .filter((input) => {
         const rect = input.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
       });
+    const dateValue = inputs[0]?.value || '';
     const groupValue = inputs[2]?.value || '';
     const body = document.body.innerText || '';
     return {
+      dateValue,
       groupValue,
+      dateMatched: normalize(dateValue).includes(normalize(dateKey)),
       groupMatched: normalize(groupValue).includes(normalize(groupName)),
       warehouseMatched: warehouseNames.some((name) => normalize(body).includes(normalize(name))),
     };
-  }, { groupName: meta.group.warehouseGroupName, warehouseNames: meta.warehouses.map((item) => item.warehouseName) });
+  }, { dateKey: schedule.deliveryDate, groupName: meta.group.warehouseGroupName, warehouseNames: meta.warehouses.map((item) => item.warehouseName) });
+  if (!filterState.dateMatched) {
+    throw new Error(`销售日期筛选未生效：当前筛选值为 ${filterState.dateValue || '(空)'}，目标为 ${schedule.deliveryDate}`);
+  }
   if (!filterState.groupMatched) {
     throw new Error(`仓组筛选未生效：当前筛选值为 ${filterState.groupValue || '(空)'}，目标为 ${meta.group.warehouseGroupName}`);
   }
   if (!filterState.warehouseMatched) {
-    throw new Error(`仓组筛选后列表未出现目标中心仓：${meta.warehouses.map((item) => item.warehouseName).join(', ')}`);
+    console.log(`仓组筛选后列表未展开目标中心仓明细，继续以批量预约页可填写仓库行校验：${meta.warehouses.map((item) => item.warehouseName).join(', ')}。`);
   }
 }
 
@@ -456,6 +531,7 @@ async function selectAppointmentRows(page, expectedCount) {
 }
 
 async function openBatchAppointmentFromCurrentList(page, expectedCount) {
+  await closeBlockingModals(page);
   const selectState = await selectAppointmentRows(page, expectedCount);
   if (selectState.selectedCount !== expectedCount) {
     return { opened: false, selectedCount: selectState.selectedCount, reason: selectState.reason || '选中行数不匹配' };
@@ -467,32 +543,30 @@ async function openBatchAppointmentFromCurrentList(page, expectedCount) {
   if (disabled) return { opened: false, selectedCount: selectState.selectedCount, reason: '批量新建预约按钮仍为禁用态' };
   await button.click({ timeout: 10_000 });
   await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
+  await closeBlockingModals(page);
   await page.waitForTimeout(1500);
   return { opened: true, selectedCount: selectState.selectedCount, reason: '' };
 }
 
-function batchCreateAppointmentUrl(meta, goodsIds) {
+function batchCreateAppointmentUrl(meta, goodsIds, schedule) {
   const url = new URL(`${APPOINTMENT_DELIVERY_URL}/create-appointment`);
   url.searchParams.set('areaId', String(meta.areaId));
-  url.searchParams.set('date', new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date()));
+  url.searchParams.set('date', schedule.deliveryDate);
   url.searchParams.set('goodsId', goodsIds.join(','));
   url.searchParams.set('warehouseGroupId', String(meta.group.warehouseGroupId));
   url.searchParams.set('warehouseGroupName', meta.group.warehouseGroupName);
   return url.toString();
 }
 
-async function openBatchAppointmentByGoodsIds(page, meta, goodsIds) {
-  await page.goto(batchCreateAppointmentUrl(meta, goodsIds), { waitUntil: 'domcontentloaded', timeout: 90_000 });
+async function openBatchAppointmentByGoodsIds(page, meta, goodsIds, schedule) {
+  await page.goto(batchCreateAppointmentUrl(meta, goodsIds, schedule), { waitUntil: 'domcontentloaded', timeout: 90_000 });
   await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
+  await closeBlockingModals(page);
   await page.waitForTimeout(1500);
 }
 
 async function selectDriver(page, rule) {
+  await closeBlockingModals(page);
   const mobile = String(rule.driverMobile || '').trim();
   if (!mobile) return { selected: false, label: '' };
   const maskedMobile = maskMobile(mobile);
@@ -564,6 +638,7 @@ async function selectDriver(page, rule) {
   }
 
   await page.waitForSelector('[data-testid="beast-core-modal"]', { state: 'hidden', timeout: 10_000 }).catch(() => {});
+  await closeBlockingModals(page);
   await page.waitForTimeout(800);
   return { selected: true, label: choice.text };
 }
@@ -677,14 +752,208 @@ async function fillAppointmentQuantities(page, quantity, centerWarehouses) {
   return { ...selection, ...fillResult };
 }
 
+async function selectDeliveryTimes(page, schedule, centerWarehouses) {
+  const result = {
+    selectedWarehouses: [],
+    optionText: schedule.pageText,
+    reportText: schedule.reportText,
+  };
+  for (const warehouseName of centerWarehouses) {
+    await closeBlockingModals(page);
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(300);
+    const opened = await page.evaluate((targetWarehouse) => {
+      const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
+      const target = normalize(targetWarehouse);
+      const isVisible = (node) => {
+        const rect = node?.getBoundingClientRect?.();
+        return Boolean(rect && rect.width > 0 && rect.height > 0);
+      };
+      const row = Array.from(document.querySelectorAll('[class*="Form_item_"], [class*="Form_item "]'))
+        .map((node) => {
+          const input = node.querySelector('input[placeholder="请选择"]');
+          if (!input || !isVisible(input)) return null;
+          const labelNode = node.querySelector('[class*="Form_itemLabel"], [class*="Form_label"], label');
+          const labelText = normalize(labelNode?.innerText || labelNode?.textContent || '');
+          const ownText = normalize(node.innerText || node.textContent);
+          const matched = labelText === `*${target}`
+            || labelText === target
+            || (labelText.includes(target) && !labelText.replace(`*${target}`, '').replace(target, ''));
+          if (!matched) return null;
+          const rect = node.getBoundingClientRect();
+          return { node, input, y: rect.y, text: ownText, labelText };
+        })
+        .filter(Boolean)
+        .sort((a, b) => Math.abs(a.y - window.innerHeight * 0.7) - Math.abs(b.y - window.innerHeight * 0.7))[0];
+      if (!row) return { opened: false, reason: `找不到 ${targetWarehouse} 的到货时间选择框` };
+      row.input.scrollIntoView({ block: 'center', inline: 'center' });
+      row.input.click();
+      return { opened: true, reason: '' };
+    }, warehouseName);
+    if (!opened.opened) throw new Error(opened.reason);
+    await page.waitForTimeout(600);
+
+    const selected = await page.evaluate((optionText) => {
+      const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
+      const target = normalize(optionText);
+      const isVisible = (node) => {
+        const rect = node?.getBoundingClientRect?.();
+        return Boolean(rect && rect.width > 0 && rect.height > 0);
+      };
+      const allOptions = Array.from(document.querySelectorAll('li, [role="option"], [class*="item"], [class*="Item"], div, span'))
+        .filter((node) => normalize(node.innerText || node.textContent).includes(target));
+      const disabledMatch = allOptions.find((node) => /disabled|notAvailable/i.test(String(node.className || '')) || /不可|约满|未配置/.test(node.innerText || node.textContent || ''));
+      const option = allOptions
+        .filter((node) => !/disabled/i.test(String(node.className || '')))
+        .sort((a, b) => {
+          const score = (node) => {
+            const text = normalize(node.innerText || node.textContent);
+            const rect = node.getBoundingClientRect();
+            return (isVisible(node) ? 100 : 0)
+              + (/^LI$/.test(node.tagName) || /option|item|Item/.test(String(node.className || '')) ? 20 : 0)
+              + (/可约/.test(text) ? 10 : 0)
+              - text.length / 1000
+              - Math.max(0, -rect.y) / 1000;
+          };
+          return score(b) - score(a);
+        })[0];
+      if (!option) {
+        return {
+          selected: false,
+          reason: disabledMatch
+            ? `${optionText} 不可选：${String(disabledMatch.innerText || disabledMatch.textContent || '').replace(/\s+/g, ' ').trim()}`
+            : `下拉选项中找不到 ${optionText}`,
+        };
+      }
+      const optionTextFound = String(option.innerText || option.textContent || '').replace(/\s+/g, ' ').trim();
+      if (/不可|约满|未配置/.test(optionTextFound) && !/可约/.test(optionTextFound)) {
+        return { selected: false, reason: `${optionText} 不可选：${optionTextFound}` };
+      }
+      option.scrollIntoView({ block: 'center', inline: 'center' });
+      option.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, composed: true, view: window }));
+      option.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, composed: true, view: window }));
+      option.click();
+      return { selected: true, text: optionTextFound };
+    }, schedule.pageText);
+    if (!selected.selected) throw new Error(`到货时间选择失败（${warehouseName}）：${selected.reason}`);
+    await page.waitForTimeout(500);
+    result.selectedWarehouses.push(warehouseName);
+  }
+
+  const values = await page.evaluate((warehouses) => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
+    return warehouses.map((warehouseName) => {
+      const target = normalize(warehouseName);
+      const row = Array.from(document.querySelectorAll('[class*="Form_item_"], [class*="Form_item "]'))
+        .find((node) => {
+          const input = node.querySelector('input[placeholder="请选择"]');
+          if (!input) return false;
+          const labelNode = node.querySelector('[class*="Form_itemLabel"], [class*="Form_label"], label');
+          const labelText = normalize(labelNode?.innerText || labelNode?.textContent || '');
+          return labelText === `*${target}` || labelText === target;
+        });
+      const input = row?.querySelector('input[placeholder="请选择"]');
+      return { warehouseName, value: input?.value || '' };
+    });
+  }, centerWarehouses);
+  for (const item of values) {
+    if (!item.value.includes(schedule.pageText)) {
+      throw new Error(`到货时间校验失败：${item.warehouseName} 当前为 ${item.value || '(空)'}，目标为 ${schedule.pageText}`);
+    }
+  }
+  return result;
+}
+
+async function closePostSubmitModals(page) {
+  const result = await page.evaluate(() => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const isVisible = (node) => {
+      const rect = node?.getBoundingClientRect?.();
+      return Boolean(rect && rect.width > 0 && rect.height > 0);
+    };
+    const clickNode = (node) => {
+      if (!node) return false;
+      node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, composed: true, view: window }));
+      node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, composed: true, view: window }));
+      node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true, view: window }));
+      node.click?.();
+      return true;
+    };
+    const modals = Array.from(document.querySelectorAll('[data-testid="beast-core-modal"]'))
+      .filter(isVisible)
+      .map((modal) => {
+        const title = normalize(modal.querySelector('[class*="MDL_header"]')?.innerText || '');
+        const text = normalize(modal.innerText || title);
+        const buttons = Array.from(modal.querySelectorAll('button, a, [role="button"]'))
+          .filter(isVisible)
+          .map((button) => normalize(button.innerText || button.textContent))
+          .filter(Boolean);
+        return { modal, title, text, buttons };
+      });
+    const handled = [];
+    for (const item of modals.reverse()) {
+      if (/选择司机|司机选择/.test(`${item.title} ${item.text}`)) {
+        handled.push({ title: item.title, text: item.text, buttons: item.buttons, closed: false, preserved: true });
+        continue;
+      }
+      const closeIcon = item.modal.querySelector('[data-testid="beast-core-modal-icon-close"]');
+      const actionButton = Array.from(item.modal.querySelectorAll('button, a, [role="button"]'))
+        .filter(isVisible)
+        .find((button) => /^(我知道了|知道了|好的|确定|确认|关闭|完成|返回列表)$/.test(normalize(button.innerText || button.textContent)));
+      const closed = clickNode(closeIcon || actionButton);
+      handled.push({ title: item.title, text: item.text, buttons: item.buttons, closed, preserved: false });
+    }
+    return handled;
+  }).catch(() => []);
+  await page.waitForTimeout(600);
+  return result;
+}
+
+async function submitAppointment(page) {
+  await closeBlockingModals(page);
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.waitForTimeout(300);
+  const confirmButton = page.getByRole('button', { name: /^确认$/ }).last();
+  await confirmButton.waitFor({ state: 'visible', timeout: 10_000 });
+  const disabled = await confirmButton.evaluate((node) => Boolean(node.disabled)).catch(() => true);
+  if (disabled) throw new Error('确认按钮处于禁用态，未提交。');
+  try {
+    await confirmButton.click({ timeout: 10_000 });
+  } catch (error) {
+    await closeBlockingModals(page);
+    await page.waitForTimeout(500);
+    const stillDisabled = await confirmButton.evaluate((node) => Boolean(node.disabled)).catch(() => true);
+    if (stillDisabled) throw error;
+    await confirmButton.click({ force: true, timeout: 5000 });
+  }
+  await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
+  await page.waitForTimeout(2500);
+  const modalResults = await closePostSubmitModals(page);
+  await closeBlockingModals(page);
+  const bodyText = await page.evaluate(() => document.body.innerText || '').catch(() => '');
+  const modalText = modalResults.map((item) => item.text).filter(Boolean).join('\n');
+  const statusText = `${modalText}\n${bodyText}`;
+  const successText = (statusText.match(/(预约成功|提交成功|新建成功|创建成功|操作成功|已预约|预约已提交|预约创建成功)/) || [])[1] || '';
+  const errorText = (statusText.match(/(预约失败|提交失败|创建失败|错误|异常|不可预约|请选择(?:司机|到货时间|预约时间|送货时间)[^。\n]*)/) || [])[1] || '';
+  if (errorText && !successText) throw new Error(`提交后页面提示异常：${errorText}`);
+  return { successText: successText || '已点击确认提交', modalResults, pageText: bodyText.slice(-500) };
+}
+
 async function runRule(page, context, rule, { dryRun }) {
   const meta = await resolveWarehouseGroup(context, rule);
-  console.log(`规则 #${rule.id} ${rule.warehouseGroup}：${meta.warehouses.map((item) => item.warehouseName).join(', ')}。`);
+  const schedule = deliverySlotFor(rule, targetDeliveryDateKey());
+  const warehouseNames = meta.warehouses.map((item) => item.warehouseName);
+  const createdAt = beijingTimestamp();
+  console.log(`规则 #${rule.id} ${rule.warehouseGroup}：${warehouseNames.join(', ')}。`);
+  console.log(`规则 #${rule.id} 目标销售/送货日期：${schedule.deliveryDate}；目标送货时间：${schedule.reportText}（页面选项 ${schedule.pageText}）。`);
+  if (!rule.driverMobile) {
+    throw new Error(`规则 #${rule.id} ${rule.warehouseGroup} 未配置司机号码，请在预约规则里填写司机号码后再测试。`);
+  }
 
   await page.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => {});
   await page.goto(APPOINTMENT_DELIVERY_URL, { waitUntil: 'domcontentloaded', timeout: 90_000 });
   await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
-  await applyFilters(page, rule, meta);
+  await applyFilters(page, rule, meta, schedule);
   const expectedCount = await readAppointmentTotalCount(page);
   if (!Number.isFinite(expectedCount)) {
     throw new Error(`规则 #${rule.id} 未读取到页面“共有 xx 条”，无法校验预约数量。`);
@@ -711,7 +980,7 @@ async function runRule(page, context, rule, { dryRun }) {
   let appointmentGoodsCount = await countCreateAppointmentGoods(page);
   if (appointmentGoodsCount !== expectedCount) {
     console.log(`规则 #${rule.id} 批量页商品数 ${appointmentGoodsCount} 与列表 ${expectedCount} 不一致，按列表商品 ID 重建批量预约页。`);
-    await openBatchAppointmentByGoodsIds(page, meta, listGoodsIds);
+    await openBatchAppointmentByGoodsIds(page, meta, listGoodsIds, schedule);
     appointmentGoodsCount = await countCreateAppointmentGoods(page);
     if (appointmentGoodsCount !== expectedCount) {
       throw new Error(`规则 #${rule.id} 预约商品数校验失败：列表页面共有 ${expectedCount} 条，但批量预约页包含 ${appointmentGoodsCount} 条。`);
@@ -733,17 +1002,35 @@ async function runRule(page, context, rule, { dryRun }) {
     throw new Error(`规则 #${rule.id} 预约填写校验失败：${expectedCount} 条商品 × ${targetWarehouses} 个中心仓，应填写 ${expectedInputCount} 个输入框，实际填写 ${filledInputs} 个${disabledHint}。`);
   }
   console.log(`规则 #${rule.id} 已逐商品勾选 ${fillResult.matchedRows} 个仓库行，填写预约件数 ${rule.quantity} 到 ${filledInputs} 个输入框（${expectedCount} 条商品 × ${targetWarehouses} 个中心仓）。`);
+  const deliveryResult = await selectDeliveryTimes(page, schedule, warehouseNames);
+  console.log(`规则 #${rule.id} 已选择到货时间：${deliveryResult.reportText}（${deliveryResult.selectedWarehouses.join(', ')}）。`);
+  const totalReservedQuantity = filledInputs * rule.quantity;
+  const reportLines = [
+    `预约送货上报：${dryRun ? '演练' : '已提交'}`,
+    `仓库：${rule.warehouseGroup}（${warehouseNames.join('、')}）`,
+    `司机：${maskMobile(rule.driverMobile)}`,
+    `商品数：${expectedCount}`,
+    `预约件数：每个商品每个中心仓 ${rule.quantity} 件，共 ${totalReservedQuantity} 件`,
+    `送货时间：${schedule.reportText}`,
+    `页面时间选项：${schedule.pageText}`,
+    `预约时间：${createdAt}`,
+  ];
   if (dryRun) {
+    console.log(reportLines.join('\n'));
     console.log(`规则 #${rule.id} dry-run：停在批量新建预约页，不点击确认提交。`);
-    return;
+    return { submitted: false, expectedCount, filledInputs, totalReservedQuantity, schedule, createdAt };
   }
-  throw new Error('真实提交暂未开放：请先完成 dry-run 校验，再显式实现 --commit 提交确认。');
+  const submitResult = await submitAppointment(page);
+  console.log(`规则 #${rule.id} 已点击确认提交：${submitResult.successText}。`);
+  console.log(reportLines.join('\n'));
+  return { submitted: true, expectedCount, filledInputs, totalReservedQuantity, schedule, createdAt, submitResult };
 }
 
 await loadDotEnv();
 const config = await readReportConfig();
-const cliDryRun = hasArg('--dry-run') || !hasArg('--commit');
-const dryRun = cliDryRun || config.reservation?.dryRun !== false;
+const commit = hasArg('--commit');
+const cliDryRun = hasArg('--dry-run') || !commit;
+const dryRun = commit ? false : (cliDryRun || config.reservation?.dryRun !== false);
 const rules = selectRules(config);
 if (!rules.length) throw new Error('没有可执行的预约规则；请启用规则，或 dry-run 时传 --include-disabled/--ids。');
 

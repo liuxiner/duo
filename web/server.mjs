@@ -980,6 +980,10 @@ function normalizeStringList(value) {
   return values.map((item) => String(item).trim()).filter(Boolean);
 }
 
+function normalizeText(value) {
+  return String(value || '').replace(/\s+/g, '').replace(/^浙江仓组\d+-/, '');
+}
+
 function normalizePositiveInteger(value, fallback) {
   const next = Number(value);
   return Number.isFinite(next) && next > 0 ? Math.round(next) : fallback;
@@ -1025,19 +1029,30 @@ function defaultReservationConfig() {
   };
 }
 
+function defaultReservationItemFor(item = {}, index = 0) {
+  const id = String(item.id || item.index || item['序号'] || index + 1);
+  const group = normalizeText(item.warehouseGroup || item.warehouse || item['仓组'] || item['仓库'] || '');
+  return DEFAULT_REPORT_CONFIG.reservation.items.find((candidate) => String(candidate.id) === id)
+    || DEFAULT_REPORT_CONFIG.reservation.items.find((candidate) => group && normalizeText(candidate.warehouseGroup) === group)
+    || DEFAULT_REPORT_CONFIG.reservation.items[index]
+    || {};
+}
+
 function normalizeReservationItem(item = {}, index = 0) {
-  const quantity = normalizePositiveInteger(item.quantity ?? item['预约数量'], 100);
+  const defaults = defaultReservationItemFor(item, index);
+  const centerWarehouses = normalizeStringList(item.centerWarehouses || item.centerWarehouse || item['中心仓']);
+  const quantity = normalizePositiveInteger(item.quantity ?? item['预约数量'], defaults.quantity || 100);
   return {
-    id: String(item.id || item.index || item['序号'] || index + 1),
-    region: String(item.region || item['销售区域'] || item['区域'] || '').trim(),
-    warehouseGroup: String(item.warehouseGroup || item.warehouse || item['仓组'] || item['仓库'] || '').trim(),
-    centerWarehouses: normalizeStringList(item.centerWarehouses || item.centerWarehouse || item['中心仓']),
-    driverMobile: String(item.driverMobile || item['司机号码'] || '').trim(),
+    id: String(item.id || item.index || item['序号'] || defaults.id || index + 1),
+    region: String(item.region || item['销售区域'] || item['区域'] || defaults.region || '').trim(),
+    warehouseGroup: String(item.warehouseGroup || item.warehouse || item['仓组'] || item['仓库'] || defaults.warehouseGroup || '').trim(),
+    centerWarehouses: centerWarehouses.length ? centerWarehouses : [...(defaults.centerWarehouses || [])],
+    driverMobile: String(item.driverMobile || item['司机号码'] || defaults.driverMobile || '').trim(),
     quantity,
-    preferredHour: normalizeConfigTime(item.preferredHour || item['预约时间']) || '10:00',
-    firstNotifyGroup: String(item.firstNotifyGroup || item['首约通知群'] || '').trim(),
-    lastNotifyGroup: String(item.lastNotifyGroup || item['尾约通知群'] || '').trim(),
-    enabled: enabledFromValue(item.enabled ?? item['状态'] ?? item['状态(启/停)'], false),
+    preferredHour: normalizeConfigTime(item.preferredHour || item['预约时间'] || defaults.preferredHour) || '10:00',
+    firstNotifyGroup: String(item.firstNotifyGroup || item['首约通知群'] || defaults.firstNotifyGroup || '').trim(),
+    lastNotifyGroup: String(item.lastNotifyGroup || item['尾约通知群'] || defaults.lastNotifyGroup || '').trim(),
+    enabled: enabledFromValue(item.enabled ?? item['状态'] ?? item['状态(启/停)'], defaults.enabled ?? false),
   };
 }
 

@@ -11,3 +11,4 @@ data/pdd/*.csv
 !data/pdd/.gitkeep
 
 data/*
+logs/*
