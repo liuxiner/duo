@@ -59,6 +59,13 @@ PDD_CDP_URL=http://127.0.0.1:9222
 WECHATY_CDP_URL=http://127.0.0.1:9333
 ```
 
+Windows 默认使用 Wechaty。若某台 Windows 机器无法运行 Wechaty，可在应用“服务配置”中开启“微信 App 通道”，或在 `workspace/.env` 设置：
+
+```env
+MAO_USE_DESKTOP_WECHAT=true
+MAO_WECHAT_CHANNEL=desktop_wechat
+```
+
 macOS 启动示例：
 
 ```bash
@@ -77,7 +84,7 @@ Windows 可分别用两个快捷方式启动 Chrome，并添加：
 
 飞书自建应用至少需要 Sheets 读写、群列表/成员读取、机器人发消息和图片资源上传权限。修改权限后必须发布新版本，并由企业管理员重新授权。把 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 和目标表格配置写入 `workspace/.env`。
 
-微信客服号需要能登录网页版微信，并已加入目标群。群名和需要 @ 的成员在应用“微信群规则配置”中填写。
+微信客服号使用 Wechaty 时需要能登录网页版微信；切到微信 App 通道时需要本机桌面微信已登录，并保持目标群可搜索。群名和需要 @ 的成员在应用“微信群规则配置”中填写。
 
 ## 热更新
 

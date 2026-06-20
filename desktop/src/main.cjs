@@ -30,7 +30,7 @@ const feedUrl = process.env.MAO_UPDATE_FEED_URL
   || '';
 const updater = createRuntimeUpdater({ app, feedUrl, bundledVersion: app.getVersion() });
 const WEB_WECHAT_ENABLED = process.platform === 'win32' || process.env.MAO_ENABLE_WEB_WECHAT === 'true';
-const DESKTOP_WECHAT_ENABLED = process.platform === 'darwin';
+const DESKTOP_WECHAT_ENABLED = process.platform === 'darwin' || process.platform === 'win32';
 
 function bundledAppDir() {
   return app.isPackaged
@@ -402,7 +402,7 @@ function desktopWechatAutomationStatus() {
       supported: false,
       implemented: false,
       disabled: true,
-      disabledReason: 'Windows 已恢复使用 Wechaty 通道，禁止操作桌面微信 App。',
+      disabledReason: `当前系统暂不支持桌面微信自动化：${process.platform}`,
       accessibilityTrusted: true,
       permissionRequired: false,
       wechatInstalled: wechat.installed,
@@ -488,7 +488,7 @@ function runNodeRuntimeScript(scriptPath, args, timeoutMs = WECHAT_DESKTOP_AUTOM
 
 function runWechatDesktopAutomationHelper(args, timeoutMs = WECHAT_DESKTOP_AUTOMATION_TIMEOUT_MS, owner = 'desktop-main') {
   if (!DESKTOP_WECHAT_ENABLED) {
-    return Promise.reject(new Error('Windows 已恢复使用 Wechaty 通道，禁止操作桌面微信 App。'));
+    return Promise.reject(new Error(`当前系统暂不支持桌面微信自动化：${process.platform}`));
   }
   const releaseLock = acquireWechatDesktopAutomationLock(owner, args);
   return new Promise((resolve, reject) => {

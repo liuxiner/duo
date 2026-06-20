@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 
-const SOURCE = '宁波多多6.6) - 6月.csv';
-const OUTPUT = '宁波多多6月每日看板.html';
+const SOURCE = '6.6) - .csv';
+const OUTPUT = '每日看板.html';
 
 function parseCsv(text) {
   const rows = [];
@@ -115,7 +115,7 @@ function html(data) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>宁波多多6月每日看板</title>
+  <title>每日看板</title>
   <style>
     :root {
       color-scheme: light;
@@ -282,7 +282,7 @@ function html(data) {
   <header>
     <div class="wrap topbar">
       <div>
-        <h1>宁波多多6月每日看板</h1>
+        <h1>每日看板</h1>
         <div class="subtitle">销量变化、库存差异、周转天数和补货优先级</div>
       </div>
       <div class="controls">
