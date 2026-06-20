@@ -15,6 +15,12 @@ const entries = [
 ];
 const webWechatRuntimePackages = ['file-box', 'qrcode', 'wechaty', 'wechaty-puppet-wechat'];
 
+function shouldKeepWebWechatRuntime() {
+  return process.platform === 'win32'
+    || process.env.MAO_ENABLE_WEB_WECHAT === 'true'
+    || process.env.MAO_INCLUDE_WEB_WECHAT_RUNTIME === 'true';
+}
+
 function runPnpm(args) {
   const npmExecPath = process.env.npm_execpath || '';
   if (npmExecPath && !/\.(?:cmd|bat)$/i.test(npmExecPath)) {
@@ -85,6 +91,10 @@ async function removeOptionalPath(targetPath) {
 }
 
 async function pruneWebWechatRuntime() {
+  if (shouldKeepWebWechatRuntime()) {
+    console.log('Web WeChat runtime retained for this desktop build.');
+    return;
+  }
   await removeOptionalPath(path.join(runtimeDir, 'scripts', 'wechaty-bot.mjs'));
   const packagePath = path.join(runtimeDir, 'package.json');
   try {
