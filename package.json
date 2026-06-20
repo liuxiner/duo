@@ -12,6 +12,7 @@
     "sync:appointment": "node pdd-automation/main.mjs",
     "sync:pdd:api": "PDD_SYNC_MODE=api node scripts/sync-pdd-to-feishu.mjs",
     "pdd:api-probe": "node scripts/pdd-api-probe.mjs",
+    "reservation:dry-run": "node scripts/create-pdd-delivery-appointment.mjs --dry-run",
     "report:pdd": "node scripts/report-pdd-to-feishu.mjs",
     "report:pdd:once": "node scripts/report-pdd-to-feishu.mjs --once",
     "report:pdd:dry-run": "node scripts/report-pdd-to-feishu.mjs --dry-run",

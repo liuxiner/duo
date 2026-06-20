@@ -57,6 +57,7 @@ const WEB_WECHAT_ENABLED = process.env.MAO_ENABLE_WEB_WECHAT === 'true';
 const APP_ROUTE_PATHS = new Set(['/', '/sync', '/config', '/wechat', '/heartbeat', '/logs', '/desktop']);
 let activeSync = null;
 let activeReport = null;
+let activeReservation = null;
 let activeScheduler = null;
 let heartbeatTimer = null;
 let heartbeatRunning = false;
@@ -1599,6 +1600,40 @@ function startReport({ all = false, dryRun = false, ids = [], channel = 'both' }
   });
 }
 
+function startReservation({ dryRun = true, ids = [], includeDisabled = false } = {}) {
+  const logs = [];
+  const args = [path.join(NODE_ENTRY_ROOT, 'scripts/create-pdd-delivery-appointment.mjs')];
+  if (dryRun) args.push('--dry-run');
+  else args.push('--commit');
+  if (ids.length) args.push(`--ids=${ids.join(',')}`);
+  if (includeDisabled) args.push('--include-disabled');
+  const child = spawn(process.execPath, args, {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: process.versions.electron ? '1' : process.env.ELECTRON_RUN_AS_NODE,
+      PDD_AUTO_WAIT_FOR_LOGIN: 'true',
+    },
+    stdio: ['inherit', 'pipe', 'pipe'],
+  });
+
+  const task = { status: 'running', logs, startedAt: new Date().toISOString(), dryRun, ids, includeDisabled, child };
+  activeReservation = task;
+  child.stdout.on('data', (chunk) => appendLogs(task, chunk));
+  child.stderr.on('data', (chunk) => appendLogs(task, chunk));
+  child.on('error', (error) => {
+    appendLogs(task, error.message);
+    task.status = 'failed';
+    task.finishedAt = new Date().toISOString();
+  });
+  child.on('close', (code) => {
+    task.status = code === 0 ? 'completed' : 'failed';
+    task.exitCode = code;
+    task.finishedAt = new Date().toISOString();
+    delete task.child;
+  });
+}
+
 function startScheduler() {
   if (activeScheduler?.status === 'running') return;
   const child = spawn(process.execPath, [path.join(NODE_ENTRY_ROOT, 'scripts/report-pdd-to-feishu.mjs'), '--channel=wechat'], {
@@ -1760,6 +1795,7 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, {
         sync: summarizeTask(activeSync),
         report: summarizeTask(activeReport),
+        reservation: summarizeTask(activeReservation),
         scheduler: summarizeTask(activeScheduler),
         heartbeat: summarizeTask(heartbeatMonitor),
         monitorNotification: summarizeTask(monitorNotificationQueue),
@@ -1846,6 +1882,26 @@ const server = createServer(async (request, response) => {
         dryRun: Boolean(dryRun),
         ids: normalizedIds,
         channel: normalizedChannel,
+      });
+      sendJson(response, 202, { status: 'running' });
+      return;
+    }
+
+    if (request.method === 'POST' && request.url === '/api/reservation/run') {
+      if (activeReservation?.status === 'running') {
+        sendJson(response, 409, { error: '已有预约任务正在运行。' });
+        return;
+      }
+      const { dryRun = true, ids, includeDisabled } = await readJson(request);
+      const normalizedIds = Array.isArray(ids) ? ids.map(String) : [];
+      if (!dryRun) {
+        sendJson(response, 403, { error: '真实提交预约暂未开放，请先使用预约演练确认页面填写结果。' });
+        return;
+      }
+      startReservation({
+        dryRun: true,
+        ids: normalizedIds,
+        includeDisabled: Boolean(includeDisabled || normalizedIds.length),
       });
       sendJson(response, 202, { status: 'running' });
       return;
@@ -1981,6 +2037,7 @@ async function shutdown() {
   stopScheduler();
   if (activeSync?.child) activeSync.child.kill('SIGTERM');
   if (activeReport?.child) activeReport.child.kill('SIGTERM');
+  if (activeReservation?.child) activeReservation.child.kill('SIGTERM');
   await wechatyBot.stop().catch(() => {});
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();

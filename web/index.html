@@ -789,7 +789,10 @@
           <div class="config-band">
             <div class="subhead">
               <h3>预约规则</h3>
-              <button id="add-reservation-row" class="light" type="button">新增预约</button>
+              <div class="toolbar">
+                <button id="reservation-dry-run-now" class="secondary" type="button">预约演练</button>
+                <button id="add-reservation-row" class="light" type="button">新增预约</button>
+              </div>
             </div>
             <div id="reservation-config-table-wrap" class="table-wrap">
               <table class="reservation-config-table">
@@ -902,6 +905,7 @@
         </div>
         <div id="sync-log-panel" class="log-panel"></div>
         <div id="report-log-panel" class="log-panel" style="margin-top: 12px;"></div>
+        <div id="reservation-log-panel" class="log-panel" style="margin-top: 12px;"></div>
         <div id="monitor-notification-log-panel" class="log-panel" style="margin-top: 12px;"></div>
         <div id="scheduler-log-panel" class="log-panel" style="margin-top: 12px;" hidden></div>
         <div id="heartbeat-log-panel" class="log-panel" style="margin-top: 12px;"></div>
@@ -983,11 +987,13 @@
     const violationCheckRunTimes = document.querySelector('#violation-check-run-times');
     const violationOnlyPending = document.querySelector('#violation-only-pending');
     const violationNotifyEmpty = document.querySelector('#violation-notify-empty');
+    const reservationDryRunNow = document.querySelector('#reservation-dry-run-now');
     const addReservationRow = document.querySelector('#add-reservation-row');
     const reservationConfigBody = document.querySelector('#reservation-config-body');
     const reservationConfigTableWrap = document.querySelector('#reservation-config-table-wrap');
     const syncLogPanel = document.querySelector('#sync-log-panel');
     const reportLogPanel = document.querySelector('#report-log-panel');
+    const reservationLogPanel = document.querySelector('#reservation-log-panel');
     const monitorNotificationLogPanel = document.querySelector('#monitor-notification-log-panel');
     const wechatAddRow = document.querySelector('#wechat-add-row');
     const wechatRunSelected = document.querySelector('#wechat-run-selected');
@@ -1672,6 +1678,7 @@
         notificationIntervalMax,
         notificationMaxRetries,
         notificationRetryDelay,
+        reservationDryRunNow,
         reservationEnabled,
         reservationFirstRunTimes,
         reservationLastRunTimes,
@@ -1706,6 +1713,7 @@
           <td><input class="wide" data-reservation-field="lastNotifyGroup" value="${escapeHtml(item.lastNotifyGroup || '')}" ${locked ? 'disabled' : ''}></td>
           <td><label class="switch"><input data-reservation-field="enabled" type="checkbox" ${item.enabled ? 'checked' : ''} ${locked ? 'disabled' : ''}>${item.enabled ? '启' : '停'}</label></td>
           <td><div class="row-actions">
+            <button class="secondary reservation-dry-run-one" data-id="${escapeHtml(item.id)}" type="button" ${locked ? 'disabled' : ''}>演练</button>
             <button class="danger delete-reservation-one" data-id="${escapeHtml(item.id)}" type="button" ${locked ? 'disabled' : ''}>删除</button>
           </div></td>
         </tr>
@@ -1862,6 +1870,7 @@
         const state = await response.json();
         const sync = state.sync || { status: 'idle', logs: [], previewLogs: [] };
         const report = state.report || { status: 'idle', logs: [], previewLogs: [] };
+        const reservation = state.reservation || { status: 'idle', logs: [], previewLogs: [] };
         const scheduler = state.scheduler || { status: 'idle', logs: [], previewLogs: [] };
         const heartbeat = state.heartbeat || { status: 'idle', logs: [], previewLogs: [] };
         const monitorNotification = state.monitorNotification || { status: 'idle', logs: [], previewLogs: [] };
@@ -1872,6 +1881,7 @@
         syncProgress.textContent = sync.progressText || (sync.lastDate ? `已处理到 ${sync.lastDate}` : (sync.status === 'running' ? '正在同步' : '等待任务'));
         renderLogPanel(syncLogPanel, 'sync', '同步日志', sync);
         renderLogPanel(reportLogPanel, 'report', '微信上报日志', report);
+        renderLogPanel(reservationLogPanel, 'reservation', '预约送货日志', reservation);
         renderLogPanel(monitorNotificationLogPanel, 'monitorNotification', '监控错误通知队列', monitorNotification);
         renderLogPanel(schedulerLogPanel, 'scheduler', '定时上报日志', scheduler);
         renderLogPanel(heartbeatLogPanel, 'heartbeat', '心跳监控日志', heartbeat);
@@ -1889,7 +1899,7 @@
         let nextDelay = 5000;
         try {
           const state = await refresh();
-          const tasks = [state?.sync, state?.report, state?.scheduler, state?.heartbeat, state?.monitorNotification];
+          const tasks = [state?.sync, state?.report, state?.reservation, state?.scheduler, state?.heartbeat, state?.monitorNotification];
           nextDelay = tasks.some((task) => task?.status === 'running') ? 1500 : 5000;
         } catch {
           nextDelay = 8000;
@@ -1985,6 +1995,22 @@
       if (!config.schedulerEnabled) await saveCurrentConfig();
       await startReport(ids, dryRun, 'wechat');
     }
+    async function startReservationDryRun(ids = []) {
+      syncConfigFromTable();
+      syncWechatConfigFromTable();
+      syncHeartbeatConfigFromForm();
+      syncAdvancedConfigFromForm();
+      syncReservationConfigFromTable();
+      await saveCurrentConfig();
+      const response = await fetch('/api/reservation/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dryRun: true, ids, includeDisabled: Boolean(ids.length) }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || '启动预约演练失败');
+      await refresh();
+    }
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -2061,6 +2087,16 @@
     });
     wechatRunSelected.addEventListener('click', () => startWechatReport(selectedWechatIds(), false));
     wechatDryRunSelected.addEventListener('click', () => startWechatReport(selectedWechatIds(), true));
+    reservationDryRunNow.addEventListener('click', async () => {
+      reservationDryRunNow.disabled = true;
+      try {
+        await startReservationDryRun([]);
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        reservationDryRunNow.disabled = false;
+      }
+    });
     wechatSaveConfig.addEventListener('click', async () => {
       try {
         await saveCurrentConfig();
@@ -2138,6 +2174,15 @@
         syncReservationConfigFromTable();
         config.reservation.items = (config.reservation.items || []).filter((item) => item.id !== deleteReservationId);
         renderConfig();
+        return;
+      }
+      const reservationDryRunId = event.target.closest('.reservation-dry-run-one')?.dataset.id;
+      if (reservationDryRunId) {
+        try {
+          await startReservationDryRun([reservationDryRunId]);
+        } catch (error) {
+          alert(error.message);
+        }
         return;
       }
       const wechatRunId = event.target.closest('.wechat-run-one')?.dataset.id;

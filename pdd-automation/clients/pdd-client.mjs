@@ -11,6 +11,7 @@ export const PDD_ENDPOINTS = {
   driverList: '/cartman-mms/appointment/queryDriverList',
   goodsWarehouseDetail: '/cartman-mms/appointment/queryGoodsWarehouseDetail',
   reservationWarehouseList: '/syndra-mms/supplier/warehouse/queryWarehouseListForReservation',
+  warehouseGroupListWithExpress: '/tms-app/api/mms/hugo/v0/MmsSupplierAreaService/queryAreaWarehouseGroupListWithExpress',
   schedulePageQuery: '/orianna-mms/goods/schedule/pageQuery',
   supplierInboundPunishment: '/tms-app/api/supplier/neymar/v0/PunishmentAppealMmsService/querySupplierInboundPunishment',
   areaList: '/hugo-mms/area/queryAreaList',
@@ -207,6 +208,10 @@ export async function queryGoodsWarehouseDetail(context, body = {}, options = {}
 
 export async function queryReservationWarehouseList(context, body = {}, options = {}) {
   return pddJsonRequest(context, 'reservationWarehouseList', { data: body, headers: options.headers });
+}
+
+export async function queryWarehouseGroupListWithExpress(context, body = {}, options = {}) {
+  return pddJsonRequest(context, 'warehouseGroupListWithExpress', { data: body, headers: options.headers });
 }
 
 export async function querySchedulePage(context, body = {}, options = {}) {
