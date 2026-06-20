@@ -790,7 +790,7 @@
             <div class="subhead">
               <h3>预约规则</h3>
               <div class="toolbar">
-                <button id="reservation-dry-run-now" class="secondary" type="button">预约演练</button>
+                <button id="reservation-dry-run-now" class="secondary" type="button" title="Dry-run 测试，只填写预约件数，不确认提交">测试预约送货</button>
                 <button id="add-reservation-row" class="light" type="button">新增预约</button>
               </div>
             </div>
@@ -1995,7 +1995,7 @@
       if (!config.schedulerEnabled) await saveCurrentConfig();
       await startReport(ids, dryRun, 'wechat');
     }
-    async function startReservationDryRun(ids = []) {
+    async function startReservationDryRun(ids = [], includeDisabled = false) {
       syncConfigFromTable();
       syncWechatConfigFromTable();
       syncHeartbeatConfigFromForm();
@@ -2005,7 +2005,7 @@
       const response = await fetch('/api/reservation/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dryRun: true, ids, includeDisabled: Boolean(ids.length) }),
+        body: JSON.stringify({ dryRun: true, ids, includeDisabled: Boolean(includeDisabled || ids.length) }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || '启动预约演练失败');
@@ -2090,7 +2090,7 @@
     reservationDryRunNow.addEventListener('click', async () => {
       reservationDryRunNow.disabled = true;
       try {
-        await startReservationDryRun([]);
+        await startReservationDryRun([], true);
       } catch (error) {
         alert(error.message);
       } finally {
