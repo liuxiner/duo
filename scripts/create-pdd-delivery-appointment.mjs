@@ -3,7 +3,6 @@ import path from 'node:path';
 import { closePddBrowserContext, createPddBrowserContext, loginAndSavePddStorageState } from '../pdd-automation/auth/login.mjs';
 import {
   pddStorageStatePath,
-  queryAppointmentGoodsList,
   queryWarehouseGroupListWithExpress,
 } from '../pdd-automation/clients/pdd-client.mjs';
 
@@ -160,30 +159,6 @@ async function resolveWarehouseGroup(context, rule) {
   return { areaId, group, warehouses };
 }
 
-async function appointmentGoodsForRule(context, rule, meta) {
-  const body = await queryAppointmentGoodsList(context, {
-    page: 1,
-    pageSize: 200,
-    body: {
-      page: 1,
-      pageSize: 200,
-      sessionDate: beijingDateKey(),
-      areaId: meta.areaId,
-      warehouseGroupId: meta.group.warehouseGroupId,
-    },
-  });
-  const goodsList = body?.result?.goodsAppointmentResultList || [];
-  const warehouseIds = new Set(meta.warehouses.map((warehouse) => Number(warehouse.warehouseId)));
-  const goodsIds = [];
-  for (const goods of goodsList) {
-    const validIds = (goods.validWarehouseIdList || []).map(Number);
-    const rows = goods.warehouseInboundVOList || [];
-    const matches = rows.some((row) => warehouseIds.has(Number(row.warehouseId))) || validIds.some((id) => warehouseIds.has(id));
-    if (matches && goods.goodsId) goodsIds.push(String(goods.goodsId));
-  }
-  return [...new Set(goodsIds)];
-}
-
 function beijingDateKey(date = new Date()) {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
@@ -216,7 +191,19 @@ async function applyFilters(page, rule, meta) {
   const query = page.getByRole('button', { name: /^查询$/ }).first();
   if (await query.count().catch(() => 0)) await query.click().catch(() => {});
   await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+  await page.waitForFunction(() => /共有\s*\d+\s*条/.test(document.body.innerText || ''), { timeout: 15_000 }).catch(() => {});
   await page.waitForTimeout(1500);
+}
+
+async function readAppointmentTotalCount(page) {
+  return page.evaluate(() => {
+    const bodyText = document.body.innerText || '';
+    const matches = Array.from(bodyText.matchAll(/共有\s*([0-9,]+)\s*条/g));
+    if (!matches.length) return null;
+    const value = matches[matches.length - 1][1].replace(/,/g, '');
+    const count = Number(value);
+    return Number.isFinite(count) ? count : null;
+  });
 }
 
 async function selectVisibleAppointmentRows(page) {
@@ -256,20 +243,60 @@ async function selectVisibleAppointmentRows(page) {
   return selected;
 }
 
-function batchCreateAppointmentUrl(meta, goodsIds) {
-  const url = new URL(`${APPOINTMENT_DELIVERY_URL}/create-appointment`);
-  url.searchParams.set('areaId', String(meta.areaId));
-  url.searchParams.set('date', beijingDateKey());
-  url.searchParams.set('goodsId', goodsIds.join(','));
-  url.searchParams.set('warehouseGroupId', String(meta.group.warehouseGroupId));
-  url.searchParams.set('warehouseGroupName', meta.group.warehouseGroupName);
-  return url.toString();
+async function selectAllVisibleAppointmentRows(page) {
+  const state = await page.evaluate(() => {
+    const checkbox = document.querySelector('tr[data-testid="beast-core-table-header-tr"] label[data-testid="beast-core-checkbox"]');
+    if (!checkbox) return { checked: false, disabled: true, reason: '找不到表头全选框' };
+    const rect = checkbox.getBoundingClientRect();
+    const input = checkbox.querySelector('input[type="checkbox"], input[mode="checkbox"]');
+    const disabled = Boolean(
+      input?.disabled
+      || checkbox.getAttribute('aria-disabled') === 'true'
+      || checkbox.querySelector('[class*="Disabled"], [class*="disabled"], [class*="groupDisabled"]')
+    );
+    const checked = checkbox.getAttribute('data-checked') === 'true' || Boolean(input?.checked);
+    return {
+      checked,
+      disabled,
+      visible: rect.width > 0 && rect.height > 0,
+      x: rect.x + rect.width / 2,
+      y: rect.y + rect.height / 2,
+      reason: disabled ? '表头全选框处于禁用态' : '',
+    };
+  });
+  if (state.checked || state.disabled || !state.visible) return state;
+
+  await page.mouse.click(state.x, state.y);
+  await page.waitForTimeout(500);
+  return page.evaluate(() => {
+    const checkbox = document.querySelector('tr[data-testid="beast-core-table-header-tr"] label[data-testid="beast-core-checkbox"]');
+    const batchButton = Array.from(document.querySelectorAll('button')).find((button) => /批量新建预约/.test(button.innerText || button.textContent || ''));
+    const input = checkbox?.querySelector('input[type="checkbox"], input[mode="checkbox"]');
+    const checked = checkbox?.getAttribute('data-checked') === 'true' || Boolean(input?.checked);
+    const active = Boolean(batchButton && !batchButton.disabled);
+    return {
+      checked: checked || active,
+      disabled: false,
+      visible: Boolean(checkbox),
+      reason: checked || active ? '' : '已点击表头全选框，但 PDD 未切换为选中态',
+    };
+  });
 }
 
-async function openBatchAppointmentPage(page, meta, goodsIds) {
-  await page.goto(batchCreateAppointmentUrl(meta, goodsIds), { waitUntil: 'domcontentloaded', timeout: 90_000 });
+async function openBatchAppointmentFromCurrentList(page) {
+  const selectState = await selectAllVisibleAppointmentRows(page);
+  if (!selectState.checked) {
+    return { opened: false, reason: selectState.reason || '表头全选框未选中' };
+  }
+
+  const button = page.getByRole('button', { name: /批量新建预约/ }).first();
+  await button.waitFor({ state: 'visible', timeout: 10_000 });
+  const disabled = await button.evaluate((node) => node.disabled).catch(() => true);
+  if (disabled) return { opened: false, reason: '批量新建预约按钮仍为禁用态' };
+  await button.click({ timeout: 10_000 });
   await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
   await page.waitForTimeout(1500);
+  return { opened: true, reason: '' };
 }
 
 async function fillAppointmentQuantities(page, quantity) {
@@ -323,18 +350,35 @@ async function fillAppointmentQuantities(page, quantity) {
 
 async function runRule(page, context, rule, { dryRun }) {
   const meta = await resolveWarehouseGroup(context, rule);
-  const goodsIds = await appointmentGoodsForRule(context, rule, meta);
-  console.log(`规则 #${rule.id} ${rule.warehouseGroup}：${meta.warehouses.map((item) => item.warehouseName).join(', ')}，API 可预约候选 ${goodsIds.length} 个。`);
-  if (!goodsIds.length) {
+  console.log(`规则 #${rule.id} ${rule.warehouseGroup}：${meta.warehouses.map((item) => item.warehouseName).join(', ')}。`);
+
+  await page.goto(APPOINTMENT_DELIVERY_URL, { waitUntil: 'domcontentloaded', timeout: 90_000 });
+  await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
+  await applyFilters(page, rule, meta);
+  const expectedCount = await readAppointmentTotalCount(page);
+  if (!Number.isFinite(expectedCount)) {
+    throw new Error(`规则 #${rule.id} 未读取到页面“共有 xx 条”，无法校验预约数量。`);
+  }
+  console.log(`规则 #${rule.id} 页面共有 ${expectedCount} 条。`);
+  if (expectedCount <= 0) {
     console.log(`规则 #${rule.id} 当前没有可预约商品，跳过预约送货 dry-run。`);
     return;
   }
 
-  await openBatchAppointmentPage(page, meta, goodsIds);
-  console.log(`规则 #${rule.id} 已进入批量新建预约页，商品 ${goodsIds.length} 个。`);
+  const pageEntry = await openBatchAppointmentFromCurrentList(page).catch((error) => ({
+    opened: false,
+    reason: error.message || String(error),
+  }));
+  if (!pageEntry.opened) {
+    throw new Error(`规则 #${rule.id} 页面共有 ${expectedCount} 条，但批量入口未启用：${pageEntry.reason}`);
+  }
+  console.log(`规则 #${rule.id} 已通过表头全选进入批量新建预约页，预期预约 ${expectedCount} 条。`);
 
   const filledInputs = await fillAppointmentQuantities(page, rule.quantity);
   if (!filledInputs) throw new Error(`规则 #${rule.id} 已打开批量预约页，但没有找到可填写的预约件数输入框。`);
+  if (filledInputs !== expectedCount) {
+    throw new Error(`规则 #${rule.id} 预约数量校验失败：页面共有 ${expectedCount} 条，但实际填写 ${filledInputs} 条。`);
+  }
   console.log(`规则 #${rule.id} 已填写预约件数 ${rule.quantity} 到 ${filledInputs} 个输入框。`);
   if (dryRun) {
     console.log(`规则 #${rule.id} dry-run：停在批量新建预约页，不点击确认提交。`);
