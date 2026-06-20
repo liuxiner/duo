@@ -57,6 +57,10 @@ const REPORT_TIMEOUT_MS = 30 * 60 * 1000;
 const RESERVATION_TIMEOUT_MS = positiveDurationMs(process.env.MAO_RESERVATION_TIMEOUT_MS, 12 * 60 * 1000);
 const RESERVATION_IDLE_TIMEOUT_MS = positiveDurationMs(process.env.MAO_RESERVATION_IDLE_TIMEOUT_MS, 6 * 60 * 1000);
 const TASK_KILL_GRACE_MS = 5 * 1000;
+const WECHATY_RESTART_ATTEMPTS = 3;
+const WECHATY_RESTART_SETTLE_MS = 12_000;
+const WECHATY_RESTART_TIMEOUT_MS = 2 * 60 * 1000;
+const WECHATY_RECONNECT_HEARTBEAT_DELAY_MS = 3_000;
 const FEISHU_REPORT_ENABLED = process.env.MAO_ENABLE_FEISHU_REPORT === 'true';
 const WEB_WECHAT_BOT_PATH = path.join(NODE_ENTRY_ROOT, 'scripts', 'wechaty-bot.mjs');
 const WEB_WECHAT_RUNTIME_AVAILABLE = existsSync(WEB_WECHAT_BOT_PATH);
@@ -65,6 +69,7 @@ let webWechatRuntimeLoadError = '';
 let activeSync = null;
 let activeReport = null;
 let activeReservation = null;
+let activeWechatRestart = null;
 let activeScheduler = null;
 let schedulerTimer = null;
 let schedulerLastMinuteKey = '';
@@ -1145,6 +1150,175 @@ async function runWechatyLoginSafetyCheck() {
   return updateWechatyLoginSmokeState();
 }
 
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function describeWechatyPublicStatus(status = wechatyBot.getStatus()) {
+  const parts = [`status=${status.status || 'unknown'}`];
+  if (status.loggedInUser) parts.push(`user=${status.loggedInUser}`);
+  if (status.qrAvailable) parts.push('qrAvailable=true');
+  if (status.error) parts.push(`error=${status.error}`);
+  return parts.join(' ');
+}
+
+async function waitForWechatyRestartStatus(timeoutMs = WECHATY_RESTART_SETTLE_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let status = wechatyBot.getStatus();
+  while (Date.now() < deadline) {
+    status = wechatyBot.getStatus();
+    if (['logged-in', 'scanning', 'error', 'disconnected'].includes(status.status)) return status;
+    await wait(500);
+  }
+  return status;
+}
+
+async function sendWechatyRestartFailureAlert(reason, append) {
+  const heartbeatConfig = (await readReportConfig()).heartbeat || defaultHeartbeatConfig();
+  if (!heartbeatConfig.enabled) {
+    append('[wechat-restart] heartbeat alert skipped because heartbeat monitor is disabled');
+    appendHeartbeatLog(`微信机器人重启失败但心跳监控已关闭：${reason}`);
+    return;
+  }
+
+  const pddCheck = await checkPddLoginStatus().catch((error) => ({
+    id: 'pdd',
+    name: 'PDD',
+    loggedIn: null,
+    ok: false,
+    detail: `检测异常：${error.message}`,
+  }));
+  const wechatCheck = checkWechatyHeartbeatStatus();
+  const results = [pddCheck, wechatCheck];
+  const failedChecks = results.filter((check) => check.loggedIn === false);
+  const alertFailures = failedChecks.length ? failedChecks : [{
+    id: 'wechat',
+    name: '微信机器人',
+    loggedIn: false,
+    ok: false,
+    detail: reason,
+  }];
+  const alertResult = await sendHeartbeatAlert(heartbeatConfig, alertFailures, results);
+  if (alertResult.fallbackReason) appendHeartbeatLog(alertResult.fallbackReason);
+  appendHeartbeatLog(`微信机器人重启 ${WECHATY_RESTART_ATTEMPTS} 次后仍未恢复，已发送飞书告警到 ${alertResult.chatName}，@${alertResult.mentionNames.join(', ')}。`);
+  append(`[wechat-restart] alert sent chat=${alertResult.chatName} mentions=${alertResult.mentionNames.join(',')}`);
+}
+
+async function restartChecksAfterWechatyReconnect(append) {
+  append('[wechat-restart] refreshing WeChat login safety check after reconnect');
+  try {
+    await runWechatyLoginSafetyCheck();
+    append(`[wechat-restart] WeChat login safety check refreshed: ok=${desktopWechatSmokeState.ok} reason=${desktopWechatSmokeState.reason}`);
+  } catch (error) {
+    append(`[wechat-restart] WeChat login safety check refresh failed: ${error.message}`);
+  }
+
+  let heartbeatConfig = defaultHeartbeatConfig();
+  try {
+    heartbeatConfig = (await readReportConfig()).heartbeat || defaultHeartbeatConfig();
+  } catch (error) {
+    append(`[wechat-restart] heartbeat config read failed after reconnect: ${error.message}`);
+    appendHeartbeatLog(`微信机器人已重连，但读取心跳配置失败：${error.message}`);
+    return;
+  }
+  heartbeatMonitor.config = heartbeatConfig;
+  if (!heartbeatConfig.enabled) {
+    append('[wechat-restart] heartbeat monitor is disabled; skip restart');
+    markHeartbeatStopped();
+    return;
+  }
+  scheduleHeartbeatCheck(WECHATY_RECONNECT_HEARTBEAT_DELAY_MS);
+  append(`[wechat-restart] heartbeat check rescheduled in ${Math.round(WECHATY_RECONNECT_HEARTBEAT_DELAY_MS / 1000)}s after reconnect`);
+}
+
+async function restartWechatyBotWithRetries(reason, append) {
+  let lastStatus = wechatyBot.getStatus();
+  let lastError = null;
+  for (let attempt = 1; attempt <= WECHATY_RESTART_ATTEMPTS; attempt += 1) {
+    append(`[wechat-restart] attempt ${attempt}/${WECHATY_RESTART_ATTEMPTS} begin reason=${reason || '-'} before=${describeWechatyPublicStatus(lastStatus)}`);
+    try {
+      await wechatyBot.stop().catch((error) => {
+        append(`[wechat-restart] attempt ${attempt} stop warning: ${error.message}`);
+      });
+      await wechatyBot.start();
+      lastStatus = await waitForWechatyRestartStatus();
+      append(`[wechat-restart] attempt ${attempt}/${WECHATY_RESTART_ATTEMPTS} after start ${describeWechatyPublicStatus(lastStatus)}`);
+      if (lastStatus.status === 'logged-in') {
+        Object.assign(desktopWechatSmokeState, {
+          status: 'completed',
+          ok: true,
+          disabled: false,
+          reason: describeWechatyLoginStatus(lastStatus),
+          checkedAt: nowIso(),
+          channel: 'wechaty',
+          lastFailureSignature: '',
+        });
+        appendHeartbeatLog(`微信机器人重启成功：${describeWechatyLoginStatus(lastStatus)}。`);
+        await restartChecksAfterWechatyReconnect(append);
+        return lastStatus;
+      }
+    } catch (error) {
+      lastError = error;
+      lastStatus = wechatyBot.getStatus();
+      append(`[wechat-restart] attempt ${attempt}/${WECHATY_RESTART_ATTEMPTS} failed: ${error.message}; current=${describeWechatyPublicStatus(lastStatus)}`);
+    }
+    if (attempt < WECHATY_RESTART_ATTEMPTS) await wait(1000);
+  }
+
+  const finalReason = lastError?.message || describeWechatyLoginStatus(lastStatus);
+  Object.assign(desktopWechatSmokeState, {
+    status: 'failed',
+    ok: false,
+    disabled: true,
+    reason: `微信机器人重启 ${WECHATY_RESTART_ATTEMPTS} 次后仍未登录：${finalReason}`,
+    checkedAt: nowIso(),
+    channel: 'wechaty',
+  });
+  try {
+    await sendWechatyRestartFailureAlert(desktopWechatSmokeState.reason, append);
+  } catch (alertError) {
+    append(`[wechat-restart] alert failed: ${alertError.message}`);
+    appendHeartbeatLog(`微信机器人重启失败后的飞书告警发送失败：${alertError.message}`);
+  }
+  throw new Error(desktopWechatSmokeState.reason);
+}
+
+function enqueueWechatyRestartTask({ source = 'heartbeat', reason = '' } = {}) {
+  if (!isWechatyChannel()) return null;
+  const key = 'wechaty-restart';
+  if (queuedTaskWithKey(key)) return { alreadyQueued: true };
+  const task = {
+    status: 'idle',
+    logs: [],
+    requestedAt: nowIso(),
+    source,
+    reason,
+    attempts: WECHATY_RESTART_ATTEMPTS,
+  };
+  activeWechatRestart = task;
+  const queued = enqueueChildTask({
+    key,
+    label: `微信机器人重启（最多 ${WECHATY_RESTART_ATTEMPTS} 次）`,
+    priority: 'high',
+    taskRef: task,
+    timeoutMs: WECHATY_RESTART_TIMEOUT_MS,
+    runner: async (_taskRef, append) => {
+      await restartWechatyBotWithRetries(reason, append);
+    },
+  });
+  return { queued };
+}
+
+function maybeEnqueueWechatyRestartPrecondition({ source = 'unknown', reason = '' } = {}) {
+  if (!isWechatyChannel()) return null;
+  const status = wechatyBot.getStatus();
+  if (status.status === 'logged-in') return null;
+  return enqueueWechatyRestartTask({
+    source,
+    reason: `${reason || '微信机器人未登录'}；${describeWechatyPublicStatus(status)}`,
+  });
+}
+
 async function runDesktopWechatAppSafetyCheck({ force = false } = {}) {
   const channel = 'desktop_wechat';
   if (!force && desktopWechatSmokeState.ok === true) return desktopWechatSmokeState;
@@ -1518,7 +1692,7 @@ function positiveDurationMs(value, fallback) {
 
 function summarizeQueueTask(task) {
   if (!task) return null;
-  const { child, onSuccess, env, ...safeTask } = task;
+  const { child, onSuccess, runner, env, ...safeTask } = task;
   return safeTask;
 }
 
@@ -1562,9 +1736,10 @@ function enqueueChildTask(task) {
   queuedTask.taskRef.queueId = queuedTask.id;
   queuedTask.taskRef.queuedAt = queuedTask.queuedAt;
   appendLogs(queuedTask.taskRef, `[queue] 已加入中心任务队列：${queuedTask.label}`);
-  taskQueue.pending.push(queuedTask);
+  if (queuedTask.priority === 'high') taskQueue.pending.unshift(queuedTask);
+  else taskQueue.pending.push(queuedTask);
   taskQueue.status = taskQueue.active ? 'running' : 'queued';
-  appendTaskQueueLog(`入队：${queuedTask.label}；等待 ${taskQueue.pending.length} 个任务。`);
+  appendTaskQueueLog(`入队：${queuedTask.label}${queuedTask.priority === 'high' ? '（高优先级）' : ''}；等待 ${taskQueue.pending.length} 个任务。`);
   setTimeout(processTaskQueue, 0).unref?.();
   return queuedTask;
 }
@@ -1628,6 +1803,40 @@ function processTaskQueue() {
   appendLogs(task.taskRef, `[queue] 开始执行：${task.label}`);
   appendTaskQueueLog(`开始：${task.label}`);
 
+  const handleTaskOutput = (chunk) => {
+    task.lastOutputAt = nowIso();
+    task.taskRef.lastOutputAt = task.lastOutputAt;
+    appendLogs(task.taskRef, chunk);
+  };
+
+  if (typeof task.runner === 'function') {
+    let timeout = null;
+    let finished = false;
+    const finish = (result) => {
+      if (finished) return;
+      finished = true;
+      if (timeout) clearTimeout(timeout);
+      finishQueuedTask(task, result).catch((error) => {
+        appendTaskQueueLog(`队列收尾异常：${error.message}`);
+        taskQueueRunning = false;
+        taskQueue.active = null;
+        taskQueue.status = taskQueue.pending.length ? 'queued' : 'idle';
+        setTimeout(processTaskQueue, 0).unref?.();
+      });
+    };
+    timeout = setTimeout(() => {
+      task.timedOut = true;
+      task.timeoutReason = `${task.label} 超过 ${Math.round(task.timeoutMs / 1000)} 秒`;
+      finish({ code: 1, error: new Error(task.timeoutReason) });
+    }, task.timeoutMs);
+    timeout.unref?.();
+    Promise.resolve()
+      .then(() => task.runner(task.taskRef, handleTaskOutput))
+      .then(() => finish({ code: 0 }))
+      .catch((error) => finish({ code: 1, error }));
+    return;
+  }
+
   const child = spawn(process.execPath, task.args, {
     cwd: ROOT,
     env: {
@@ -1640,9 +1849,7 @@ function processTaskQueue() {
   task.child = child;
   task.taskRef.child = child;
   const handleOutput = (chunk) => {
-    task.lastOutputAt = nowIso();
-    task.taskRef.lastOutputAt = task.lastOutputAt;
-    appendLogs(task.taskRef, chunk);
+    handleTaskOutput(chunk);
     resetIdleTimeout();
   };
   child.stdout.on('data', handleOutput);
@@ -2169,6 +2376,19 @@ async function runHeartbeatCheck({ manual = false } = {}) {
       return heartbeatMonitor.lastResult;
     }
 
+    const wechatFailure = failedChecks.find((check) => check.id === 'wechat');
+    if (wechatFailure && wechatSocket.id === 'wechaty') {
+      const restart = enqueueWechatyRestartTask({
+        source: manual ? 'manual-heartbeat' : 'heartbeat',
+        reason: wechatFailure.detail,
+      });
+      appendHeartbeatLog(restart?.alreadyQueued
+        ? '微信机器人未登录，重启任务已在中心队列中，本轮先不发送告警。'
+        : `微信机器人未登录，已将重启任务插入中心队列最前，最多重启 ${WECHATY_RESTART_ATTEMPTS} 次；本轮先不发送告警。`);
+      heartbeatMonitor.status = 'failed';
+      return heartbeatMonitor.lastResult;
+    }
+
     appendHeartbeatLog(`发现未登录：${failedChecks.map((check) => `${check.name}（${check.detail}）`).join('；')}。`);
     if (indeterminateChecks.length) {
       appendHeartbeatLog(`检测异常不作为未登录告警：${indeterminateChecks.map((check) => `${check.name}（${check.detail}）`).join('；')}。`);
@@ -2220,6 +2440,15 @@ function startReport({ all = false, dryRun = false, ids = [], channel = 'both', 
     : `manual-report:${Date.now()}:${channel}:${ids.join(',')}:${dryRun ? 'dry-run' : 'send'}`;
   if (queuedTaskWithKey(key)) {
     throw new Error(`任务已在中心队列中：${source === 'scheduler' ? `定时微信群上报检查 (${channel})` : `手动上报 (${channel})`}`);
+  }
+  if (['both', 'wechat'].includes(channel)) {
+    const restart = maybeEnqueueWechatyRestartPrecondition({
+      source: `report:${source}`,
+      reason: `${source === 'scheduler' ? '定时' : '手动'}微信群上报前置登录检查`,
+    });
+    if (restart?.alreadyQueued) {
+      appendTaskQueueLog('微信群上报前置条件：微信机器人重启任务已在队列中。');
+    }
   }
 
   const task = {
@@ -2537,6 +2766,7 @@ const server = createServer(async (request, response) => {
         sync: summarizeTask(activeSync),
         report: summarizeTask(activeReport),
         reservation: summarizeTask(activeReservation),
+        wechatRestart: summarizeTask(activeWechatRestart),
         scheduler: summarizeTask(activeScheduler),
         heartbeat: summarizeTask(heartbeatMonitor),
         monitorNotification: summarizeTask(monitorNotificationQueue),
