@@ -11,10 +11,14 @@ let serverProcess = null;
 let runtimePort = 0;
 let pendingUpdate = null;
 let quitting = false;
+let serviceWatchdogTimer = null;
+let serviceHealthFailures = 0;
 
 const DEFAULT_SERVICE_START_TIMEOUT_MS = process.platform === 'win32' ? 90_000 : 45_000;
 const WECHAT_DESKTOP_AUTOMATION_TIMEOUT_MS = 45_000;
 const WECHAT_DESKTOP_AUTOMATION_LOCK_TTL_MS = 5 * 60 * 1000;
+const SERVICE_WATCHDOG_INTERVAL_MS = 60_000;
+const SERVICE_WATCHDOG_MAX_FAILURES = 3;
 
 function desktopPackage() {
   return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
@@ -679,6 +683,55 @@ function waitForHealth(port, timeout = serviceStartTimeoutMs()) {
   });
 }
 
+function probeServiceHealth(port, timeout = 5000) {
+  return new Promise((resolve, reject) => {
+    if (!port) {
+      reject(new Error('service port is not ready'));
+      return;
+    }
+    const request = http.get(`http://127.0.0.1:${port}/api/health`, (response) => {
+      response.resume();
+      if (response.statusCode === 200) resolve(true);
+      else reject(new Error(`health status ${response.statusCode}`));
+    });
+    request.once('error', reject);
+    request.setTimeout(timeout, () => request.destroy(new Error(`health timeout ${timeout}ms`)));
+  });
+}
+
+function startServiceWatchdog() {
+  if (serviceWatchdogTimer) return;
+  serviceWatchdogTimer = setInterval(async () => {
+    if (quitting) return;
+    try {
+      if (!serverProcess) throw new Error('service process is not running');
+      await probeServiceHealth(runtimePort);
+      serviceHealthFailures = 0;
+    } catch (error) {
+      serviceHealthFailures += 1;
+      appendServiceLog(serviceLogPath(), `[desktop-watchdog] health failed ${serviceHealthFailures}/${SERVICE_WATCHDOG_MAX_FAILURES}: ${error.message}`);
+      if (serviceHealthFailures < SERVICE_WATCHDOG_MAX_FAILURES) return;
+      serviceHealthFailures = 0;
+      try {
+        appendServiceLog(serviceLogPath(), '[desktop-watchdog] restarting local service');
+        await startServer(false);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          await mainWindow.loadURL(`http://127.0.0.1:${runtimePort}`);
+        }
+        appendServiceLog(serviceLogPath(), '[desktop-watchdog] local service restarted');
+      } catch (restartError) {
+        appendServiceLog(serviceLogPath(), `[desktop-watchdog] restart failed ${restartError.message}`);
+      }
+    }
+  }, SERVICE_WATCHDOG_INTERVAL_MS);
+  serviceWatchdogTimer.unref?.();
+}
+
+function stopServiceWatchdog() {
+  if (serviceWatchdogTimer) clearInterval(serviceWatchdogTimer);
+  serviceWatchdogTimer = null;
+}
+
 function stopServer() {
   if (!serverProcess) return Promise.resolve();
   const child = serverProcess;
@@ -770,6 +823,7 @@ async function createWindow() {
     return { action: 'deny' };
   });
   await mainWindow.loadURL(`http://127.0.0.1:${runtimePort}`);
+  startServiceWatchdog();
   setTimeout(() => ipcMain.emit('runtime:auto-check'), 5000);
 }
 
@@ -849,5 +903,6 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   quitting = true;
+  stopServiceWatchdog();
   void stopServer();
 });

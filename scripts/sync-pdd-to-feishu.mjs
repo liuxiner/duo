@@ -14,6 +14,7 @@ import { createPddBrowserContext, closePddBrowserContext } from '../pdd-automati
 import { collectAppointmentPayload } from '../pdd-automation/jobs/sync-appointment.mjs';
 import { writeAppointmentRowsToFeishu } from '../pdd-automation/storage/feishu.mjs';
 import { rowsToCsv, writeFeishuMirrorCsv } from '../pdd-automation/storage/local-csv.mjs';
+import { withJobLock } from './job-lock.mjs';
 import {
   pddStorageStatePath,
   readJsonEnv,
@@ -1209,7 +1210,7 @@ async function main() {
   }
 }
 
-main().then(
+withJobLock('sync-pdd-to-feishu', main, { root: ROOT }).then(
   () => process.exit(0),
   (error) => {
     console.error(error);

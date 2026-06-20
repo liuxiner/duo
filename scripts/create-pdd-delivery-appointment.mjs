@@ -5,6 +5,7 @@ import {
   pddStorageStatePath,
   queryWarehouseGroupListWithExpress,
 } from '../pdd-automation/clients/pdd-client.mjs';
+import { withJobLock } from './job-lock.mjs';
 import { closeBlockingModals } from './pdd-page-tools.mjs';
 
 const ROOT = path.resolve(process.env.MAO_WORKSPACE_PATH || process.cwd());
@@ -19,7 +20,7 @@ const DEFAULT_RESERVATION_ITEMS = [
     centerWarehouses: ['杭州中心1仓', '杭州中心2仓'],
     driverMobile: '15090976592',
     quantity: 100,
-    preferredHour: '12:00',
+    preferredHour: '21:00',
     enabled: false,
   },
   {
@@ -29,7 +30,7 @@ const DEFAULT_RESERVATION_ITEMS = [
     centerWarehouses: ['宁波1仓'],
     driverMobile: '13486621270',
     quantity: 100,
-    preferredHour: '12:00',
+    preferredHour: '21:00',
     enabled: false,
   },
   {
@@ -39,7 +40,7 @@ const DEFAULT_RESERVATION_ITEMS = [
     centerWarehouses: ['温州1仓'],
     driverMobile: '17767375369',
     quantity: 100,
-    preferredHour: '12:00',
+    preferredHour: '21:00',
     enabled: false,
   },
 ];
@@ -141,7 +142,7 @@ function targetDeliveryDateKey() {
 }
 
 function deliverySlotFor(rule, deliveryDate) {
-  const [hour, minute] = normalizeTime(rule.preferredHour || '12:00', '12:00').split(':').map(Number);
+  const [hour, minute] = normalizeTime(rule.preferredHour || '21:00', '21:00').split(':').map(Number);
   const endHour = (hour + 1) % 24;
   return {
     deliveryDate,
@@ -182,7 +183,7 @@ function normalizeRule(item = {}, index = 0) {
     centerWarehouses: configuredWarehouses.length ? configuredWarehouses : [...(defaults.centerWarehouses || [])],
     driverMobile: String(item.driverMobile || item['司机号码'] || defaults.driverMobile || '').trim(),
     quantity: Number.isFinite(quantity) && quantity > 0 ? Math.round(quantity) : 100,
-    preferredHour: normalizeTime(item.preferredHour || item['预约时间'] || defaults.preferredHour, '10:00'),
+    preferredHour: normalizeTime(item.preferredHour || item['预约时间'] || item['送货时间'] || defaults.preferredHour, '21:00'),
     enabled: enabledFromValue(item.enabled ?? item['状态'], defaults.enabled ?? false),
   };
 }
@@ -1049,19 +1050,21 @@ const cfg = {
 
 let browser;
 let context;
-try {
-  ({ browser, context } = await createPddBrowserContext(cfg));
-  const { page } = await loginAndSavePddStorageState(cfg, context);
-  for (const rule of rules) {
-    await runRule(page, context, rule, { dryRun });
+await withJobLock(`delivery-appointment:${dryRun ? 'dry-run' : 'commit'}`, async () => {
+  try {
+    ({ browser, context } = await createPddBrowserContext(cfg));
+    const { page } = await loginAndSavePddStorageState(cfg, context);
+    for (const rule of rules) {
+      await runRule(page, context, rule, { dryRun });
+    }
+    console.log(`预约${dryRun ? '演练' : '执行'}完成：${rules.length} 条规则。`);
+  } finally {
+    if (!dryRun) await closePddBrowserContext(browser, context);
+    else if (browser) {
+      // CDP 模式下仅断开 Playwright，保留页面供人工确认 dry-run 结果。
+      await closePddBrowserContext(browser, context);
+    }
   }
-  console.log(`预约${dryRun ? '演练' : '执行'}完成：${rules.length} 条规则。`);
-} finally {
-  if (!dryRun) await closePddBrowserContext(browser, context);
-  else if (browser) {
-    // CDP 模式下仅断开 Playwright，保留页面供人工确认 dry-run 结果。
-    await closePddBrowserContext(browser, context);
-  }
-}
+}, { root: ROOT });
 
 if (dryRun) process.exit(0);

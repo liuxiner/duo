@@ -1,6 +1,7 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { withJobLock } from './job-lock.mjs';
 import {
   closeBlockingModals,
   getUniqueServicePage,
@@ -20,7 +21,8 @@ let reportBrowser = null;
 let reportContext = null;
 const DEFAULT_NOTIFICATION_CONFIG = {
   adminGroup: '杭州交仓',
-  senderStrategy: 'desktop_wechat',
+  mentionNames: ['鑫'],
+  senderStrategy: 'http_api',
   sendIntervalSeconds: { min: 2, max: 5 },
   maxRetries: REPORT_MAX_ATTEMPTS - 1,
   retryDelaySeconds: REPORT_RETRY_DELAY_MS / 1000,
@@ -151,6 +153,9 @@ function normalizeNotificationConfig(input = {}) {
   const max = positiveInteger(input.sendIntervalSeconds?.max ?? input.sendIntervalMax, defaults.sendIntervalSeconds.max);
   return {
     adminGroup: String(input.adminGroup || defaults.adminGroup).trim(),
+    mentionNames: Array.isArray(input.mentionNames)
+      ? input.mentionNames.map((name) => String(name).trim()).filter(Boolean)
+      : String(input.mentionNames || defaults.mentionNames.join(',')).split(/[,，]/).map((name) => name.trim()).filter(Boolean),
     senderStrategy: String(input.senderStrategy || defaults.senderStrategy).trim(),
     sendIntervalSeconds: {
       min: Math.min(min, max),
@@ -229,10 +234,10 @@ function enabledReportConfigs(configs) {
   return configs.filter((item) => item.enabled);
 }
 
-function reportIsDue(item, { all = false, now = new Date(), ids = [] } = {}) {
+function reportIsDue(item, { all = false, now = new Date(), ids = [], scheduledTime = '' } = {}) {
   if (all) return true;
   if (ids.length) return ids.includes(item.id);
-  return item.sendTimes.includes(currentBeijingTime(now));
+  return item.sendTimes.includes(scheduledTime || currentBeijingTime(now));
 }
 
 function reportFilterKeywords(item) {
@@ -980,10 +985,26 @@ async function sendReportFailureAlert(cfg, token, notification, failure) {
   try {
     const alertToken = token || await tenantToken(cfg);
     const chat = await findChat(alertToken, cfg, adminGroup);
+    let mentionNodes = [];
+    let mentionResolveError = null;
+    if (notification?.mentionNames?.length) {
+      try {
+        const members = await findMentionMembers(alertToken, chat.chat_id, cfg, notification.mentionNames);
+        mentionNodes = members.flatMap((member) => [
+          { tag: 'at', user_id: member.member_id, user_name: member.name },
+          { tag: 'text', text: ' ' },
+        ]);
+      } catch (error) {
+        mentionResolveError = error;
+      }
+    }
     const rows = [
-      [{ tag: 'text', text: `${beijingTimestamp()} 定时上报失败` }],
+      [...mentionNodes, { tag: 'text', text: `${beijingTimestamp()} 定时上报失败` }],
       [{ tag: 'text', text: `原因：${failure.reason || '未知错误'}` }],
     ];
+    if (mentionResolveError) {
+      rows.push([{ tag: 'text', text: `告警 @ 成员解析失败：${mentionResolveError.message}` }]);
+    }
     const ruleInfo = [
       failure.ruleLabel ? `规则 ${failure.ruleLabel}` : '',
       failure.warehouse || failure.groupName || '',
@@ -1032,13 +1053,14 @@ async function runConfiguredReports(cfg, token, configs, {
   ids = [],
   channel = 'both',
   notification = normalizeNotificationConfig(),
+  scheduledTime = '',
 } = {}) {
   const maxAttempts = Math.max(1, positiveInteger(notification.maxRetries, DEFAULT_NOTIFICATION_CONFIG.maxRetries) + 1);
   const retryDelayMs = positiveInteger(notification.retryDelaySeconds, DEFAULT_NOTIFICATION_CONFIG.retryDelaySeconds) * 1000;
   const active = enabledReportConfigs(configs);
-  const due = mergeDuplicateReports(active.filter((item) => reportIsDue(item, { all, ids })));
+  const due = mergeDuplicateReports(active.filter((item) => reportIsDue(item, { all, ids, scheduledTime })));
   if (!due.length) {
-    console.log(`当前 ${currentBeijingTime()} 没有需要上报的启用规则。`);
+    console.log(`当前 ${scheduledTime || currentBeijingTime()} 没有需要上报的启用规则。`);
     return;
   }
   if (channel === 'wechat') {
@@ -1146,6 +1168,7 @@ async function runOnce({ dryRun = false, all = false, ids = [], channel = 'both'
   const token = dryRun || channel === 'wechat' ? null : await tenantToken(cfg);
   const reportConfig = await loadReportConfig(cfg);
   const reportConfigs = reportConfig.items;
+  const scheduledTime = normalizeTime(process.env.PDD_REPORT_SCHEDULED_TIME || '');
   if (reportConfigs.length) {
     await runConfiguredReports(cfg, token, reportConfigs, {
       dryRun,
@@ -1153,6 +1176,7 @@ async function runOnce({ dryRun = false, all = false, ids = [], channel = 'both'
       ids,
       channel,
       notification: reportConfig.notification,
+      scheduledTime,
     });
   } else if (dryRun) {
     const report = await captureScreenshot(cfg);
@@ -1184,7 +1208,8 @@ async function scheduler({ channel = 'both' } = {}) {
       console.log(`${currentBeijingTime()} 定时上报未开启。`);
       continue;
     }
-    await runOnce({ channel }).catch(printRunError);
+    await withJobLock(`scheduled-report:${channel}`, () => runOnce({ channel }), { root: ROOT })
+      .catch(printRunError);
   }
 }
 
@@ -1197,7 +1222,8 @@ const requestedChannel = channelArg ? channelArg.slice('--channel='.length) : 'b
 const channel = ['both', 'feishu', 'wechat'].includes(requestedChannel) ? requestedChannel : 'both';
 if (args.has('--once') || args.has('--dry-run')) {
   let exitCode = 0;
-  await runOnce({ dryRun: args.has('--dry-run'), all: args.has('--all'), ids, channel }).catch((error) => {
+  const dryRun = args.has('--dry-run');
+  await withJobLock(`manual-report:${channel}${dryRun ? ':dry-run' : ''}`, () => runOnce({ dryRun, all: args.has('--all'), ids, channel }), { root: ROOT }).catch((error) => {
     printRunError(error);
     exitCode = 1;
   });

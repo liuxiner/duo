@@ -1,11 +1,12 @@
 import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pddStorageStatePath } from '../pdd-automation/clients/pdd-client.mjs';
 import { loadPddStorageState, pddStorageStateHasUsableCookies } from '../pdd-automation/auth/session.mjs';
+import { readJobLockStatus } from '../scripts/job-lock.mjs';
 import { KANBAN_DEFAULTS, loadKanbanData } from './kanban-data.mjs';
 
 const WEB_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -52,6 +53,9 @@ const DESKTOP_WECHAT_LOG_RE = /^wechat-desktop-automation-(\d{4}-\d{2}-\d{2})\.l
 const DESKTOP_WECHAT_LOCK_PATH = path.join(LOG_DIR, 'wechat-desktop-automation.lock');
 const DESKTOP_WECHAT_LOCK_TTL_MS = 5 * 60 * 1000;
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+const REPORT_TIMEOUT_MS = 30 * 60 * 1000;
+const RESERVATION_TIMEOUT_MS = 30 * 60 * 1000;
+const TASK_KILL_GRACE_MS = 5 * 1000;
 const FEISHU_REPORT_ENABLED = process.env.MAO_ENABLE_FEISHU_REPORT === 'true';
 const WEB_WECHAT_ENABLED = process.platform === 'win32' || process.env.MAO_ENABLE_WEB_WECHAT === 'true';
 const DESKTOP_WECHAT_ENABLED = process.platform === 'darwin';
@@ -60,8 +64,21 @@ let activeSync = null;
 let activeReport = null;
 let activeReservation = null;
 let activeScheduler = null;
+let schedulerTimer = null;
+let schedulerLastMinuteKey = '';
+let taskQueueRunning = false;
+let taskSequence = 0;
 let heartbeatTimer = null;
 let heartbeatRunning = false;
+const taskQueue = {
+  status: 'idle',
+  logs: [],
+  pending: [],
+  active: null,
+  lastCompleted: null,
+  startedAt: '',
+  updatedAt: '',
+};
 const heartbeatMonitor = { status: 'idle', logs: [], previewLogs: [] };
 const monitorNotificationQueue = { status: 'idle', logs: [], previewLogs: [] };
 const desktopWechatSmokeState = {
@@ -110,7 +127,8 @@ const DEFAULT_REPORT_CONFIG = {
   schedulerEnabled: false,
   notification: {
     adminGroup: '杭州交仓',
-    senderStrategy: 'desktop_wechat',
+    mentionNames: ['鑫'],
+    senderStrategy: 'http_api',
     sendIntervalSeconds: { min: 2, max: 5 },
     maxRetries: 2,
     retryDelaySeconds: 10,
@@ -136,7 +154,7 @@ const DEFAULT_REPORT_CONFIG = {
         centerWarehouses: ['杭州中心1仓', '杭州中心2仓'],
         driverMobile: '15090976592',
         quantity: 100,
-        preferredHour: '12:00',
+        preferredHour: '21:00',
         firstNotifyGroup: '杭州交仓',
         lastNotifyGroup: '杭州交仓',
         enabled: false,
@@ -148,7 +166,7 @@ const DEFAULT_REPORT_CONFIG = {
         centerWarehouses: ['宁波1仓'],
         driverMobile: '13486621270',
         quantity: 100,
-        preferredHour: '12:00',
+        preferredHour: '21:00',
         firstNotifyGroup: '安如山~宁波中泓北港云仓',
         lastNotifyGroup: '安如山-杭州办公室',
         enabled: false,
@@ -160,7 +178,7 @@ const DEFAULT_REPORT_CONFIG = {
         centerWarehouses: ['温州1仓'],
         driverMobile: '17767375369',
         quantity: 100,
-        preferredHour: '12:00',
+        preferredHour: '21:00',
         firstNotifyGroup: '杭州安如山—温州诚达云仓',
         lastNotifyGroup: '安如山-杭州办公室',
         enabled: false,
@@ -511,6 +529,20 @@ function compactLogs(logs = []) {
   return logs.slice(-8);
 }
 
+function appendLogs(target, chunk) {
+  const lines = String(chunk)
+    .replace(/\u001b\[[0-?]*[ -\/]*[@-~]/g, '')
+    .split(/\r?\n/)
+    .filter(Boolean);
+  target.logs.push(...lines);
+  if (target.logs.length > 500) target.logs.splice(0, target.logs.length - 500);
+}
+
+function appendTaskQueueLog(message) {
+  appendLogs(taskQueue, `[任务队列] ${beijingTimestamp()} ${message}`);
+  taskQueue.updatedAt = nowIso();
+}
+
 function beijingDateKey(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
@@ -541,11 +573,22 @@ async function listDesktopWechatLogs() {
 async function readDesktopWechatLogLines(name, maxLines = 600) {
   if (!DESKTOP_WECHAT_LOG_RE.test(name)) return [];
   const logPath = path.join(LOG_DIR, name);
+  let handle;
   try {
-    const text = await readFile(logPath, 'utf8');
+    const info = await stat(logPath);
+    const maxBytes = 512 * 1024;
+    const start = Math.max(0, info.size - maxBytes);
+    const length = info.size - start;
+    handle = await open(logPath, 'r');
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, start);
+    let text = buffer.toString('utf8');
+    if (start > 0) text = text.replace(/^[^\n]*(?:\n|$)/, '');
     return text.split(/\r?\n/).filter(Boolean).slice(-maxLines);
   } catch {
     return [];
+  } finally {
+    await handle?.close().catch(() => {});
   }
 }
 
@@ -724,16 +767,25 @@ async function sendMonitorErrorNotification(failure) {
   monitorNotificationQueue.error = null;
   try {
     const config = await readReportConfig();
-    const adminGroup = config.notification?.adminGroup || DEFAULT_REPORT_CONFIG.notification.adminGroup;
+    const notification = config.notification || defaultNotificationConfig();
+    const adminGroup = notification.adminGroup || DEFAULT_REPORT_CONFIG.notification.adminGroup;
     appendMonitorNotificationLog(`队列 1/1：管理通知群 ${adminGroup} -> 发送监控错误的上报。`);
     const token = await feishuTenantToken();
     const chat = await findFeishuChatWithFallback(token, adminGroup, '管理通知群');
     if (chat.fallbackReason) appendMonitorNotificationLog(chat.fallbackReason);
+    const mentionNodes = [];
+    for (const name of notification.mentionNames || []) {
+      const member = await findFeishuMember(token, chat.chat_id, name);
+      mentionNodes.push(
+        { tag: 'at', user_id: member.member_id, user_name: member.name },
+        { tag: 'text', text: ' ' },
+      );
+    }
     const content = {
       zh_cn: {
         title: '多多数字管家监控错误',
         content: [
-          [{ tag: 'text', text: `${beijingTimestamp()} 微信上报通道自检未通过` }],
+          [...mentionNodes, { tag: 'text', text: `${beijingTimestamp()} 微信上报通道自检未通过` }],
           [{ tag: 'text', text: `错误：${failure.reason}` }],
           [{ tag: 'text', text: '已禁用微信上报按钮和自动上报入口，请修复微信登录/权限/安装后重新检测。' }],
         ],
@@ -788,7 +840,6 @@ function markDesktopWechatSmokeFailure(reason, phase = 'smoke') {
   desktopWechatSmokeState.disabled = true;
   desktopWechatSmokeState.reason = failure.reason;
   desktopWechatSmokeState.checkedAt = failure.checkedAt;
-  stopScheduler();
   disableSchedulerConfigForWechatFailure().catch((error) => {
     appendMonitorNotificationLog(`关闭定时上报配置异常：${error.message}`);
   });
@@ -997,6 +1048,7 @@ function defaultNotificationConfig() {
   const defaults = DEFAULT_REPORT_CONFIG.notification;
   return {
     ...defaults,
+    mentionNames: [...defaults.mentionNames],
     sendIntervalSeconds: { ...defaults.sendIntervalSeconds },
   };
 }
@@ -1007,6 +1059,7 @@ function normalizeNotificationConfig(input = {}) {
   const max = normalizePositiveInteger(input.sendIntervalSeconds?.max ?? input.sendIntervalMax, defaults.sendIntervalSeconds.max);
   return {
     adminGroup: String(input.adminGroup || defaults.adminGroup).trim(),
+    mentionNames: normalizeNameList(input.mentionNames?.length ? input.mentionNames : defaults.mentionNames),
     senderStrategy: ['wechaty', 'desktop_wechat', 'http_api', 'weixin_v4'].includes(input.senderStrategy)
       ? input.senderStrategy
       : defaults.senderStrategy,
@@ -1049,7 +1102,7 @@ function normalizeReservationItem(item = {}, index = 0) {
     centerWarehouses: centerWarehouses.length ? centerWarehouses : [...(defaults.centerWarehouses || [])],
     driverMobile: String(item.driverMobile || item['司机号码'] || defaults.driverMobile || '').trim(),
     quantity,
-    preferredHour: normalizeConfigTime(item.preferredHour || item['预约时间'] || defaults.preferredHour) || '10:00',
+    preferredHour: normalizeConfigTime(item.preferredHour || item['预约时间'] || item['送货时间'] || defaults.preferredHour) || '21:00',
     firstNotifyGroup: String(item.firstNotifyGroup || item['首约通知群'] || defaults.firstNotifyGroup || '').trim(),
     lastNotifyGroup: String(item.lastNotifyGroup || item['尾约通知群'] || defaults.lastNotifyGroup || '').trim(),
     enabled: enabledFromValue(item.enabled ?? item['状态'] ?? item['状态(启/停)'], defaults.enabled ?? false),
@@ -1141,13 +1194,254 @@ async function refreshKanbanReviewAfterSync(task, append) {
   return payload;
 }
 
-function startSync(from, to) {
-  const logs = [];
-  const rawTarget = kanbanRawSyncTarget();
-  const child = spawn(process.execPath, [path.join(NODE_ENTRY_ROOT, 'scripts/sync-pdd-to-feishu.mjs')], {
+function isQueueTaskActive(task) {
+  return ['queued', 'running', 'resetting'].includes(task?.status);
+}
+
+function scheduleConfigEnabled(config = {}) {
+  return Boolean(
+    config.schedulerEnabled
+    || config.reservation?.enabled
+    || config.scheduleMonitor?.enabled
+    || config.violationCheck?.enabled
+  );
+}
+
+function timeListIncludes(times = [], time = '') {
+  return (Array.isArray(times) ? times : []).includes(time);
+}
+
+function summarizeQueueTask(task) {
+  if (!task) return null;
+  const { child, onSuccess, env, ...safeTask } = task;
+  return safeTask;
+}
+
+function summarizeTaskQueue() {
+  return {
+    status: taskQueue.status,
+    logs: taskQueue.logs,
+    previewLogs: compactLogs(taskQueue.logs),
+    pending: taskQueue.pending.map(summarizeQueueTask),
+    active: summarizeQueueTask(taskQueue.active),
+    lastCompleted: summarizeQueueTask(taskQueue.lastCompleted),
+    updatedAt: taskQueue.updatedAt,
+  };
+}
+
+function queuedTaskWithKey(key) {
+  return taskQueue.active?.key === key || taskQueue.pending.some((task) => task.key === key);
+}
+
+function safeKill(child, signal = 'SIGTERM') {
+  if (!child || child.killed || child.exitCode != null) return false;
+  try {
+    return child.kill(signal);
+  } catch {
+    return false;
+  }
+}
+
+function enqueueChildTask(task) {
+  if (queuedTaskWithKey(task.key)) {
+    throw new Error(`任务已在中心队列中：${task.label}`);
+  }
+  const queuedTask = {
+    ...task,
+    id: `task-${Date.now()}-${++taskSequence}`,
+    status: 'queued',
+    queuedAt: nowIso(),
+    logs: task.logs || [],
+  };
+  queuedTask.taskRef.status = 'queued';
+  queuedTask.taskRef.queueId = queuedTask.id;
+  queuedTask.taskRef.queuedAt = queuedTask.queuedAt;
+  appendLogs(queuedTask.taskRef, `[queue] 已加入中心任务队列：${queuedTask.label}`);
+  taskQueue.pending.push(queuedTask);
+  taskQueue.status = taskQueue.active ? 'running' : 'queued';
+  appendTaskQueueLog(`入队：${queuedTask.label}；等待 ${taskQueue.pending.length} 个任务。`);
+  setTimeout(processTaskQueue, 0).unref?.();
+  return queuedTask;
+}
+
+async function finishQueuedTask(task, { code = 0, signal = '', error = null } = {}) {
+  if (task.finishedAt) return;
+  delete task.taskRef.child;
+  task.finishedAt = nowIso();
+  task.exitCode = code;
+  task.signal = signal;
+  taskQueue.active = null;
+
+  if (error || task.timedOut || code !== 0) {
+    const reason = error?.message || (task.timedOut ? '任务执行超时，已自动重置' : `子进程退出 code=${code} signal=${signal || '-'}`);
+    task.status = 'failed';
+    task.error = reason;
+    task.taskRef.status = 'failed';
+    task.taskRef.error = reason;
+    task.taskRef.exitCode = code;
+    task.taskRef.signal = signal;
+    task.taskRef.finishedAt = task.finishedAt;
+    appendLogs(task.taskRef, `[queue] 任务失败：${reason}`);
+    appendTaskQueueLog(`失败：${task.label}；${reason}`);
+  } else {
+    try {
+      if (task.onSuccess) await task.onSuccess(task.taskRef);
+      task.status = 'completed';
+      task.taskRef.status = task.successStatus || 'completed';
+      task.taskRef.finishedAt = task.finishedAt;
+      task.taskRef.exitCode = code;
+      appendLogs(task.taskRef, `[queue] 任务完成：${task.label}`);
+      appendTaskQueueLog(`完成：${task.label}`);
+    } catch (successError) {
+      task.status = 'failed';
+      task.error = successError.message;
+      task.taskRef.status = 'failed';
+      task.taskRef.error = successError.message;
+      task.taskRef.finishedAt = nowIso();
+      appendLogs(task.taskRef, `[queue] 收尾失败：${successError.message}`);
+      appendTaskQueueLog(`收尾失败：${task.label}；${successError.message}`);
+    }
+  }
+
+  taskQueue.lastCompleted = task;
+  taskQueue.status = taskQueue.pending.length ? 'queued' : 'idle';
+  taskQueueRunning = false;
+  setTimeout(processTaskQueue, 0).unref?.();
+}
+
+function processTaskQueue() {
+  if (taskQueueRunning || taskQueue.active || !taskQueue.pending.length) return;
+  const task = taskQueue.pending.shift();
+  taskQueueRunning = true;
+  taskQueue.active = task;
+  taskQueue.status = 'running';
+  task.startedAt = nowIso();
+  task.status = 'running';
+  task.taskRef.status = 'running';
+  task.taskRef.startedAt = task.startedAt;
+  appendLogs(task.taskRef, `[queue] 开始执行：${task.label}`);
+  appendTaskQueueLog(`开始：${task.label}`);
+
+  const child = spawn(process.execPath, task.args, {
     cwd: ROOT,
     env: {
       ...process.env,
+      ELECTRON_RUN_AS_NODE: process.versions.electron ? '1' : process.env.ELECTRON_RUN_AS_NODE,
+      ...task.env,
+    },
+    stdio: ['inherit', 'pipe', 'pipe'],
+  });
+  task.child = child;
+  task.taskRef.child = child;
+  child.stdout.on('data', (chunk) => appendLogs(task.taskRef, chunk));
+  child.stderr.on('data', (chunk) => appendLogs(task.taskRef, chunk));
+
+  let timeout = null;
+  let forceKill = null;
+  let finished = false;
+  const cleanup = () => {
+    if (timeout) clearTimeout(timeout);
+    if (forceKill) clearTimeout(forceKill);
+  };
+  const finish = (result) => {
+    if (finished) return;
+    finished = true;
+    cleanup();
+    finishQueuedTask(task, result).catch((error) => {
+      appendTaskQueueLog(`队列收尾异常：${error.message}`);
+      taskQueueRunning = false;
+      taskQueue.active = null;
+      taskQueue.status = taskQueue.pending.length ? 'queued' : 'idle';
+      setTimeout(processTaskQueue, 0).unref?.();
+    });
+  };
+
+  timeout = setTimeout(() => {
+    task.timedOut = true;
+    task.status = 'resetting';
+    task.taskRef.status = 'resetting';
+    appendLogs(task.taskRef, `[watchdog] ${task.label} 超过 ${Math.round(task.timeoutMs / 1000)} 秒，发送 SIGTERM。`);
+    appendTaskQueueLog(`超时重置：${task.label}。`);
+    const cancelled = taskQueue.pending.splice(0);
+    for (const pendingTask of cancelled) {
+      pendingTask.status = 'cancelled';
+      pendingTask.taskRef.status = 'cancelled';
+      pendingTask.taskRef.finishedAt = nowIso();
+      appendLogs(pendingTask.taskRef, `[watchdog] 当前任务超时，等待队列已自动清空。`);
+    }
+    if (cancelled.length) appendTaskQueueLog(`已自动清空 ${cancelled.length} 个等待任务。`);
+    safeKill(child, 'SIGTERM');
+    forceKill = setTimeout(() => {
+      appendLogs(task.taskRef, `[watchdog] ${task.label} 未退出，发送 SIGKILL。`);
+      safeKill(child, 'SIGKILL');
+    }, TASK_KILL_GRACE_MS);
+    forceKill.unref?.();
+  }, task.timeoutMs);
+  timeout.unref?.();
+
+  child.once('error', (error) => finish({ code: 1, error }));
+  child.once('close', (code, signal) => finish({ code, signal }));
+}
+
+function resetTaskQueue(reason = 'manual reset') {
+  const active = taskQueue.active;
+  if (active?.child) {
+    active.timedOut = true;
+    appendLogs(active.taskRef, `[watchdog] ${reason}，正在终止当前任务。`);
+    safeKill(active.child, 'SIGTERM');
+    setTimeout(() => safeKill(active.child, 'SIGKILL'), TASK_KILL_GRACE_MS).unref?.();
+  }
+  for (const task of taskQueue.pending.splice(0)) {
+    task.status = 'cancelled';
+    task.taskRef.status = 'cancelled';
+    task.taskRef.finishedAt = nowIso();
+    appendLogs(task.taskRef, `[queue] 已取消：${reason}`);
+  }
+  appendTaskQueueLog(`队列重置：${reason}`);
+}
+
+function runTaskQueueWatchdog() {
+  const active = taskQueue.active;
+  if (active?.child?.pid && !isPidAlive(active.child.pid)) {
+    appendLogs(active.taskRef, '[watchdog] 子进程已不存在，自动重置任务状态。');
+    finishQueuedTask(active, { code: 1, signal: 'missing', error: new Error('子进程已不存在') }).catch((error) => {
+      appendTaskQueueLog(`watchdog 重置失败：${error.message}`);
+    });
+    return;
+  }
+  if (!active && taskQueueRunning) {
+    appendTaskQueueLog('发现队列运行标记残留，自动恢复。');
+    taskQueueRunning = false;
+    taskQueue.status = taskQueue.pending.length ? 'queued' : 'idle';
+    setTimeout(processTaskQueue, 0).unref?.();
+  }
+}
+
+function startSync(from, to) {
+  const key = `sync:${from}:${to}`;
+  if (queuedTaskWithKey(key)) {
+    throw new Error(`任务已在中心队列中：同步 ${from} -> ${to}`);
+  }
+  const task = {
+    from,
+    to,
+    status: 'idle',
+    phase: 'order-management',
+    progressText: '等待中心任务队列执行',
+    logs: [],
+    requestedAt: nowIso(),
+    rawTargetUrl: '',
+  };
+  activeSync = task;
+  const rawTarget = kanbanRawSyncTarget();
+  task.rawTargetUrl = rawTarget.label;
+  if (rawTarget.label) appendLogs(task, `[server] Order Management 写入目标：${rawTarget.label}`);
+  enqueueChildTask({
+    key,
+    label: `同步 ${from} -> ${to}`,
+    taskRef: task,
+    args: [path.join(NODE_ENTRY_ROOT, 'scripts/sync-pdd-to-feishu.mjs')],
+    env: {
       ELECTRON_RUN_AS_NODE: process.versions.electron ? '1' : process.env.ELECTRON_RUN_AS_NODE,
       ...rawTarget.env,
       PDD_DATE_FROM: from,
@@ -1155,67 +1449,14 @@ function startSync(from, to) {
       PDD_SELECT_YESTERDAY: 'false',
       PDD_AUTO_WAIT_FOR_LOGIN: 'true',
     },
-    stdio: ['inherit', 'pipe', 'pipe'],
+    timeoutMs: SYNC_TIMEOUT_MS,
+    onSuccess: async (syncTask) => {
+      await refreshKanbanReviewAfterSync(syncTask, (line) => appendLogs(syncTask, line));
+      syncTask.phase = 'completed';
+      syncTask.progressText = 'Order Management 和 Kanban Review 已刷新';
+    },
   });
-
-  activeSync = {
-    from,
-    to,
-    status: 'running',
-    phase: 'order-management',
-    progressText: '正在抓取 PDD Order Management 并写入飞书',
-    logs,
-    startedAt: new Date().toISOString(),
-    rawTargetUrl: rawTarget.label,
-    child,
-  };
-  const append = (chunk) => {
-    logs.push(...String(chunk).split(/\r?\n/).filter(Boolean));
-    if (logs.length > 500) logs.splice(0, logs.length - 500);
-  };
-  if (rawTarget.label) append(`[server] Order Management 写入目标：${rawTarget.label}`);
-  child.stdout.on('data', append);
-  child.stderr.on('data', append);
-
-  const timeout = setTimeout(() => {
-    append(`[server] Sync timed out after ${SYNC_TIMEOUT_MS / 1000}s, killing process.`);
-    child.kill('SIGKILL');
-  }, SYNC_TIMEOUT_MS);
-
-  const cleanup = () => clearTimeout(timeout);
-
-  child.on('error', (error) => {
-    cleanup();
-    append(error.message);
-    activeSync.status = 'failed';
-    activeSync.phase = 'failed';
-    activeSync.progressText = '同步启动失败';
-    activeSync.finishedAt = new Date().toISOString();
-  });
-  child.on('close', async (code) => {
-    cleanup();
-    activeSync.exitCode = code;
-    if (code !== 0) {
-      activeSync.status = 'failed';
-      activeSync.phase = 'failed';
-      activeSync.progressText = 'Order Management 同步失败';
-      activeSync.finishedAt = new Date().toISOString();
-      return;
-    }
-    try {
-      await refreshKanbanReviewAfterSync(activeSync, append);
-      activeSync.status = 'completed';
-      activeSync.phase = 'completed';
-      activeSync.progressText = 'Order Management 和 Kanban Review 已刷新';
-    } catch (error) {
-      append(`[server] Kanban Review 刷新失败：${error.message}`);
-      activeSync.status = 'failed';
-      activeSync.phase = 'failed';
-      activeSync.progressText = 'Kanban Review 刷新失败';
-      activeSync.error = error.message;
-    }
-    activeSync.finishedAt = new Date().toISOString();
-  });
+  return task;
 }
 
 async function readReportConfig() {
@@ -1231,6 +1472,12 @@ function normalizeConfig(config) {
   const items = Array.isArray(config?.items) ? config.items : [];
   if (!items.length) throw new Error('至少需要一条上报规则。');
   const heartbeatInput = config?.heartbeat || {};
+  const notificationInput = config?.notification || {};
+  const notification = normalizeNotificationConfig({
+    ...notificationInput,
+    adminGroup: notificationInput.adminGroup || heartbeatInput.feishuChatName,
+    mentionNames: notificationInput.mentionNames?.length ? notificationInput.mentionNames : heartbeatInput.mentionNames,
+  });
   const defaultHeartbeat = defaultHeartbeatConfig();
   const intervalMinutes = Number(heartbeatInput.intervalMinutes || defaultHeartbeat.intervalMinutes);
   return {
@@ -1238,10 +1485,10 @@ function normalizeConfig(config) {
     heartbeat: {
       enabled: typeof heartbeatInput.enabled === 'boolean' ? heartbeatInput.enabled : defaultHeartbeat.enabled,
       intervalMinutes: Number.isFinite(intervalMinutes) && intervalMinutes > 0 ? intervalMinutes : defaultHeartbeat.intervalMinutes,
-      feishuChatName: String(heartbeatInput.feishuChatName || defaultHeartbeat.feishuChatName).trim(),
-      mentionNames: normalizeNameList(heartbeatInput.mentionNames?.length ? heartbeatInput.mentionNames : defaultHeartbeat.mentionNames),
+      feishuChatName: notification.adminGroup || defaultHeartbeat.feishuChatName,
+      mentionNames: notification.mentionNames.length ? notification.mentionNames : normalizeNameList(defaultHeartbeat.mentionNames),
     },
-    notification: normalizeNotificationConfig(config?.notification || {}),
+    notification,
     reservation: normalizeReservationConfig(config?.reservation || {}),
     scheduleMonitor: normalizeScheduleMonitorConfig(config?.scheduleMonitor || {}),
     violationCheck: normalizeViolationCheckConfig(config?.violationCheck || {}),
@@ -1270,23 +1517,11 @@ function normalizeConfig(config) {
 
 async function saveReportConfig(config) {
   const normalized = normalizeConfig(config);
-  const previous = await readReportConfig();
-  if (previous.schedulerEnabled && normalized.schedulerEnabled) {
-    throw new Error('定时上报开启时不能修改配置，请先关闭定时上报。');
-  }
   await mkdir(path.dirname(REPORT_CONFIG_PATH), { recursive: true });
   await writeFile(REPORT_CONFIG_PATH, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
   configureHeartbeatTimer(normalized.heartbeat);
+  configureSchedulerTimer(normalized);
   return normalized;
-}
-
-function appendLogs(target, chunk) {
-  const lines = String(chunk)
-    .replace(/\u001b\[[0-?]*[ -\/]*[@-~]/g, '')
-    .split(/\r?\n/)
-    .filter(Boolean);
-  target.logs.push(...lines);
-  if (target.logs.length > 500) target.logs.splice(0, target.logs.length - 500);
 }
 
 function appendHeartbeatLog(message) {
@@ -1636,113 +1871,184 @@ function stopHeartbeatMonitor() {
   heartbeatMonitor.nextCheckAt = null;
 }
 
-function startReport({ all = false, dryRun = false, ids = [], channel = 'both' } = {}) {
-  const logs = [];
+function startReport({ all = false, dryRun = false, ids = [], channel = 'both', source = 'manual', scheduledTime = '' } = {}) {
   const args = [path.join(NODE_ENTRY_ROOT, 'scripts/report-pdd-to-feishu.mjs'), '--once'];
   if (all) args.push('--all');
   if (dryRun) args.push('--dry-run');
   if (ids.length) args.push(`--ids=${ids.join(',')}`);
   args.push(`--channel=${channel}`);
-  const child = spawn(process.execPath, args, {
-    cwd: ROOT,
+  const key = source === 'scheduler'
+    ? `scheduled-report:${channel}:${scheduledTime || beijingTimestamp().slice(0, 16)}`
+    : `manual-report:${Date.now()}:${channel}:${ids.join(',')}:${dryRun ? 'dry-run' : 'send'}`;
+  if (queuedTaskWithKey(key)) {
+    throw new Error(`任务已在中心队列中：${source === 'scheduler' ? `定时微信群上报检查 (${channel})` : `手动上报 (${channel})`}`);
+  }
+
+  const task = {
+    status: 'idle',
+    logs: [],
+    requestedAt: nowIso(),
+    all,
+    dryRun,
+    ids,
+    channel,
+    source,
+    scheduledTime,
+  };
+  activeReport = task;
+  enqueueChildTask({
+    key,
+    label: source === 'scheduler' ? `定时微信群上报检查 (${channel})` : `手动上报 (${channel})`,
+    taskRef: task,
+    args,
     env: {
-      ...process.env,
       ELECTRON_RUN_AS_NODE: process.versions.electron ? '1' : process.env.ELECTRON_RUN_AS_NODE,
       WECHAT_BRIDGE_URL: LOCAL_WECHAT_BRIDGE_URL,
+      ...(scheduledTime ? { PDD_REPORT_SCHEDULED_TIME: scheduledTime } : {}),
     },
-    stdio: ['inherit', 'pipe', 'pipe'],
+    timeoutMs: REPORT_TIMEOUT_MS,
   });
-
-  const task = { status: 'running', logs, startedAt: new Date().toISOString(), all, dryRun, ids, channel, child };
-  activeReport = task;
-  child.stdout.on('data', (chunk) => appendLogs(task, chunk));
-  child.stderr.on('data', (chunk) => appendLogs(task, chunk));
-  child.on('error', (error) => {
-    appendLogs(task, error.message);
-    task.status = 'failed';
-    task.finishedAt = new Date().toISOString();
-  });
-  child.on('close', (code) => {
-    task.status = code === 0 ? 'completed' : 'failed';
-    task.exitCode = code;
-    task.finishedAt = new Date().toISOString();
-    delete task.child;
-  });
+  return task;
 }
 
-function startReservation({ dryRun = true, ids = [], includeDisabled = false } = {}) {
-  const logs = [];
+function startReservation({ dryRun = true, ids = [], includeDisabled = false, source = 'manual', scheduledTime = '' } = {}) {
   const args = [path.join(NODE_ENTRY_ROOT, 'scripts/create-pdd-delivery-appointment.mjs')];
   if (dryRun) args.push('--dry-run');
   else args.push('--commit');
   if (ids.length) args.push(`--ids=${ids.join(',')}`);
   if (includeDisabled) args.push('--include-disabled');
-  const child = spawn(process.execPath, args, {
-    cwd: ROOT,
+  const key = source === 'scheduler'
+    ? `scheduled-reservation:${scheduledTime || beijingTimestamp().slice(0, 16)}`
+    : `reservation:${Date.now()}:${ids.join(',')}:${dryRun ? 'dry-run' : 'commit'}`;
+  if (queuedTaskWithKey(key)) {
+    throw new Error(`任务已在中心队列中：预约送货${dryRun ? '演练' : '提交'}`);
+  }
+
+  const task = {
+    status: 'idle',
+    logs: [],
+    requestedAt: nowIso(),
+    dryRun,
+    ids,
+    includeDisabled,
+    source,
+    scheduledTime,
+  };
+  activeReservation = task;
+  enqueueChildTask({
+    key,
+    label: source === 'scheduler' ? `定时预约送货${dryRun ? '演练' : '提交'}` : `预约送货${dryRun ? '演练' : '提交'}`,
+    taskRef: task,
+    args,
     env: {
-      ...process.env,
       ELECTRON_RUN_AS_NODE: process.versions.electron ? '1' : process.env.ELECTRON_RUN_AS_NODE,
       PDD_AUTO_WAIT_FOR_LOGIN: 'true',
     },
-    stdio: ['inherit', 'pipe', 'pipe'],
+    timeoutMs: RESERVATION_TIMEOUT_MS,
   });
-
-  const task = { status: 'running', logs, startedAt: new Date().toISOString(), dryRun, ids, includeDisabled, child };
-  activeReservation = task;
-  child.stdout.on('data', (chunk) => appendLogs(task, chunk));
-  child.stderr.on('data', (chunk) => appendLogs(task, chunk));
-  child.on('error', (error) => {
-    appendLogs(task, error.message);
-    task.status = 'failed';
-    task.finishedAt = new Date().toISOString();
-  });
-  child.on('close', (code) => {
-    task.status = code === 0 ? 'completed' : 'failed';
-    task.exitCode = code;
-    task.finishedAt = new Date().toISOString();
-    delete task.child;
-  });
+  return task;
 }
 
 function startScheduler() {
   if (activeScheduler?.status === 'running') return;
-  const child = spawn(process.execPath, [path.join(NODE_ENTRY_ROOT, 'scripts/report-pdd-to-feishu.mjs'), '--channel=wechat'], {
-    cwd: ROOT,
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: process.versions.electron ? '1' : process.env.ELECTRON_RUN_AS_NODE,
-      WECHAT_BRIDGE_URL: LOCAL_WECHAT_BRIDGE_URL,
-    },
-    stdio: ['inherit', 'pipe', 'pipe'],
-  });
-  activeScheduler = { status: 'running', logs: [], startedAt: new Date().toISOString() };
-  activeScheduler.child = child;
-  child.stdout.on('data', (chunk) => appendLogs(activeScheduler, chunk));
-  child.stderr.on('data', (chunk) => appendLogs(activeScheduler, chunk));
-  child.on('error', (error) => {
-    appendLogs(activeScheduler, error.message);
-    activeScheduler.status = 'failed';
-    activeScheduler.finishedAt = new Date().toISOString();
-  });
-  child.on('close', (code) => {
-    if (activeScheduler?.child === child) {
-      activeScheduler.status = code === 0 ? 'stopped' : 'failed';
-      activeScheduler.exitCode = code;
-      activeScheduler.finishedAt = new Date().toISOString();
-      delete activeScheduler.child;
-    }
-  });
+  activeScheduler = {
+    status: 'running',
+    logs: activeScheduler?.logs || [],
+    startedAt: new Date().toISOString(),
+  };
+  appendLogs(activeScheduler, `[scheduler] ${beijingTimestamp()} 定时上报调度器已启动。`);
+  scheduleSchedulerTick(1000);
 }
 
 function stopScheduler() {
-  if (activeScheduler?.child) {
-    activeScheduler.child.kill('SIGTERM');
-    activeScheduler.status = 'stopped';
-    activeScheduler.finishedAt = new Date().toISOString();
-    delete activeScheduler.child;
-  } else {
-    activeScheduler = { status: 'stopped', logs: activeScheduler?.logs || [], finishedAt: new Date().toISOString() };
+  if (schedulerTimer) clearTimeout(schedulerTimer);
+  schedulerTimer = null;
+  activeScheduler = {
+    status: 'stopped',
+    logs: activeScheduler?.logs || [],
+    finishedAt: new Date().toISOString(),
+  };
+  appendLogs(activeScheduler, `[scheduler] ${beijingTimestamp()} 定时上报调度器已停止。`);
+}
+
+function msUntilNextMinute() {
+  const now = new Date();
+  const next = new Date(now);
+  next.setSeconds(0, 0);
+  next.setMinutes(next.getMinutes() + 1);
+  return Math.max(1000, next.getTime() - now.getTime());
+}
+
+function scheduleSchedulerTick(delayMs = msUntilNextMinute()) {
+  if (schedulerTimer) clearTimeout(schedulerTimer);
+  if (activeScheduler?.status !== 'running') return;
+  activeScheduler.nextCheckAt = new Date(Date.now() + delayMs).toISOString();
+  schedulerTimer = setTimeout(() => {
+    runSchedulerTick().catch((error) => {
+      appendLogs(activeScheduler, `[scheduler] ${beijingTimestamp()} 调度异常：${error.message}`);
+      scheduleSchedulerTick();
+    });
+  }, delayMs);
+  schedulerTimer.unref?.();
+}
+
+async function runSchedulerTick() {
+  schedulerTimer = null;
+  const reportConfig = await readReportConfig().catch((error) => {
+    appendLogs(activeScheduler, `[scheduler] ${beijingTimestamp()} 读取配置失败：${error.message}`);
+    return null;
+  });
+  if (!reportConfig || !scheduleConfigEnabled(reportConfig)) {
+    stopScheduler();
+    return;
   }
+
+  const minuteKey = beijingTimestamp().slice(0, 16);
+  const minuteTime = minuteKey.slice(11);
+  if (minuteKey !== schedulerLastMinuteKey) {
+    schedulerLastMinuteKey = minuteKey;
+    const scheduledReportDue = reportConfig.schedulerEnabled
+      && (reportConfig.items || []).some((item) => item.enabled
+        && item.wechatEnabled
+        && item.wechatRoomName
+        && timeListIncludes(item.sendTimes, minuteTime));
+    if (scheduledReportDue) {
+      try {
+        startReport({ channel: 'wechat', source: 'scheduler', scheduledTime: minuteTime });
+        appendLogs(activeScheduler, `[scheduler] ${minuteKey} 已投递微信群定时上报检查到中心队列。`);
+      } catch (error) {
+        appendLogs(activeScheduler, `[scheduler] ${minuteKey} 微信群定时上报投递跳过：${error.message}`);
+      }
+    }
+    const reservation = reportConfig.reservation || {};
+    const reservationDue = reservation.enabled
+      && (
+        timeListIncludes(reservation.firstRunTimes, minuteTime)
+        || (reservation.createLastAppointmentEnabled !== false && timeListIncludes(reservation.lastRunTimes, minuteTime))
+      );
+    if (reservationDue) {
+      try {
+        startReservation({
+          dryRun: reservation.dryRun !== false,
+          source: 'scheduler',
+          scheduledTime: minuteKey,
+        });
+        appendLogs(activeScheduler, `[scheduler] ${minuteKey} 已投递预约送货任务到中心队列。`);
+      } catch (error) {
+        appendLogs(activeScheduler, `[scheduler] ${minuteKey} 预约送货投递跳过：${error.message}`);
+      }
+    }
+    if (reportConfig.violationCheck?.enabled) {
+      appendLogs(activeScheduler, `[scheduler] ${minuteKey} 违规检查配置已启用，但当前版本尚未开放执行器，未投递任务。`);
+    }
+  }
+  scheduleSchedulerTick();
+}
+
+function configureSchedulerTimer(configOrEnabled) {
+  const enabled = typeof configOrEnabled === 'boolean' ? configOrEnabled : scheduleConfigEnabled(configOrEnabled || {});
+  if (enabled) startScheduler();
+  else stopScheduler();
 }
 
 async function setSchedulerEnabled(enabled) {
@@ -1750,8 +2056,7 @@ async function setSchedulerEnabled(enabled) {
   config.schedulerEnabled = Boolean(enabled);
   await mkdir(path.dirname(REPORT_CONFIG_PATH), { recursive: true });
   await writeFile(REPORT_CONFIG_PATH, `${JSON.stringify(normalizeConfig(config), null, 2)}\n`, 'utf8');
-  if (config.schedulerEnabled) startScheduler();
-  else stopScheduler();
+  configureSchedulerTimer(config);
   return config;
 }
 
@@ -1862,14 +2167,20 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === 'GET' && request.url === '/api/status') {
-      if (WEB_WECHAT_ENABLED) await runDesktopWechatSmokeTest();
-      else scheduleDesktopWechatSmokeTest();
+      const externalJobLock = await readJobLockStatus({ root: ROOT, logDir: LOG_DIR }).catch(() => null);
       sendJson(response, 200, {
         features: {
           webWechatEnabled: WEB_WECHAT_ENABLED,
           desktopWechatEnabled: DESKTOP_WECHAT_ENABLED,
           wechatChannel: WEB_WECHAT_ENABLED ? 'wechaty' : 'desktop_wechat',
         },
+        taskQueue: summarizeTaskQueue(),
+        jobLock: externalJobLock ? {
+          owner: externalJobLock.owner,
+          pid: externalJobLock.pid,
+          startedAt: externalJobLock.startedAt,
+          description: externalJobLock.description,
+        } : null,
         sync: summarizeTask(activeSync),
         report: summarizeTask(activeReport),
         reservation: summarizeTask(activeReservation),
@@ -1919,15 +2230,14 @@ const server = createServer(async (request, response) => {
 
     if (request.method === 'POST' && request.url === '/api/report-scheduler') {
       const { enabled } = await readJson(request);
-      if (enabled) await ensureDesktopWechatSmokeReady();
       const config = await setSchedulerEnabled(Boolean(enabled));
       sendJson(response, 200, { ok: true, config });
       return;
     }
 
     if (request.method === 'POST' && request.url === '/api/report') {
-      if (activeReport?.status === 'running') {
-        sendJson(response, 409, { error: '已有上报任务正在运行。' });
+      if (isQueueTaskActive(activeReport)) {
+        sendJson(response, 409, { error: '已有上报任务在中心队列中。' });
         return;
       }
       const { all, dryRun, ids, channel } = await readJson(request);
@@ -1960,13 +2270,13 @@ const server = createServer(async (request, response) => {
         ids: normalizedIds,
         channel: normalizedChannel,
       });
-      sendJson(response, 202, { status: 'running' });
+      sendJson(response, 202, { status: activeReport.status, queueId: activeReport.queueId });
       return;
     }
 
     if (request.method === 'POST' && request.url === '/api/reservation/run') {
-      if (activeReservation?.status === 'running') {
-        sendJson(response, 409, { error: '已有预约任务正在运行。' });
+      if (isQueueTaskActive(activeReservation)) {
+        sendJson(response, 409, { error: '已有预约任务在中心队列中。' });
         return;
       }
       const { dryRun = true, ids, includeDisabled } = await readJson(request);
@@ -1980,13 +2290,13 @@ const server = createServer(async (request, response) => {
         ids: normalizedIds,
         includeDisabled: Boolean(includeDisabled || normalizedIds.length),
       });
-      sendJson(response, 202, { status: 'running' });
+      sendJson(response, 202, { status: activeReservation.status, queueId: activeReservation.queueId });
       return;
     }
 
     if (request.method === 'POST' && request.url === '/api/sync') {
-      if (activeSync?.status === 'running') {
-        sendJson(response, 409, { error: '已有同步任务正在运行。' });
+      if (isQueueTaskActive(activeSync)) {
+        sendJson(response, 409, { error: '已有同步任务在中心队列中。' });
         return;
       }
       const { from, to } = await readJson(request);
@@ -1995,7 +2305,13 @@ const server = createServer(async (request, response) => {
         return;
       }
       startSync(from, to);
-      sendJson(response, 202, { status: 'running', from, to });
+      sendJson(response, 202, { status: activeSync.status, queueId: activeSync.queueId, from, to });
+      return;
+    }
+
+    if (request.method === 'POST' && request.url === '/api/task-queue/reset') {
+      resetTaskQueue('手动重置');
+      sendJson(response, 202, { ok: true, taskQueue: summarizeTaskQueue() });
       return;
     }
 
@@ -2109,12 +2425,12 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`PDD Feishu Sync UI: http://127.0.0.1:${PORT}`);
 });
 
+setInterval(runTaskQueueWatchdog, 60_000).unref?.();
+
 async function shutdown() {
   stopHeartbeatMonitor();
   stopScheduler();
-  if (activeSync?.child) activeSync.child.kill('SIGTERM');
-  if (activeReport?.child) activeReport.child.kill('SIGTERM');
-  if (activeReservation?.child) activeReservation.child.kill('SIGTERM');
+  resetTaskQueue('服务退出');
   await wechatyBot.stop().catch(() => {});
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();

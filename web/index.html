@@ -555,6 +555,25 @@
       width: fit-content;
       min-width: 0;
     }
+    .violation-template {
+      border: 1px solid #e4e7ec;
+      border-radius: 8px;
+      overflow: auto;
+      background: #fff;
+    }
+    .violation-template table {
+      min-width: 980px;
+    }
+    .violation-template th,
+    .violation-template td {
+      padding: 7px 8px;
+      white-space: nowrap;
+    }
+    .config-note {
+      margin: 0;
+      color: #667085;
+      line-height: 1.5;
+    }
     .subhead {
       display: flex;
       align-items: center;
@@ -746,25 +765,20 @@
         <div class="section-head">
           <div>
             <h2>配置中心</h2>
-            <p class="hint">按通知队列、任务编排和预约规则维护运营流水线。</p>
+            <p class="hint">按飞书异常通知和预约规则维护运营流水线。</p>
           </div>
           <button id="open-service-config" class="secondary" type="button">服务配置</button>
         </div>
         <div class="config-stack">
           <div class="config-band">
             <div class="subhead">
-              <h3>通知队列</h3>
+              <h3>飞书异常通知</h3>
               <button id="save-config" type="button">保存配置</button>
             </div>
             <div class="config-fields">
-              <label class="span-2">管理通知群<input id="notification-admin-group" autocomplete="off"></label>
-              <label>发送通道
-                <select id="notification-sender-strategy">
-                  <option value="desktop_wechat">桌面微信</option>
-                  <option value="http_api">HTTP API</option>
-                  <option value="weixin_v4">微信 v4</option>
-                </select>
-              </label>
+              <label class="span-2">飞书通知群<input id="notification-admin-group" autocomplete="off"></label>
+              <label>@成员<input id="notification-mention-names" autocomplete="off"></label>
+              <input id="notification-sender-strategy" type="hidden" value="http_api">
               <label>最大重试<input id="notification-max-retries" type="number" min="1" step="1"></label>
               <label>最小间隔(秒)<input id="notification-interval-min" type="number" min="1" step="1"></label>
               <label>最大间隔(秒)<input id="notification-interval-max" type="number" min="1" step="1"></label>
@@ -772,23 +786,52 @@
             </div>
           </div>
 
-          <div class="config-band">
-            <h3>任务编排</h3>
+          <div class="config-band" hidden>
+            <h3>违规检查</h3>
             <div class="config-fields">
-              <label class="switch"><input id="reservation-enabled" type="checkbox">预约任务</label>
-              <label class="span-2">首约时间<input id="reservation-first-run-times" autocomplete="off"></label>
-              <label class="span-2">尾约时间<input id="reservation-last-run-times" autocomplete="off"></label>
-              <label class="switch"><input id="reservation-dry-run" type="checkbox">预约演练</label>
-              <label class="switch"><input id="reservation-last-enabled" type="checkbox">生成尾约</label>
-              <label class="switch"><input id="reservation-notify-admin" type="checkbox">通知管理群</label>
-              <label class="switch"><input id="schedule-monitor-enabled" type="checkbox">排期监控</label>
-              <label>监控时间<input id="schedule-monitor-run-times" autocomplete="off"></label>
-              <label>监控天数<input id="schedule-monitor-days-ahead" type="number" min="1" step="1"></label>
-              <label class="switch"><input id="schedule-monitor-change-only" type="checkbox">仅变更通知</label>
               <label class="switch"><input id="violation-check-enabled" type="checkbox">违规检查</label>
-              <label>检查时间<input id="violation-check-run-times" autocomplete="off"></label>
-              <label class="switch"><input id="violation-only-pending" type="checkbox">只看待申诉</label>
+              <label class="span-2">检查时间<input id="violation-check-run-times" autocomplete="off" placeholder="08:50, 14:50, 20:50"></label>
+              <label class="switch"><input id="violation-only-pending" type="checkbox">只通知待处理</label>
               <label class="switch"><input id="violation-notify-empty" type="checkbox">空结果通知</label>
+            </div>
+            <p class="config-note">帮助用户及时完成申诉和处理违规。通知模板：</p>
+            <div class="violation-template" aria-label="违规检查通知模板">
+              <table>
+                <thead>
+                  <tr>
+                    <th>销售区域</th>
+                    <th>仓组名称</th>
+                    <th>仓库</th>
+                    <th>违规编号</th>
+                    <th>违规类型</th>
+                    <th>销售日期</th>
+                    <th>违规发起时间</th>
+                    <th>违规金额</th>
+                    <th>处理进度</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>浙江省</td>
+                    <td>浙江仓组1-宁波仓组</td>
+                    <td>--</td>
+                    <td>8324020</td>
+                    <td>延迟到货-尾波迟到</td>
+                    <td>2026-06-17</td>
+                    <td>2026-06-18 11:38:21</td>
+                    <td>¥1000</td>
+                    <td>平台处理中</td>
+                    <td>修改申述材料</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div hidden>
+              <input id="schedule-monitor-enabled" type="checkbox">
+              <input id="schedule-monitor-run-times" autocomplete="off">
+              <input id="schedule-monitor-days-ahead" type="number" min="1" step="1">
+              <input id="schedule-monitor-change-only" type="checkbox">
             </div>
           </div>
 
@@ -800,6 +843,14 @@
                 <button id="add-reservation-row" class="light" type="button">新增预约</button>
               </div>
             </div>
+            <div class="config-fields">
+              <label class="switch"><input id="reservation-enabled" type="checkbox">预约任务</label>
+              <label class="span-2">首约执行时间<input id="reservation-first-run-times" autocomplete="off"></label>
+              <label class="span-2">尾约执行时间<input id="reservation-last-run-times" autocomplete="off"></label>
+              <label class="switch"><input id="reservation-dry-run" type="checkbox">预约演练</label>
+              <label class="switch"><input id="reservation-last-enabled" type="checkbox">生成尾约</label>
+              <label class="switch"><input id="reservation-notify-admin" type="checkbox">通知管理群</label>
+            </div>
             <div id="reservation-config-table-wrap" class="table-wrap">
               <table class="reservation-config-table">
                 <thead>
@@ -810,7 +861,7 @@
                     <th>中心仓</th>
                     <th>司机号码</th>
                     <th>预约数量</th>
-                    <th>预约时间</th>
+                    <th>送货时间</th>
                     <th>首约通知群</th>
                     <th>尾约通知群</th>
                     <th>状态</th>
@@ -890,8 +941,8 @@
         </div>
         <div class="grid-form">
           <label>检查间隔(分钟)<input id="heartbeat-interval" type="number" min="1" step="1" value="5"></label>
-          <label>飞书群<input id="heartbeat-chat-name" value="杭州交仓" autocomplete="off"></label>
-          <label>@成员<input id="heartbeat-mention-names" value="鑫" autocomplete="off"></label>
+          <input id="heartbeat-chat-name" type="hidden" value="杭州交仓">
+          <input id="heartbeat-mention-names" type="hidden" value="鑫">
           <button id="heartbeat-save" type="button">保存心跳配置</button>
           <button id="heartbeat-run" class="secondary" type="button">立即检查</button>
         </div>
@@ -908,7 +959,9 @@
             <h2>运行日志</h2>
             <p class="hint">展示完整运行日志，可复制当前面板内容。</p>
           </div>
+          <button id="task-queue-reset" class="danger" type="button">重置任务队列</button>
         </div>
+        <div id="task-queue-log-panel" class="log-panel"></div>
         <div id="sync-log-panel" class="log-panel"></div>
         <div id="report-log-panel" class="log-panel" style="margin-top: 12px;"></div>
         <div id="reservation-log-panel" class="log-panel" style="margin-top: 12px;"></div>
@@ -975,6 +1028,7 @@
     const schedulerEnabled = document.querySelector('#scheduler-enabled');
     const saveConfig = document.querySelector('#save-config');
     const notificationAdminGroup = document.querySelector('#notification-admin-group');
+    const notificationMentionNames = document.querySelector('#notification-mention-names');
     const notificationSenderStrategy = document.querySelector('#notification-sender-strategy');
     const notificationIntervalMin = document.querySelector('#notification-interval-min');
     const notificationIntervalMax = document.querySelector('#notification-interval-max');
@@ -998,6 +1052,8 @@
     const addReservationRow = document.querySelector('#add-reservation-row');
     const reservationConfigBody = document.querySelector('#reservation-config-body');
     const reservationConfigTableWrap = document.querySelector('#reservation-config-table-wrap');
+    const taskQueueLogPanel = document.querySelector('#task-queue-log-panel');
+    const taskQueueReset = document.querySelector('#task-queue-reset');
     const syncLogPanel = document.querySelector('#sync-log-panel');
     const reportLogPanel = document.querySelector('#report-log-panel');
     const reservationLogPanel = document.querySelector('#reservation-log-panel');
@@ -1593,7 +1649,6 @@
       }
     }
     function markWechatConfigDirty() {
-      if (config.schedulerEnabled) return;
       wechatConfigDirty = true;
       applyWechatSmokeGate(desktopWechatSmokeGate);
     }
@@ -1641,8 +1696,8 @@
       config.heartbeat = {
         enabled: heartbeatEnabled.checked,
         intervalMinutes: Math.max(1, Number(heartbeatInterval.value || 5)),
-        feishuChatName: heartbeatChatName.value.trim(),
-        mentionNames: splitCommaList(heartbeatMentionNames.value),
+        feishuChatName: notificationAdminGroup.value.trim() || heartbeatChatName.value.trim(),
+        mentionNames: splitCommaList(notificationMentionNames.value || heartbeatMentionNames.value),
       };
     }
     function syncAdvancedConfigFromForm() {
@@ -1650,6 +1705,7 @@
       const maxInterval = positiveNumber(notificationIntervalMax.value, 5);
       config.notification = {
         adminGroup: notificationAdminGroup.value.trim(),
+        mentionNames: splitCommaList(notificationMentionNames.value),
         senderStrategy: notificationSenderStrategy.value,
         sendIntervalSeconds: {
           min: Math.min(minInterval, maxInterval),
@@ -1675,7 +1731,7 @@
         notifyOnChangeOnly: scheduleMonitorChangeOnly.checked,
       };
       config.violationCheck = {
-        enabled: violationCheckEnabled.checked,
+        enabled: false,
         runTimes: splitTimeList(violationCheckRunTimes.value),
         onlyPendingAppeals: violationOnlyPending.checked,
         notifyWhenEmpty: violationNotifyEmpty.checked,
@@ -1705,15 +1761,16 @@
       const heartbeat = config.heartbeat || {};
       heartbeatEnabled.checked = heartbeat.enabled !== false;
       heartbeatInterval.value = heartbeat.intervalMinutes || 5;
-      heartbeatChatName.value = heartbeat.feishuChatName || '杭州交仓';
-      heartbeatMentionNames.value = (heartbeat.mentionNames || ['鑫']).join(', ');
+      const notification = config.notification || {};
+      heartbeatChatName.value = heartbeat.feishuChatName || notification.adminGroup || '杭州交仓';
+      heartbeatMentionNames.value = (heartbeat.mentionNames?.length ? heartbeat.mentionNames : notification.mentionNames || ['鑫']).join(', ');
     }
     function renderAdvancedConfig() {
-      const locked = Boolean(config.schedulerEnabled);
       const notification = config.notification || {};
       const interval = notification.sendIntervalSeconds || {};
       notificationAdminGroup.value = notification.adminGroup || '杭州交仓';
-      notificationSenderStrategy.value = notification.senderStrategy || 'desktop_wechat';
+      notificationMentionNames.value = (notification.mentionNames || ['鑫']).join(', ');
+      notificationSenderStrategy.value = 'http_api';
       notificationIntervalMin.value = interval.min || 2;
       notificationIntervalMax.value = interval.max || 5;
       notificationMaxRetries.value = notification.maxRetries || 2;
@@ -1741,6 +1798,7 @@
 
       setControlGroupDisabled([
         notificationAdminGroup,
+        notificationMentionNames,
         notificationSenderStrategy,
         notificationIntervalMin,
         notificationIntervalMax,
@@ -1761,10 +1819,10 @@
         violationCheckRunTimes,
         violationOnlyPending,
         violationNotifyEmpty,
-      ], locked);
+      ], false);
     }
     function renderReservationConfig() {
-      const locked = Boolean(config.schedulerEnabled);
+      const locked = false;
       const items = config.reservation?.items || [];
       reservationConfigTableWrap.classList.toggle('locked', locked);
       addReservationRow.disabled = locked;
@@ -1776,7 +1834,7 @@
           <td><input class="wide" data-reservation-field="centerWarehouses" value="${escapeHtml((item.centerWarehouses || []).join(', '))}" ${locked ? 'disabled' : ''}></td>
           <td><input data-reservation-field="driverMobile" value="${escapeHtml(item.driverMobile || '')}" ${locked ? 'disabled' : ''}></td>
           <td><input data-reservation-field="quantity" type="number" min="1" step="1" value="${escapeHtml(item.quantity || 100)}" ${locked ? 'disabled' : ''}></td>
-          <td><input data-reservation-field="preferredHour" value="${escapeHtml(item.preferredHour || '10:00')}" ${locked ? 'disabled' : ''}></td>
+          <td><input data-reservation-field="preferredHour" value="${escapeHtml(item.preferredHour || '21:00')}" placeholder="21:00" ${locked ? 'disabled' : ''}></td>
           <td><input class="wide" data-reservation-field="firstNotifyGroup" value="${escapeHtml(item.firstNotifyGroup || '')}" ${locked ? 'disabled' : ''}></td>
           <td><input class="wide" data-reservation-field="lastNotifyGroup" value="${escapeHtml(item.lastNotifyGroup || '')}" ${locked ? 'disabled' : ''}></td>
           <td><label class="switch"><input data-reservation-field="enabled" type="checkbox" ${item.enabled ? 'checked' : ''} ${locked ? 'disabled' : ''}>${item.enabled ? '启' : '停'}</label></td>
@@ -1788,7 +1846,7 @@
       `).join('');
     }
     function renderWechatConfig() {
-      const locked = Boolean(config.schedulerEnabled);
+      const locked = false;
       const blocked = isWechatActionBlocked();
       wechatConfigTableWrap.classList.toggle('locked', locked);
       wechatAddRow.disabled = locked;
@@ -1818,7 +1876,7 @@
     function renderConfig() {
       const locked = Boolean(config.schedulerEnabled);
       schedulerEnabled.checked = locked;
-      saveConfig.disabled = locked;
+      saveConfig.disabled = false;
       renderAdvancedConfig();
       renderReservationConfig();
       renderWechatConfig();
@@ -1936,6 +1994,7 @@
       try {
         const response = await fetch('/api/status');
         const state = await response.json();
+        const taskQueue = state.taskQueue || { status: 'idle', logs: [], previewLogs: [] };
         const sync = state.sync || { status: 'idle', logs: [], previewLogs: [] };
         const report = state.report || { status: 'idle', logs: [], previewLogs: [] };
         const reservation = state.reservation || { status: 'idle', logs: [], previewLogs: [] };
@@ -1948,6 +2007,7 @@
         syncState.textContent = statusText[sync.status] || sync.status;
         syncRange.textContent = sync.from ? `${sync.from} 至 ${sync.to}` : '未选择';
         syncProgress.textContent = sync.progressText || (sync.lastDate ? `已处理到 ${sync.lastDate}` : (sync.status === 'running' ? '正在同步' : '等待任务'));
+        renderLogPanel(taskQueueLogPanel, 'taskQueue', '中心任务队列', taskQueue);
         renderLogPanel(syncLogPanel, 'sync', '同步日志', sync);
         renderLogPanel(reportLogPanel, 'report', '微信上报日志', report);
         renderLogPanel(reservationLogPanel, 'reservation', '预约送货日志', reservation);
@@ -2148,7 +2208,7 @@
         centerWarehouses: [],
         driverMobile: '',
         quantity: 100,
-        preferredHour: '10:00',
+        preferredHour: '21:00',
         firstNotifyGroup: '',
         lastNotifyGroup: '',
         enabled: true,
@@ -2209,6 +2269,20 @@
       await refreshDesktopWechatLogs(selectedDesktopWechatLog);
     });
     desktopWechatLogRefresh.addEventListener('click', () => refreshDesktopWechatLogs(selectedDesktopWechatLog));
+    taskQueueReset.addEventListener('click', async () => {
+      if (!confirm('确认终止当前任务并清空等待队列？')) return;
+      taskQueueReset.disabled = true;
+      try {
+        const response = await fetch('/api/task-queue/reset', { method: 'POST' });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || '重置任务队列失败');
+        await refresh();
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        taskQueueReset.disabled = false;
+      }
+    });
     document.addEventListener('click', async (event) => {
       const copyButton = event.target.closest('.copy-log');
       if (copyButton) {
