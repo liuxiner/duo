@@ -972,7 +972,7 @@
         <div id="report-log-panel" class="log-panel" style="margin-top: 12px;"></div>
         <div id="reservation-log-panel" class="log-panel" style="margin-top: 12px;"></div>
         <div id="monitor-notification-log-panel" class="log-panel" style="margin-top: 12px;"></div>
-        <div id="scheduler-log-panel" class="log-panel" style="margin-top: 12px;" hidden></div>
+        <div id="scheduler-log-panel" class="log-panel" style="margin-top: 12px;"></div>
         <div id="heartbeat-log-panel" class="log-panel" style="margin-top: 12px;"></div>
         <div class="toolbar" style="margin-top: 12px;">
           <select id="desktop-wechat-log-select" aria-label="桌面微信日志日期"></select>
@@ -1911,13 +1911,16 @@
       const visibleLogs = allLogs.length ? allLogs : logs;
       const state = statusText[task.status] || task.status || '空闲';
       const pillClass = task.status === 'failed' ? 'fail' : (task.status === 'idle' || task.status === 'stopped' ? 'off' : '');
-      const progress = task.progressText || (task.lastDate ? `已处理到 ${task.lastDate}` : (task.status === 'running' ? '正在处理' : '暂无进度'));
+      const progress = task.progressText
+        || (task.nextCheckAt ? `下次检查 ${formatShortTime(task.nextCheckAt)}` : '')
+        || (task.lastDate ? `已处理到 ${task.lastDate}` : (task.status === 'running' ? '正在处理' : '暂无进度'));
       const signature = JSON.stringify({
         status: task.status,
         lastDate: task.lastDate || '',
         startedAt: task.startedAt || '',
         finishedAt: task.finishedAt || '',
         exitCode: task.exitCode ?? '',
+        nextCheckAt: task.nextCheckAt || '',
         logsLength: visibleLogs.length,
         logsTail: visibleLogs.slice(-5),
       });
