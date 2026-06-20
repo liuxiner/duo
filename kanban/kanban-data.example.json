@@ -1,0 +1,131 @@
+{
+  "ok": true,
+  "refreshedAt": "2026-06-20T00:00:00.000Z",
+  "dates": [
+    "2026-06-20"
+  ],
+  "source": {
+    "rawRowCount": 1,
+    "manualInputRowCount": 0,
+    "rulesRowCount": 0,
+    "bigBoardFieldCount": 4,
+    "smallBoardFieldCount": 7
+  },
+  "warnings": [
+    "示例数据：请用 Electron App 同步生成的 kanban-data.json 替换本文件。"
+  ],
+  "days": {
+    "2026-06-20": {
+      "kpis": {
+        "amount": 1288,
+        "sales": 120,
+        "grossProfit": 312,
+        "profitMargin": 0.2422,
+        "riskSkuCount": 1,
+        "criticalSkuCount": 1,
+        "skuCount": 2
+      },
+      "warehouseRows": [
+        {
+          "key": "hangzhou",
+          "name": "杭州仓",
+          "sales": 120,
+          "amount": 1288,
+          "totalStorageFee": 26.5,
+          "grossProfit": 312,
+          "profitMargin": 0.2422,
+          "achievement": 0.92,
+          "skuCount": 2,
+          "riskSkuCount": 1,
+          "criticalSkuCount": 1
+        }
+      ],
+      "kanban": {
+        "big": {
+          "fields": [
+            { "key": "warehouse", "label": "仓库" },
+            { "key": "sales", "label": "销量" },
+            { "key": "amount", "label": "销额" },
+            { "key": "grossProfit", "label": "毛利合计" }
+          ],
+          "rows": [
+            {
+              "key": "hangzhou",
+              "warehouse": "杭州仓",
+              "name": "杭州仓",
+              "status": "warn",
+              "statusLabel": "关注"
+            }
+          ]
+        },
+        "small": {
+          "fields": [
+            { "key": "skuId", "label": "SKUID" },
+            { "key": "name", "label": "产品名称" },
+            { "key": "warehouse", "label": "仓库" },
+            { "key": "sales", "label": "销量" },
+            { "key": "availableStock", "label": "累计可用库存" },
+            { "key": "turnoverDays", "label": "周转天数" },
+            { "key": "grossProfit", "label": "毛利合计" }
+          ],
+          "rows": [
+            {
+              "key": "sku-demo-1",
+              "skuId": "SKU-DEMO-1",
+              "name": "示例商品 A",
+              "warehouse": "杭州仓",
+              "warehouseGroup": "杭州仓",
+              "status": "warn",
+              "sourceOrder": 1,
+              "values": {
+                "SKUID": "SKU-DEMO-1",
+                "产品名称": "示例商品 A",
+                "仓库": "杭州仓",
+                "销量": 80,
+                "累计可用库存": -3,
+                "周转天数": 0,
+                "毛利合计": 220
+              },
+              "cells": [
+                { "key": "skuId", "label": "SKUID", "value": "SKU-DEMO-1", "display": "SKU-DEMO-1" },
+                { "key": "name", "label": "产品名称", "value": "示例商品 A", "display": "示例商品 A" },
+                { "key": "warehouse", "label": "仓库", "value": "杭州仓", "display": "杭州仓" },
+                { "key": "sales", "label": "销量", "value": 80, "display": "80" },
+                { "key": "availableStock", "label": "累计可用库存", "value": -3, "display": "-3" },
+                { "key": "turnoverDays", "label": "周转天数", "value": 0, "display": "0" },
+                { "key": "grossProfit", "label": "毛利合计", "value": 220, "display": "220" }
+              ]
+            },
+            {
+              "key": "sku-demo-2",
+              "skuId": "SKU-DEMO-2",
+              "name": "示例商品 B",
+              "warehouse": "杭州仓",
+              "warehouseGroup": "杭州仓",
+              "status": "ok",
+              "sourceOrder": 2,
+              "values": {
+                "SKUID": "SKU-DEMO-2",
+                "产品名称": "示例商品 B",
+                "仓库": "杭州仓",
+                "销量": 40,
+                "累计可用库存": 120,
+                "周转天数": 6,
+                "毛利合计": 92
+              },
+              "cells": [
+                { "key": "skuId", "label": "SKUID", "value": "SKU-DEMO-2", "display": "SKU-DEMO-2" },
+                { "key": "name", "label": "产品名称", "value": "示例商品 B", "display": "示例商品 B" },
+                { "key": "warehouse", "label": "仓库", "value": "杭州仓", "display": "杭州仓" },
+                { "key": "sales", "label": "销量", "value": 40, "display": "40" },
+                { "key": "availableStock", "label": "累计可用库存", "value": 120, "display": "120" },
+                { "key": "turnoverDays", "label": "周转天数", "value": 6, "display": "6" },
+                { "key": "grossProfit", "label": "毛利合计", "value": 92, "display": "92" }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}

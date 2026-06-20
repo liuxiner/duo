@@ -1,0 +1,11 @@
+{
+  "dataUrl": "./kanban-data.json",
+  "appId": "",
+  "hasAppSecret": false,
+  "authReady": false,
+  "rawUrl": "",
+  "rulesUrl": "",
+  "manualUrl": "",
+  "reviewUrl": "",
+  "writebackEnabled": false
+}

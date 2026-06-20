@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>宁波多多飞书实时看板</title>
+  <link rel="stylesheet" href="assets/kanban.2a04dd18f397.css">
+</head>
+<body>
+  <header>
+    <div class="wrap topbar">
+      <div>
+        <h1>宁波多多飞书实时看板</h1>
+        <div id="sourceStatus" class="subtitle">读取飞书实时数据</div>
+      </div>
+      <div class="controls">
+        <label>日期 <select id="dateSelect"></select></label>
+        <label>仓库 <select id="warehouseSelect"></select></label>
+        <label>搜索 <input id="searchInput" class="search" placeholder="SKUID / 商品 / 仓库"></label>
+        <button id="refreshButton" type="button">刷新</button>
+        <button id="configButton" class="secondary icon-button" type="button" aria-label="打开看板配置" title="看板配置">&#9881;</button>
+      </div>
+    </div>
+  </header>
+
+  <div id="configModal" class="config-modal" hidden aria-hidden="true">
+    <div id="configDialog" class="config-dialog" role="dialog" aria-modal="true" aria-labelledby="configTitle">
+      <div class="panel-head">
+        <h2 id="configTitle">看板配置</h2>
+        <button id="closeConfigButton" class="secondary icon-button" type="button" aria-label="关闭配置" title="关闭">×</button>
+      </div>
+      <div id="configStatus" class="status-line">-</div>
+      <div class="config-grid">
+        <label>数据 JSON 地址 <input id="dataUrlInput" autocomplete="off" placeholder="./kanban-data.json"></label>
+        <label>飞书 App ID <input id="appIdInput" autocomplete="off" placeholder="cli_xxx / app id"></label>
+        <label>飞书 App Secret <input id="appSecretInput" type="password" autocomplete="new-password" placeholder="留空表示不修改"></label>
+        <label>原始数据 <input id="rawUrlInput" placeholder="raw source URL"></label>
+        <label>规则表 <input id="rulesUrlInput" placeholder="rules URL"></label>
+        <label>手动输入表 <input id="manualUrlInput" placeholder="manual input URL"></label>
+        <label>复盘表 <input id="reviewUrlInput" placeholder="review target URL"></label>
+        <label class="toggle-label"><span>写回复盘</span><input id="writebackInput" type="checkbox"></label>
+        <button id="saveConfigButton" type="button">保存到本机</button>
+        <button id="exportConfigButton" class="secondary" type="button">导出配置 JSON</button>
+        <button id="importConfigButton" class="secondary" type="button">导入配置 JSON</button>
+        <input id="importConfigFile" type="file" accept="application/json,.json" hidden>
+      </div>
+    </div>
+  </div>
+
+  <main class="wrap">
+    <div id="message"></div>
+
+    <section class="kpis" aria-label="关键指标">
+      <div class="metric"><div class="label">当日销额</div><div id="kpiAmount" class="value">-</div><div id="kpiAmountHint" class="hint">-</div></div>
+      <div class="metric"><div class="label">当日销量</div><div id="kpiSales" class="value">-</div><div id="kpiSalesHint" class="hint">-</div></div>
+      <div class="metric"><div class="label">净利润（毛利）</div><div id="kpiGrossProfit" class="value">-</div><div class="hint">按规则毛利公式汇总</div></div>
+      <div class="metric"><div class="label">利润率</div><div id="kpiProfitMargin" class="value">-</div><div class="hint">毛利 / 当日销额</div></div>
+      <div class="metric"><div class="label">风险 SKU/总 SKU</div><div id="kpiRisk" class="value">-</div><div id="kpiRiskHint" class="hint">-</div></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>仓库看板</h2>
+        <div id="warehouseSummary" class="status-line">-</div>
+      </div>
+      <div id="warehouseGrid" class="warehouse-grid"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>单品详情</h2>
+        <div id="skuSummary" class="status-line">-</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr id="skuHead"></tr></thead>
+          <tbody id="skuBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <details>
+      <summary>
+        <span>当日数据包</span>
+        <span id="jsonSummary" class="status-line">-</span>
+      </summary>
+      <div class="json-actions">
+        <button id="copyJsonButton" class="secondary" type="button">复制 JSON</button>
+        <button id="downloadJsonButton" class="secondary" type="button">下载 JSON</button>
+      </div>
+      <pre id="dayJson">{}</pre>
+    </details>
+  </main>
+
+  <script src="assets/kanban.338fcff7e4e7.js" defer></script>
+</body>
+</html>
