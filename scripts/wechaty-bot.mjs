@@ -19,6 +19,59 @@ function isDuplicateLoginError(error) {
   return /onLogin\(\) user had already logined/i.test(error?.message || '');
 }
 
+function errorText(error) {
+  if (!error) return '';
+  const parts = [
+    error.message,
+    error.details,
+    error.stack,
+    String(error),
+  ].filter(Boolean);
+  return parts.join('\n');
+}
+
+function compactErrorMessage(error) {
+  const text = errorText(error).replace(/\s+/g, ' ').trim();
+  return text.length > 240 ? `${text.slice(0, 240)}...` : text;
+}
+
+function isTransientPageDialogError(error) {
+  const text = errorText(error);
+  if (/No dialog is showing/i.test(text)) return true;
+  if (/Bridge\.onDialog|PuppetWeChatBridge.*onDialog|page\.on\(dialog\)/s.test(text)
+    && /return\s+this\._type|type\(\)\s*\{/s.test(text)) {
+    return true;
+  }
+  return /type\(\)\s*\{[\s\S]*return\s+this\._type[\s\S]*\}\s*\(\)/.test(text);
+}
+
+let processWechatyErrorGuardsInstalled = false;
+
+function installProcessWechatyErrorGuards() {
+  if (processWechatyErrorGuardsInstalled) return;
+  processWechatyErrorGuardsInstalled = true;
+
+  process.on('unhandledRejection', (reason) => {
+    if (isTransientPageDialogError(reason)) {
+      console.warn(`[Wechaty] ignored process-level transient page dialog rejection: ${compactErrorMessage(reason)}`);
+      return;
+    }
+    console.error('[Wechaty] unhandled rejection:', reason);
+    process.exitCode = 1;
+    setImmediate(() => process.exit(1));
+  });
+
+  process.on('uncaughtException', (error) => {
+    if (isTransientPageDialogError(error)) {
+      console.warn(`[Wechaty] ignored process-level transient page dialog exception: ${compactErrorMessage(error)}`);
+      return;
+    }
+    console.error('[Wechaty] uncaught exception:', error);
+    process.exitCode = 1;
+    setImmediate(() => process.exit(1));
+  });
+}
+
 function installNavigationCompatibility(puppet, {
   cdpUrl = '',
   timeout = DEFAULT_NAVIGATION_TIMEOUT_MS,
@@ -246,7 +299,18 @@ export class WechatyBot {
       uos: true,
       head: process.env.WECHATY_BROWSER_HEAD !== 'false',
     });
+    installProcessWechatyErrorGuards();
     installNavigationCompatibility(puppet, { cdpUrl });
+    puppet.bridge.on('error', (error) => {
+      if (isTransientPageDialogError(error)) {
+        console.warn(`[Wechaty] ignored bridge transient page dialog error: ${compactErrorMessage(error)}`);
+        return;
+      }
+      this.status = 'error';
+      this.qrData = null;
+      this.lastError = error?.message || String(error);
+      console.error(`[Wechaty] bridge error: ${compactErrorMessage(error)}`);
+    });
 
     this.bot = WechatyBuilder.build({
       name: path.resolve(ROOT, `.cache/${this.name}`),
@@ -293,8 +357,8 @@ export class WechatyBot {
         console.warn(`[Wechaty] ignored duplicate login event: ${error.message}`);
         return;
       }
-      if (/return this\._type|No dialog is showing/.test(error.message)) {
-        console.warn(`[Wechaty] ignored transient page dialog error: ${error.message}`);
+      if (isTransientPageDialogError(error)) {
+        console.warn(`[Wechaty] ignored transient page dialog error: ${compactErrorMessage(error)}`);
         return;
       }
       this.status = 'error';

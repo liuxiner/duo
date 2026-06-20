@@ -13,12 +13,18 @@ let pendingUpdate = null;
 let quitting = false;
 let serviceWatchdogTimer = null;
 let serviceHealthFailures = 0;
+let serviceExitRestartTimer = null;
+let serviceExitRestarting = false;
+let serviceExitRestartTimes = [];
 
 const DEFAULT_SERVICE_START_TIMEOUT_MS = process.platform === 'win32' ? 90_000 : 45_000;
 const WECHAT_DESKTOP_AUTOMATION_TIMEOUT_MS = 45_000;
 const WECHAT_DESKTOP_AUTOMATION_LOCK_TTL_MS = 5 * 60 * 1000;
 const SERVICE_WATCHDOG_INTERVAL_MS = 60_000;
 const SERVICE_WATCHDOG_MAX_FAILURES = 3;
+const SERVICE_EXIT_RESTART_DELAY_MS = 1_500;
+const SERVICE_EXIT_RESTART_MAX = 3;
+const SERVICE_EXIT_RESTART_WINDOW_MS = 5 * 60 * 1000;
 
 function desktopPackage() {
   return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
@@ -865,9 +871,42 @@ function startServiceWatchdog() {
   serviceWatchdogTimer.unref?.();
 }
 
+function scheduleServiceExitRestart(logPath, reason) {
+  if (quitting || serviceExitRestartTimer || serviceExitRestarting) return;
+  const now = Date.now();
+  serviceExitRestartTimes = serviceExitRestartTimes.filter((time) => now - time < SERVICE_EXIT_RESTART_WINDOW_MS);
+  if (serviceExitRestartTimes.length >= SERVICE_EXIT_RESTART_MAX) {
+    appendServiceLog(logPath, `[desktop-watchdog] service exit restart skipped after ${SERVICE_EXIT_RESTART_MAX} attempts in ${Math.round(SERVICE_EXIT_RESTART_WINDOW_MS / 60000)}m: ${reason}`);
+    return;
+  }
+  serviceExitRestartTimes.push(now);
+  appendServiceLog(logPath, `[desktop-watchdog] service exit restart queued ${serviceExitRestartTimes.length}/${SERVICE_EXIT_RESTART_MAX}: ${reason}`);
+  serviceExitRestartTimer = setTimeout(async () => {
+    serviceExitRestartTimer = null;
+    if (quitting) return;
+    serviceExitRestarting = true;
+    try {
+      appendServiceLog(serviceLogPath(), '[desktop-watchdog] service exit restart starting');
+      await startServer(false);
+      serviceHealthFailures = 0;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        await mainWindow.loadURL(`http://127.0.0.1:${runtimePort}`);
+      }
+      appendServiceLog(serviceLogPath(), '[desktop-watchdog] service exit restart succeeded');
+    } catch (restartError) {
+      appendServiceLog(serviceLogPath(), `[desktop-watchdog] service exit restart failed ${restartError.message}`);
+    } finally {
+      serviceExitRestarting = false;
+    }
+  }, SERVICE_EXIT_RESTART_DELAY_MS);
+  serviceExitRestartTimer.unref?.();
+}
+
 function stopServiceWatchdog() {
   if (serviceWatchdogTimer) clearInterval(serviceWatchdogTimer);
   serviceWatchdogTimer = null;
+  if (serviceExitRestartTimer) clearTimeout(serviceExitRestartTimer);
+  serviceExitRestartTimer = null;
 }
 
 function stopServer() {
@@ -909,14 +948,22 @@ async function startServer(allowFallback = true) {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   serverProcess = child;
+  child.maoServiceHealthy = false;
   child.stdout.pipe(logStream, { end: false });
   child.stderr.pipe(logStream, { end: false });
   child.once('error', (error) => {
     appendServiceLog(logPath, `[desktop] service spawn error ${error.message}`);
   });
   child.once('exit', (code, signal) => {
-    if (serverProcess === child) serverProcess = null;
-    if (!quitting) appendServiceLog(logPath, `[desktop] service exited code=${code} signal=${signal}`);
+    const wasActiveService = serverProcess === child;
+    if (wasActiveService) serverProcess = null;
+    if (!quitting) {
+      const reason = `code=${code} signal=${signal}`;
+      appendServiceLog(logPath, `[desktop] service exited ${reason}`);
+      if (wasActiveService && child.maoServiceHealthy) {
+        scheduleServiceExitRestart(logPath, reason);
+      }
+    }
   });
   try {
     await Promise.race([
@@ -926,6 +973,7 @@ async function startServer(allowFallback = true) {
         child.once('exit', (code, signal) => reject(new Error(`本地服务提前退出 code=${code} signal=${signal}`)));
       }),
     ]);
+    child.maoServiceHealthy = true;
     appendServiceLog(logPath, `[desktop] service healthy port=${runtimePort}`);
   } catch (error) {
     child.kill('SIGTERM');
