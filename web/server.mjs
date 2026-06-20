@@ -58,10 +58,10 @@ const RESERVATION_TIMEOUT_MS = positiveDurationMs(process.env.MAO_RESERVATION_TI
 const RESERVATION_IDLE_TIMEOUT_MS = positiveDurationMs(process.env.MAO_RESERVATION_IDLE_TIMEOUT_MS, 6 * 60 * 1000);
 const TASK_KILL_GRACE_MS = 5 * 1000;
 const FEISHU_REPORT_ENABLED = process.env.MAO_ENABLE_FEISHU_REPORT === 'true';
-const WEB_WECHAT_RUNTIME_AVAILABLE = process.platform === 'win32'
-  || process.env.MAO_ENABLE_WEB_WECHAT === 'true'
-  || process.env.MAO_INCLUDE_WEB_WECHAT_RUNTIME === 'true';
+const WEB_WECHAT_BOT_PATH = path.join(NODE_ENTRY_ROOT, 'scripts', 'wechaty-bot.mjs');
+const WEB_WECHAT_RUNTIME_AVAILABLE = existsSync(WEB_WECHAT_BOT_PATH);
 const APP_ROUTE_PATHS = new Set(['/', '/sync', '/config', '/wechat', '/heartbeat', '/logs', '/desktop']);
+let webWechatRuntimeLoadError = '';
 let activeSync = null;
 let activeReport = null;
 let activeReservation = null;
@@ -107,12 +107,17 @@ function normalizeWechatChannel(value) {
   return '';
 }
 
+function canUseWebWechatRuntime() {
+  return WEB_WECHAT_RUNTIME_AVAILABLE && !webWechatRuntimeLoadError;
+}
+
 function configuredWechatChannel() {
   const explicit = normalizeWechatChannel(process.env.MAO_WECHAT_CHANNEL);
   if (explicit) return explicit;
   if (truthyConfig(process.env.MAO_USE_DESKTOP_WECHAT, false)) return 'desktop_wechat';
-  if (process.env.MAO_ENABLE_WEB_WECHAT === 'true') return 'wechaty';
-  return process.platform === 'win32' ? 'wechaty' : 'desktop_wechat';
+  if (process.env.MAO_ENABLE_WEB_WECHAT === 'true' && canUseWebWechatRuntime()) return 'wechaty';
+  if (String(process.env.MAO_WECHAT_EXE_PATH || '').trim()) return 'desktop_wechat';
+  return process.platform === 'win32' && canUseWebWechatRuntime() ? 'wechaty' : 'desktop_wechat';
 }
 
 function isWechatyChannel() {
@@ -127,35 +132,60 @@ function desktopWechatPlatformSupported() {
   return process.platform === 'darwin' || process.platform === 'win32';
 }
 
-function inactiveWechatyStatus() {
+function inactiveWechatyStatus(reason = '') {
   return {
     status: 'disabled',
     loggedInUser: '',
     qrAvailable: false,
     disabled: true,
-    reason: isDesktopWechatChannel()
+    reason: reason || (isDesktopWechatChannel()
       ? '当前已切换为微信 App 通道，Wechaty 控制台已隐藏。'
-      : 'Wechaty 运行时未包含在当前桌面包中。',
+      : 'Wechaty 运行时未包含在当前桌面包中。'),
+  };
+}
+
+function inactiveWechatyBot(reason = '') {
+  const status = () => inactiveWechatyStatus(reason);
+  return {
+    qrData: null,
+    getStatus: status,
+    onScan: () => {},
+    onLogin: () => {},
+    onLogout: () => {},
+    start: async () => status(),
+    stop: async () => status(),
+    sendToRoom: async () => {
+      throw new Error(status().reason);
+    },
+  };
+}
+
+function checkWechatyRuntimePreflight() {
+  return {
+    id: 'wechatyRuntime',
+    ok: canUseWebWechatRuntime(),
+    title: 'Wechaty 运行时',
+    detail: canUseWebWechatRuntime()
+      ? `已找到 Wechaty 机器人：${WEB_WECHAT_BOT_PATH}`
+      : webWechatRuntimeLoadError
+        ? `Wechaty 运行时加载失败：${webWechatRuntimeLoadError}`
+        : `缺少 Wechaty 机器人：${WEB_WECHAT_BOT_PATH}`,
+    path: WEB_WECHAT_BOT_PATH,
   };
 }
 
 async function createWechatyBot() {
-  if (!WEB_WECHAT_RUNTIME_AVAILABLE) {
-    return {
-      qrData: null,
-      getStatus: inactiveWechatyStatus,
-      onScan: () => {},
-      onLogin: () => {},
-      onLogout: () => {},
-      start: async () => inactiveWechatyStatus(),
-      stop: async () => inactiveWechatyStatus(),
-      sendToRoom: async () => {
-        throw new Error(inactiveWechatyStatus().reason);
-      },
-    };
+  if (!canUseWebWechatRuntime()) {
+    return inactiveWechatyBot();
   }
-  const { WechatyBot } = await import('../scripts/wechaty-bot.mjs');
-  return new WechatyBot({ name: 'pdd-wechaty-bot' });
+  try {
+    const { WechatyBot } = await import('../scripts/wechaty-bot.mjs');
+    return new WechatyBot({ name: 'pdd-wechaty-bot' });
+  } catch (error) {
+    webWechatRuntimeLoadError = error.message;
+    console.warn(`[Wechaty] runtime unavailable: ${error.message}`);
+    return inactiveWechatyBot(`Wechaty 运行时加载失败：${error.message}`);
+  }
 }
 
 const wechatyBot = await createWechatyBot();
@@ -333,6 +363,7 @@ async function readAppConfig() {
   return {
     ...redactAppConfig(await readEnvConfig(APP_CONFIG_FIELDS)),
     MAO_ACTIVE_WECHAT_CHANNEL: configuredWechatChannel(),
+    MAO_WEB_WECHAT_RUNTIME_AVAILABLE: canUseWebWechatRuntime() ? 'true' : 'false',
   };
 }
 
@@ -669,6 +700,7 @@ function wechatChannelSocket(channel = configuredWechatChannel()) {
       safetyCheckMode: 'immediate',
       reuseSuccessfulSafety: false,
       preflightChecks: () => [
+        checkWechatyRuntimePreflight(),
         checkCdpService('wechatChrome', '微信 Chrome 服务', process.env.WECHATY_CDP_URL, 9333),
       ],
       runSafetyCheck: runWechatyLoginSafetyCheck,
@@ -2049,7 +2081,9 @@ function checkWechatyHeartbeatStatus() {
     name: '微信机器人',
     loggedIn,
     ok: loggedIn,
-    detail: loggedIn ? `已登录：${status.loggedInUser || '-'}` : `未登录（当前状态：${status.status || '未知'}）`,
+    detail: loggedIn
+      ? `已登录：${status.loggedInUser || '-'}`
+      : (status.reason || `未登录（当前状态：${status.status || '未知'}）`),
   };
 }
 
@@ -2487,7 +2521,7 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, {
         features: {
           webWechatEnabled: isWechatyChannel(),
-          webWechatRuntimeAvailable: WEB_WECHAT_RUNTIME_AVAILABLE,
+          webWechatRuntimeAvailable: canUseWebWechatRuntime(),
           desktopWechatEnabled: isDesktopWechatChannel(),
           desktopWechatSupported: desktopWechatPlatformSupported(),
           wechatChannel: wechatSocket.id,

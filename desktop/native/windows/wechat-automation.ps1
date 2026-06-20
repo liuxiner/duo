@@ -61,6 +61,14 @@ function Write-AutoLog {
   Add-Content -Path $LogPath -Value $line -Encoding UTF8
 }
 
+trap {
+  Write-AutoLog "fatal error: $($_.Exception.Message)"
+  if ($_.ScriptStackTrace) {
+    Write-AutoLog "fatal stack: $($_.ScriptStackTrace)"
+  }
+  throw
+}
+
 function Emit-Json {
   param([hashtable]$Payload)
   $Payload | ConvertTo-Json -Compress -Depth 8
@@ -131,11 +139,15 @@ function Test-WeChatDesktopProcess {
 }
 
 function Find-WeChatProcess {
-  $process = Get-Process -ErrorAction SilentlyContinue |
-    Where-Object { Test-WeChatDesktopProcess -Process $_ } |
-    Select-Object -First 1
+  $running = @(Get-Process -ErrorAction SilentlyContinue |
+    Where-Object { Test-WeChatDesktopProcess -Process $_ })
 
-  if ($process) { return $process }
+  if ($running.Count -gt 0) {
+    foreach ($item in @($running | Select-Object -First 3)) {
+      Write-AutoLog "found running WeChat pid=$($item.Id) process=$($item.ProcessName) title=$($item.MainWindowTitle) handle=$($item.MainWindowHandle)"
+    }
+    return $running[0]
+  }
 
   function Join-OptionalPath {
     param([string]$Base, [string]$Child)
@@ -200,6 +212,7 @@ function Find-WeChatProcess {
     Where-Object { $_ -and (Test-Path $_) } |
     Select-Object -Unique)
 
+  Write-AutoLog "WeChat process not running; executable candidates count=$($candidates.Count)"
   if ($candidates.Count -gt 0) {
     Write-AutoLog "starting WeChat from $($candidates[0])"
     Start-Process -FilePath $candidates[0] | Out-Null
@@ -210,6 +223,9 @@ function Find-WeChatProcess {
         Select-Object -First 1
       if ($process) { return $process }
     }
+    Write-AutoLog 'started WeChat executable but no main window was detected after waiting'
+  } else {
+    Write-AutoLog 'no WeChat executable candidate found'
   }
 
   return $null
@@ -342,6 +358,9 @@ function Click-Point {
 
 function Set-ClipboardTextSafe {
   param([string]$Text)
+  $textValue = $Text -as [string]
+  if ($null -eq $textValue) { $textValue = '' }
+  Write-AutoLog "set clipboard text length=$($textValue.Length)"
   [System.Windows.Forms.Clipboard]::SetText($Text)
   Start-Sleep -Milliseconds 80
 }
@@ -366,6 +385,7 @@ function Set-ClipboardFilesSafe {
 function Paste-Clipboard {
   Assert-WeChatForeground -Context 'paste'
   [System.Windows.Forms.SendKeys]::SendWait('^v')
+  Write-AutoLog 'sent Ctrl+V paste'
   Start-Sleep -Milliseconds 450
 }
 
@@ -723,6 +743,7 @@ function Reset-ToMessageHomeForSearch {
 
 function Open-Room {
   param([System.Diagnostics.Process]$Process, [hashtable]$Rect, [string]$Room)
+  Write-AutoLog "open room start room=$Room rect=$($Rect.Left),$($Rect.Top),$($Rect.Width)x$($Rect.Height)"
   if (Wait-ActiveRoom -Process $Process -Rect $Rect -Room $Room -Attempts 2) {
     Write-AutoLog "active room already open; skip search room=$Room"
     return 'already-open'
@@ -790,6 +811,7 @@ function Get-MessageInputPoint {
 
 function Focus-MessageInput {
   param([hashtable]$Rect, [System.Diagnostics.Process]$Process = $null)
+  Write-AutoLog "focus message input start rect=$($Rect.Left),$($Rect.Top),$($Rect.Width)x$($Rect.Height)"
   $detected = Get-MessageInputPoint -Process $Process -Rect $Rect
   if ($detected) {
     Click-Point -X $detected.X -Y $detected.Y -Name 'message input detected'
@@ -888,6 +910,8 @@ function Send-AndVerify {
 
 $options = Parse-Options
 Write-AutoLog "started args=$($RestArgs -join ' ')"
+Write-AutoLog "runtime cwd=$(Get-Location) logPath=$LogPath user=$([Environment]::UserName) psVersion=$($PSVersionTable.PSVersion)"
+Write-AutoLog "parsed options roomSet=$([bool]$options.Room) mentions=$($options.Mentions.Count) images=$($options.Images.Count) send=$($options.Send) checkPermission=$($options.CheckPermission) keyboard=$($options.KeyboardTest) keyboardEnter=$($options.KeyboardEnterTest) openRetry=$($options.OpenRetryTest) selectMethod=$($options.SelectMethod)"
 
 if ($options.CheckPermission) {
   Write-AutoLog 'permission check ok on Windows'
@@ -923,11 +947,30 @@ if ($options.OpenRetryTest) {
 Focus-MessageInput -Rect $rect -Process $session.Process
 
 if ($options.KeyboardTest -or $options.KeyboardEnterTest) {
+  $action = if ($options.KeyboardEnterTest) { 'keyboard-enter-test' } else { 'keyboard-test' }
   $text = 'keyboard-test-' + (Get-Date -Format 'HHmmss')
+  Write-AutoLog "$action paste start text=$text"
   Set-ClipboardTextSafe -Text $text
   Paste-Clipboard
+  Start-Sleep -Milliseconds 250
+  $draftAfterPaste = Get-DraftText -Rect $rect -Process $session.Process -Context "$action after paste"
+  if (-not (($draftAfterPaste -as [string]).Contains($text))) {
+    $preview = (($draftAfterPaste -as [string]) -replace "`r", '\r' -replace "`n", '\n')
+    if ($preview.Length -gt 36) { $preview = $preview.Substring(0, 36) + '...' }
+    throw "Keyboard test did not paste expected text; draft length=$($draftAfterPaste.Length) preview=$preview"
+  }
+  Write-AutoLog "$action paste verified draft length=$($draftAfterPaste.Length)"
   if ($options.KeyboardEnterTest) {
+    Write-AutoLog "$action send enter start"
     Press-SendEnter
+    Start-Sleep -Milliseconds 600
+    $remaining = Get-DraftText -Rect $rect -Process $session.Process -Context "$action after enter"
+    if (-not [string]::IsNullOrWhiteSpace($remaining)) {
+      $preview = ($remaining -replace "`r", '\r' -replace "`n", '\n')
+      if ($preview.Length -gt 36) { $preview = $preview.Substring(0, 36) + '...' }
+      throw "Enter did not send the message; draft remains ($($remaining.Length) chars): $preview. Check whether WeChat is configured to send with Ctrl+Enter."
+    }
+    Write-AutoLog "$action send verified draft cleared"
   }
   Emit-Json @{ ok = $true; platform = 'win32'; text = $text; pressEnter = [bool]$options.KeyboardEnterTest; logPath = $LogPath }
   exit 0

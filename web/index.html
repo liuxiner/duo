@@ -720,7 +720,7 @@
         </label>
         <label>微信 Chrome 地址
           <input name="WECHATY_CDP_URL" value="http://127.0.0.1:9333" list="wechaty-cdp-options">
-          <small>默认使用 Wechaty；开启微信 App 通道后不再检查该端口。</small>
+          <small>配置为 Wechaty 时按该端口检测；开启微信 App 通道后不再检查该端口。</small>
         </label>
         <datalist id="wechaty-cdp-options"><option value="http://127.0.0.1:9333">本机微信 Chrome</option></datalist>
       </form>
@@ -1201,6 +1201,7 @@
         const channel = String(values.MAO_WECHAT_CHANNEL || values.MAO_ACTIVE_WECHAT_CHANNEL || '').toLowerCase();
         desktopWechatSwitch.checked = ['1', 'true', 'yes', 'on'].includes(String(values.MAO_USE_DESKTOP_WECHAT || '').toLowerCase())
           || ['desktop', 'desktop_wechat', 'wechat_app', 'app'].includes(channel);
+        desktopWechatSwitch.disabled = false;
       }
       configOverlay.hidden = false;
     }

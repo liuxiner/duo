@@ -259,13 +259,18 @@ function normalizeWechatChannel(value) {
   return '';
 }
 
+function webWechatRuntimeAvailable() {
+  return fs.existsSync(path.join(activeAppDir(), 'scripts', 'wechaty-bot.mjs'));
+}
+
 function configuredWechatChannel() {
   const explicit = normalizeWechatChannel(readWorkspaceConfigValue('MAO_WECHAT_CHANNEL') || process.env.MAO_WECHAT_CHANNEL);
   if (explicit) return explicit;
   const desktopWechat = readWorkspaceConfigValue('MAO_USE_DESKTOP_WECHAT') || process.env.MAO_USE_DESKTOP_WECHAT;
   if (truthyConfig(desktopWechat, false)) return 'desktop_wechat';
-  if (process.env.MAO_ENABLE_WEB_WECHAT === 'true') return 'wechaty';
-  return process.platform === 'win32' ? 'wechaty' : 'desktop_wechat';
+  if (process.env.MAO_ENABLE_WEB_WECHAT === 'true' && webWechatRuntimeAvailable()) return 'wechaty';
+  if (readWorkspaceConfigValue('MAO_WECHAT_EXE_PATH') || process.env.MAO_WECHAT_EXE_PATH) return 'desktop_wechat';
+  return process.platform === 'win32' && webWechatRuntimeAvailable() ? 'wechaty' : 'desktop_wechat';
 }
 
 function isWechatyChannel() {
@@ -566,6 +571,12 @@ function desktopWechatEnv() {
   return exePath ? { MAO_WECHAT_EXE_PATH: exePath } : {};
 }
 
+function helperLogPreview(value, maxLength = 1200) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...<truncated ${text.length - maxLength}>` : text;
+}
+
 function runNodeRuntimeScript(scriptPath, args, timeoutMs = WECHAT_DESKTOP_AUTOMATION_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [scriptPath, ...args], {
@@ -611,6 +622,11 @@ function runWechatDesktopAutomationHelper(args, timeoutMs = WECHAT_DESKTOP_AUTOM
     const helperArgs = process.platform === 'win32'
       ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helperPath, ...args]
       : args;
+    const startedAt = Date.now();
+    appendServiceLog(
+      serviceLogPath(),
+      `[desktop-wechat-helper] start owner=${owner} command=${command} helper=${helperPath} timeoutMs=${timeoutMs} cwd=${workspaceDir()} logDir=${logsDir()} args=${JSON.stringify(args)}`,
+    );
     const child = spawn(command, helperArgs, {
       cwd: workspaceDir(),
       env: {
@@ -623,6 +639,7 @@ function runWechatDesktopAutomationHelper(args, timeoutMs = WECHAT_DESKTOP_AUTOM
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
+    appendServiceLog(serviceLogPath(), `[desktop-wechat-helper] spawned owner=${owner} pid=${child.pid || 'unknown'}`);
     let stdout = '';
     let stderr = '';
     let finished = false;
@@ -634,17 +651,23 @@ function runWechatDesktopAutomationHelper(args, timeoutMs = WECHAT_DESKTOP_AUTOM
     };
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
+      const durationMs = Date.now() - startedAt;
+      appendServiceLog(serviceLogPath(), `[desktop-wechat-helper] timeout owner=${owner} pid=${child.pid || 'unknown'} durationMs=${durationMs} stdout=${JSON.stringify(helperLogPreview(stdout))} stderr=${JSON.stringify(helperLogPreview(stderr))}`);
       finish(() => reject(new Error(`桌面微信 helper 超时（${Math.round(timeoutMs / 1000)} 秒）。`)));
     }, timeoutMs);
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.once('error', (error) => {
       clearTimeout(timer);
+      const durationMs = Date.now() - startedAt;
+      appendServiceLog(serviceLogPath(), `[desktop-wechat-helper] spawn error owner=${owner} pid=${child.pid || 'unknown'} durationMs=${durationMs} error=${error.message}`);
       finish(() => reject(error));
     });
     child.once('exit', (code, signal) => {
       clearTimeout(timer);
       finish(() => {
+        const durationMs = Date.now() - startedAt;
+        appendServiceLog(serviceLogPath(), `[desktop-wechat-helper] exit owner=${owner} pid=${child.pid || 'unknown'} code=${code} signal=${signal || ''} durationMs=${durationMs} stdout=${JSON.stringify(helperLogPreview(stdout))} stderr=${JSON.stringify(helperLogPreview(stderr))}`);
         if (code === 0) resolve({ stdout, stderr });
         else reject(new Error((stderr || stdout || `helper 退出 code=${code} signal=${signal}`).trim()));
       });
@@ -761,7 +784,7 @@ function tailFile(filePath, maxBytes = 16_384) {
 
 function appendServiceLog(serviceLogPath, message) {
   try {
-    fs.appendFileSync(serviceLogPath, `${message}\n`, 'utf8');
+    fs.appendFileSync(serviceLogPath, `[${new Date().toISOString()}] ${message}\n`, 'utf8');
   } catch {}
 }
 
