@@ -4,7 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/build.mjs"
+    "build": "node scripts/build.mjs",
+    "start": "node server.mjs",
+    "serve": "node server.mjs",
+    "release": "npm run build && node scripts/release.mjs",
+    "release:static": "npm run build && node scripts/release.mjs --static"
   },
   "engines": {
     "node": ">=20"

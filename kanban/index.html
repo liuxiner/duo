@@ -727,8 +727,10 @@
       warehouse: 'all',
       query: '',
       loading: false,
+      serviceMode: false,
     };
     const CONFIG_STORAGE_KEY = 'mao-kanban-config-v1';
+    const DATA_STORAGE_KEY = 'mao-kanban-data-v1';
     const DEFAULT_CONFIG = {
       dataUrl: './kanban-data.json',
       appId: '',
@@ -739,6 +741,7 @@
       manualUrl: '',
       reviewUrl: '',
       writebackEnabled: false,
+      serviceMode: false,
     };
 
     const fmt = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 });
@@ -810,9 +813,10 @@
       document.getElementById('manualUrlInput').value = config.manualUrl || '';
       document.getElementById('reviewUrlInput').value = config.reviewUrl || '';
       document.getElementById('writebackInput').checked = config.writebackEnabled !== false;
-      const authText = config.authReady ? '飞书凭证已配置' : '配置已保存在当前浏览器';
+      const modeText = state.serviceMode ? '服务模式已连接' : '静态模式';
+      const authText = config.authReady ? '飞书凭证已配置' : (state.serviceMode ? '请配置飞书 App ID / Secret' : '配置已保存在当前浏览器');
       const reviewText = config.reviewUrl ? '复盘表已配置' : '复盘表未配置';
-      document.getElementById('configStatus').textContent = authText + ' · ' + reviewText;
+      document.getElementById('configStatus').textContent = modeText + ' · ' + authText + ' · ' + reviewText;
     }
 
     function normalizeConfig(config) {
@@ -820,19 +824,30 @@
         ...DEFAULT_CONFIG,
         ...(config || {}),
         dataUrl: String(config?.dataUrl || DEFAULT_CONFIG.dataUrl).trim() || DEFAULT_CONFIG.dataUrl,
-        appSecret: undefined,
+        appSecret: config?.appSecret ? String(config.appSecret).trim() : undefined,
         hasAppSecret: Boolean(config?.hasAppSecret || config?.appSecret),
         authReady: Boolean(config?.appId && (config?.hasAppSecret || config?.appSecret)),
         writebackEnabled: Boolean(config?.writebackEnabled),
+        serviceMode: Boolean(config?.serviceMode),
       };
     }
 
-    function loadConfig() {
+    async function loadConfig() {
       let stored = null;
       try {
         stored = JSON.parse(localStorage.getItem(CONFIG_STORAGE_KEY) || 'null');
       } catch {}
       state.config = normalizeConfig(stored);
+      try {
+        const response = await fetch('/api/kanban-config', { cache: 'no-store' });
+        const serverConfig = await response.json();
+        if (!response.ok || serverConfig.error) throw new Error(serverConfig.error || '服务配置读取失败');
+        state.serviceMode = true;
+        state.config = normalizeConfig({ ...state.config, ...serverConfig, dataUrl: serverConfig.dataUrl || '/api/kanban-data' });
+        localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(publicConfig(state.config), null, 2));
+      } catch {
+        state.serviceMode = false;
+      }
       renderConfig();
     }
 
@@ -857,16 +872,78 @@
       return safeConfig;
     }
 
+    function normalizeDataPayload(payload) {
+      if (!payload || typeof payload !== 'object') throw new Error('看板 JSON 不是有效对象');
+      const days = payload.days && typeof payload.days === 'object' ? payload.days : {};
+      const dates = Array.isArray(payload.dates) && payload.dates.length
+        ? payload.dates
+        : Object.keys(days).sort();
+      return {
+        ...payload,
+        ok: payload.ok !== false,
+        dates,
+        days,
+      };
+    }
+
+    function readStoredData() {
+      const text = localStorage.getItem(DATA_STORAGE_KEY);
+      if (!text) return null;
+      const stored = JSON.parse(text);
+      const payload = normalizeDataPayload(stored?.payload || stored);
+      return {
+        payload,
+        savedAt: stored?.savedAt || payload.refreshedAt || '',
+      };
+    }
+
+    function storedDataLabel(stored) {
+      if (!stored?.savedAt) return '本地缓存';
+      return '本地缓存 ' + new Date(stored.savedAt).toLocaleString('zh-CN', { hour12: false });
+    }
+
+    function applyDataPayload(payload, sourceLabel = '') {
+      state.data = normalizeDataPayload(payload);
+      state.dataSourceLabel = sourceLabel;
+      window.KANBAN_DAILY_DATA = state.data.days || {};
+      window.KANBAN_SOURCE = state.data.source || {};
+      if (!state.date || !state.data.dates.includes(state.date)) {
+        state.date = state.data.dates[state.data.dates.length - 1] || '';
+      }
+      if (!state.date) showMessage('没有可展示的日期数据。');
+      render();
+    }
+
+    function saveDataToLocalStorage(payload, { renderNow = true } = {}) {
+      const normalized = normalizeDataPayload(payload);
+      const savedAt = new Date().toISOString();
+      localStorage.setItem(DATA_STORAGE_KEY, JSON.stringify({ savedAt, payload: normalized }));
+      if (renderNow) applyDataPayload(normalized, '本地缓存 ' + new Date(savedAt).toLocaleString('zh-CN', { hour12: false }));
+      return normalized;
+    }
+
     async function saveConfig() {
       const button = document.getElementById('saveConfigButton');
       button.disabled = true;
       button.textContent = '保存中';
       document.getElementById('configStatus').textContent = '保存中';
       try {
-        state.config = readConfigForm();
+        const formConfig = readConfigForm();
+        if (state.serviceMode) {
+          const response = await fetch('/api/kanban-config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json; charset=utf-8' },
+            body: JSON.stringify(formConfig),
+          });
+          const payload = await response.json();
+          if (!response.ok || payload.error) throw new Error(payload.error || '服务配置保存失败');
+          state.config = normalizeConfig(payload.config);
+        } else {
+          state.config = formConfig;
+        }
         localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(publicConfig(state.config), null, 2));
         renderConfig();
-        document.getElementById('configStatus').textContent = '已保存到当前浏览器';
+        document.getElementById('configStatus').textContent = state.serviceMode ? '已保存到服务端' : '已保存到当前浏览器';
         await loadData(true);
       } catch (error) {
         document.getElementById('configStatus').textContent = error.message;
@@ -905,6 +982,18 @@
       button.disabled = true;
       button.textContent = '刷新中';
       try {
+        let stored = null;
+        try {
+          stored = readStoredData();
+        } catch (error) {
+          localStorage.removeItem(DATA_STORAGE_KEY);
+          console.warn('Ignored invalid kanban local data:', error);
+        }
+        if (!forceRefresh && stored?.payload) {
+          applyDataPayload(stored.payload, storedDataLabel(stored));
+          showMessage('');
+          return;
+        }
         const dataUrl = state.config?.dataUrl || './kanban-data.json';
         const cacheBustedUrl = forceRefresh
           ? dataUrl + (dataUrl.includes('?') ? '&' : '?') + 't=' + Date.now()
@@ -912,13 +1001,25 @@
         const response = await fetch(cacheBustedUrl, { cache: 'no-store' });
         const payload = await response.json();
         if (!response.ok || payload.error) throw new Error(payload.error || '看板数据读取失败');
-        state.data = payload;
-        window.KANBAN_DAILY_DATA = payload.days || {};
-        window.KANBAN_SOURCE = payload.source || {};
-        if (!state.date || !payload.dates.includes(state.date)) state.date = payload.dates[payload.dates.length - 1] || '';
-        if (!state.date) showMessage('没有可展示的日期数据。');
-        render();
+        const normalized = saveDataToLocalStorage(payload, { renderNow: false });
+        applyDataPayload(
+          normalized,
+          forceRefresh
+            ? '数据 JSON 已刷新 ' + new Date().toLocaleString('zh-CN', { hour12: false })
+            : '静态 JSON 兜底'
+        );
+        showMessage('');
       } catch (error) {
+        if (forceRefresh) {
+          try {
+            const stored = readStoredData();
+            if (stored?.payload) {
+              applyDataPayload(stored.payload, storedDataLabel(stored));
+              showMessage('刷新数据 JSON 失败，已显示本地缓存：' + esc(error.message), 'error');
+              return;
+            }
+          } catch {}
+        }
         showMessage(esc(error.message), 'error');
       } finally {
         state.loading = false;
@@ -948,9 +1049,10 @@
     function renderSourceStatus() {
       const source = state.data?.source;
       const refreshed = state.data?.refreshedAt ? new Date(state.data.refreshedAt).toLocaleString('zh-CN', { hour12: false }) : '-';
+      const sourceLabel = state.dataSourceLabel ? ' · ' + state.dataSourceLabel : '';
       document.getElementById('sourceStatus').textContent = source
-        ? 'raw ' + source.rawRowCount + ' 行 · 手动 ' + (source.manualInputRowCount || 0) + ' 行 · 大看板 ' + source.bigBoardFieldCount + ' 字段 · 单品 ' + source.smallBoardFieldCount + ' 字段 · ' + refreshed
-        : '读取静态看板数据';
+        ? 'raw ' + source.rawRowCount + ' 行 · 手动 ' + (source.manualInputRowCount || 0) + ' 行 · 大看板 ' + source.bigBoardFieldCount + ' 字段 · 单品 ' + source.smallBoardFieldCount + ' 字段 · ' + refreshed + sourceLabel
+        : (state.dataSourceLabel || '读取静态看板数据');
     }
 
     function renderKpis() {
@@ -1231,10 +1333,28 @@
       });
     }
 
-    initEvents();
-    loadConfig();
-    loadData(false);
-    window.setInterval(() => loadData(true), 60000);
+    window.MaoKanban = {
+      dataStorageKey: DATA_STORAGE_KEY,
+      configStorageKey: CONFIG_STORAGE_KEY,
+      setData: (payload) => saveDataToLocalStorage(payload),
+      getData: () => readStoredData()?.payload || null,
+      clearData: async () => {
+        localStorage.removeItem(DATA_STORAGE_KEY);
+        state.data = null;
+        state.dataSourceLabel = '';
+        await loadData(true);
+      },
+      reload: () => loadData(true),
+    };
+
+    async function init() {
+      initEvents();
+      await loadConfig();
+      await loadData(false);
+      window.setInterval(() => loadData(true), 60000);
+    }
+
+    init();
   </script>
 </body>
 </html>
