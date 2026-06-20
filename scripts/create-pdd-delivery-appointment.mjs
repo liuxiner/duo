@@ -8,6 +8,7 @@ import {
 
 const ROOT = path.resolve(process.env.MAO_WORKSPACE_PATH || process.cwd());
 const APPOINTMENT_DELIVERY_URL = 'https://mc.pinduoduo.com/ddmc-mms/appointment-delivery';
+const HEADER_MULTI_SELECTION_SELECTOR = 'th label[data-testid="beast-core-checkbox"], tr[data-testid="beast-core-table-header-tr"] label[data-testid="beast-core-checkbox"]';
 const DEFAULT_AREA_IDS = { 浙江省: 31 };
 const DEFAULT_RESERVATION_ITEMS = [
   {
@@ -15,9 +16,9 @@ const DEFAULT_RESERVATION_ITEMS = [
     region: '浙江省',
     warehouseGroup: '杭州仓组',
     centerWarehouses: ['杭州中心1仓', '杭州中心2仓'],
-    driverMobile: '',
+    driverMobile: '15090976592',
     quantity: 100,
-    preferredHour: '10:00',
+    preferredHour: '12:00',
     enabled: false,
   },
   {
@@ -25,9 +26,9 @@ const DEFAULT_RESERVATION_ITEMS = [
     region: '浙江省',
     warehouseGroup: '宁波仓组',
     centerWarehouses: ['宁波1仓'],
-    driverMobile: '',
+    driverMobile: '13486621270',
     quantity: 100,
-    preferredHour: '14:00',
+    preferredHour: '12:00',
     enabled: false,
   },
   {
@@ -35,9 +36,9 @@ const DEFAULT_RESERVATION_ITEMS = [
     region: '浙江省',
     warehouseGroup: '温州仓组',
     centerWarehouses: ['温州1仓'],
-    driverMobile: '',
+    driverMobile: '17767375369',
     quantity: 100,
-    preferredHour: '10:00',
+    preferredHour: '12:00',
     enabled: false,
   },
 ];
@@ -100,6 +101,11 @@ function enabledFromValue(value, fallback = false) {
   return fallback;
 }
 
+function maskMobile(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  return digits.length >= 7 ? `${digits.slice(0, 3)}****${digits.slice(-4)}` : digits;
+}
+
 async function readReportConfig() {
   const configPath = path.resolve(ROOT, process.env.PDD_REPORT_CONFIG_PATH || 'data/report-config.json');
   try {
@@ -159,40 +165,107 @@ async function resolveWarehouseGroup(context, rule) {
   return { areaId, group, warehouses };
 }
 
-function beijingDateKey(date = new Date()) {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(date);
-}
-
-async function clickSelectByLabel(page, labelText, optionText) {
-  for (const offset of [110, 160, 220, 280]) {
-    const label = page.getByText(labelText, { exact: true }).first();
-    const box = await label.boundingBox().catch(() => null);
-    if (!box) continue;
-    await page.mouse.click(box.x + box.width + offset, box.y + box.height / 2);
-    await page.waitForTimeout(400);
-    const option = page.getByText(optionText, { exact: false }).last();
-    if (await option.count().catch(() => 0)) {
-      await option.click({ timeout: 3000 }).catch(() => {});
-      await page.waitForTimeout(400);
-      return true;
+async function selectVisibleDropdownByIndex(page, index, targetText) {
+  const before = await page.evaluate(({ inputIndex, optionText }) => {
+    const isVisible = (node) => {
+      const rect = node?.getBoundingClientRect?.();
+      return Boolean(rect && rect.width > 0 && rect.height > 0);
+    };
+    const inputs = Array.from(document.querySelectorAll('input[placeholder="请选择"]')).filter(isVisible);
+    const input = inputs[inputIndex];
+    if (!input) return { opened: false, selected: false, reason: `找不到第 ${inputIndex + 1} 个筛选下拉框` };
+    if (String(input.value || '').includes(optionText)) {
+      return { opened: false, selected: true, value: input.value, reason: '' };
     }
-  }
-  return false;
+    input.scrollIntoView({ block: 'center', inline: 'center' });
+    input.click();
+    return { opened: true, selected: false, value: input.value, reason: '' };
+  }, { inputIndex: index, optionText: targetText });
+  if (before.selected) return before;
+  if (!before.opened) return before;
+  await page.waitForTimeout(500);
+
+  const selected = await page.evaluate((optionText) => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
+    const target = normalize(optionText);
+    const isVisible = (node) => {
+      const rect = node?.getBoundingClientRect?.();
+      return Boolean(rect && rect.width > 0 && rect.height > 0);
+    };
+    const candidates = Array.from(document.querySelectorAll('[role="option"], li, [class*="option"], [class*="Option"], div, span'))
+      .filter((node) => {
+        if (!isVisible(node)) return false;
+        const text = normalize(node.innerText || node.textContent);
+        return text.includes(target) && text.length <= Math.max(target.length + 80, 120);
+      })
+      .sort((a, b) => {
+        const score = (node) => {
+          const text = normalize(node.innerText || node.textContent);
+          const className = String(node.className || '');
+          return (text === target ? 100 : 0) + (/option|Option|item|Item/.test(className) ? 10 : 0) - text.length / 1000;
+        };
+        return score(b) - score(a);
+      });
+    const option = candidates[0];
+    if (!option) return { selected: false, reason: `下拉选项中找不到 ${optionText}` };
+    option.scrollIntoView({ block: 'center', inline: 'center' });
+    option.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, composed: true, view: window }));
+    option.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, composed: true, view: window }));
+    option.click();
+    return { selected: true, text: option.innerText || option.textContent || '' };
+  }, targetText);
+  if (!selected.selected) return selected;
+  await page.waitForTimeout(600);
+  return selected;
 }
 
 async function applyFilters(page, rule, meta) {
-  await clickSelectByLabel(page, '销售区域', rule.region).catch(() => false);
-  await clickSelectByLabel(page, '仓组', meta.group.warehouseGroupName).catch(() => false);
+  const areaResult = await selectVisibleDropdownByIndex(page, 1, rule.region).catch((error) => ({ selected: false, reason: error.message }));
+  if (!areaResult.selected) {
+    throw new Error(`销售区域筛选失败：${areaResult.reason || rule.region}`);
+  }
+  const groupResult = await selectVisibleDropdownByIndex(page, 2, meta.group.warehouseGroupName).catch((error) => ({ selected: false, reason: error.message }));
+  if (!groupResult.selected) {
+    throw new Error(`仓组筛选失败：${groupResult.reason || meta.group.warehouseGroupName}`);
+  }
   const query = page.getByRole('button', { name: /^查询$/ }).first();
   if (await query.count().catch(() => 0)) await query.click().catch(() => {});
   await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
-  await page.waitForFunction(() => /共有\s*\d+\s*条/.test(document.body.innerText || ''), { timeout: 15_000 }).catch(() => {});
+  await page.waitForFunction(({ groupName, warehouseNames }) => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
+    const inputs = Array.from(document.querySelectorAll('input[placeholder="请选择"]'))
+      .filter((input) => {
+        const rect = input.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+    const groupValue = inputs[2]?.value || '';
+    const body = document.body.innerText || '';
+    return /共有\s*\d+\s*条/.test(body)
+      && normalize(groupValue).includes(normalize(groupName))
+      && warehouseNames.some((name) => normalize(body).includes(normalize(name)));
+  }, { groupName: meta.group.warehouseGroupName, warehouseNames: meta.warehouses.map((item) => item.warehouseName) }, { timeout: 25_000 }).catch(() => {});
   await page.waitForTimeout(1500);
+  const filterState = await page.evaluate(({ groupName, warehouseNames }) => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
+    const inputs = Array.from(document.querySelectorAll('input[placeholder="请选择"]'))
+      .filter((input) => {
+        const rect = input.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+    const groupValue = inputs[2]?.value || '';
+    const body = document.body.innerText || '';
+    return {
+      groupValue,
+      groupMatched: normalize(groupValue).includes(normalize(groupName)),
+      warehouseMatched: warehouseNames.some((name) => normalize(body).includes(normalize(name))),
+    };
+  }, { groupName: meta.group.warehouseGroupName, warehouseNames: meta.warehouses.map((item) => item.warehouseName) });
+  if (!filterState.groupMatched) {
+    throw new Error(`仓组筛选未生效：当前筛选值为 ${filterState.groupValue || '(空)'}，目标为 ${meta.group.warehouseGroupName}`);
+  }
+  if (!filterState.warehouseMatched) {
+    throw new Error(`仓组筛选后列表未出现目标中心仓：${meta.warehouses.map((item) => item.warehouseName).join(', ')}`);
+  }
 }
 
 async function readAppointmentTotalCount(page) {
@@ -206,135 +279,384 @@ async function readAppointmentTotalCount(page) {
   });
 }
 
-async function selectVisibleAppointmentRows(page) {
-  const actionBoxes = await page.getByText('去预约', { exact: true }).evaluateAll((nodes) => nodes.map((node) => {
-    const rect = node.getBoundingClientRect();
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-  })).catch(() => []);
-  if (!actionBoxes.length) return 0;
-
-  const checkboxBoxes = await page.evaluate(() => {
-    const nodes = Array.from(document.querySelectorAll('input[type="checkbox"], [role="checkbox"], .BTN_checkbox_5-157-0, .CBX_checkbox_5-157-0, .checkbox'));
-    return nodes.map((node, index) => {
-      const rect = node.getBoundingClientRect();
-      return {
-        index,
-        x: rect.x,
-        y: rect.y,
-        width: rect.width,
-        height: rect.height,
-        visible: rect.width > 0 && rect.height > 0,
-        checked: Boolean(node.checked || node.getAttribute('aria-checked') === 'true'),
-      };
-    }).filter((item) => item.visible);
-  });
-
-  let selected = 0;
-  for (const actionBox of actionBoxes) {
-    const y = actionBox.y + actionBox.height / 2;
-    const checkbox = checkboxBoxes
-      .filter((item) => !item.checked && item.x < actionBox.x && Math.abs((item.y + item.height / 2) - y) < 24)
-      .sort((a, b) => Math.abs((a.y + a.height / 2) - y) - Math.abs((b.y + b.height / 2) - y))[0];
-    if (!checkbox) continue;
-    await page.mouse.click(checkbox.x + checkbox.width / 2, checkbox.y + checkbox.height / 2);
-    selected += 1;
-    await page.waitForTimeout(80);
-  }
-  return selected;
-}
-
-async function selectAllVisibleAppointmentRows(page) {
-  const state = await page.evaluate(() => {
-    const checkbox = document.querySelector('tr[data-testid="beast-core-table-header-tr"] label[data-testid="beast-core-checkbox"]');
-    if (!checkbox) return { checked: false, disabled: true, reason: '找不到表头全选框' };
-    const rect = checkbox.getBoundingClientRect();
-    const input = checkbox.querySelector('input[type="checkbox"], input[mode="checkbox"]');
-    const disabled = Boolean(
-      input?.disabled
-      || checkbox.getAttribute('aria-disabled') === 'true'
-      || checkbox.querySelector('[class*="Disabled"], [class*="disabled"], [class*="groupDisabled"]')
-    );
-    const checked = checkbox.getAttribute('data-checked') === 'true' || Boolean(input?.checked);
-    return {
-      checked,
-      disabled,
-      visible: rect.width > 0 && rect.height > 0,
-      x: rect.x + rect.width / 2,
-      y: rect.y + rect.height / 2,
-      reason: disabled ? '表头全选框处于禁用态' : '',
-    };
-  });
-  if (state.checked || state.disabled || !state.visible) return state;
-
-  await page.mouse.click(state.x, state.y);
-  await page.waitForTimeout(500);
+async function readAppointmentListGoodsIds(page) {
   return page.evaluate(() => {
-    const checkbox = document.querySelector('tr[data-testid="beast-core-table-header-tr"] label[data-testid="beast-core-checkbox"]');
-    const batchButton = Array.from(document.querySelectorAll('button')).find((button) => /批量新建预约/.test(button.innerText || button.textContent || ''));
-    const input = checkbox?.querySelector('input[type="checkbox"], input[mode="checkbox"]');
-    const checked = checkbox?.getAttribute('data-checked') === 'true' || Boolean(input?.checked);
-    const active = Boolean(batchButton && !batchButton.disabled);
+    const bodyText = document.body.innerText || '';
+    return [...new Set(Array.from(bodyText.matchAll(/ID[:\s]+(\d+)/g)).map((match) => match[1]))];
+  });
+}
+
+async function readAppointmentSelectionState(page) {
+  return page.evaluate(() => {
+    const isVisible = (node) => {
+      if (!node) return false;
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const isDisabledCheckbox = (checkbox) => {
+      const input = checkbox?.querySelector('input[type="checkbox"], input[mode="checkbox"]');
+      const className = String(checkbox?.className || '');
+      return Boolean(
+        input?.disabled
+        || checkbox?.getAttribute('aria-disabled') === 'true'
+        || /(^|\s)(CBX_)?disabled[_\s]/i.test(className)
+      );
+    };
+    const isCheckedCheckbox = (checkbox) => {
+      const input = checkbox?.querySelector('input[type="checkbox"], input[mode="checkbox"]');
+      return checkbox?.getAttribute('data-checked') === 'true' || Boolean(input?.checked);
+    };
+    const centerOf = (node) => {
+      const rect = node.getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    };
+    const checkbox = Array.from(document.querySelectorAll('th label[data-testid="beast-core-checkbox"], tr[data-testid="beast-core-table-header-tr"] label[data-testid="beast-core-checkbox"]'))
+      .find((item) => isVisible(item));
+    const rows = Array.from(document.querySelectorAll('tbody tr[data-testid^="beast-core-table-body-tr"], tbody tr'))
+      .filter((row) => !row.closest('thead') && !row.matches('[data-testid="beast-core-table-header-tr"]') && isVisible(row));
+    const rowCheckboxes = rows
+      .map((row, index) => {
+        const rowCheckbox = row.querySelector('label[data-testid="beast-core-checkbox"]');
+        if (!rowCheckbox || !isVisible(rowCheckbox)) return null;
+        const point = centerOf(rowCheckbox);
+        return {
+          index,
+          x: point.x,
+          y: point.y,
+          checked: isCheckedCheckbox(rowCheckbox),
+          disabled: isDisabledCheckbox(rowCheckbox),
+          text: String(row.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+        };
+      })
+      .filter(Boolean);
+    const batchButton = Array.from(document.querySelectorAll('button'))
+      .find((button) => /批量新建预约/.test(button.innerText || button.textContent || ''));
+    const headerPoint = checkbox && isVisible(checkbox) ? centerOf(checkbox) : null;
     return {
-      checked: checked || active,
-      disabled: false,
-      visible: Boolean(checkbox),
-      reason: checked || active ? '' : '已点击表头全选框，但 PDD 未切换为选中态',
+      header: checkbox ? {
+        checked: isCheckedCheckbox(checkbox),
+        disabled: isDisabledCheckbox(checkbox),
+        visible: isVisible(checkbox),
+        x: headerPoint?.x,
+        y: headerPoint?.y,
+      } : null,
+      rows: rowCheckboxes,
+      checkedRows: rowCheckboxes.filter((item) => item.checked).length,
+      selectableRows: rowCheckboxes.filter((item) => !item.disabled).length,
+      visibleRows: rows.length,
+      batchActive: Boolean(batchButton && !batchButton.disabled),
     };
   });
 }
 
-async function openBatchAppointmentFromCurrentList(page) {
-  const selectState = await selectAllVisibleAppointmentRows(page);
-  if (!selectState.checked) {
-    return { opened: false, reason: selectState.reason || '表头全选框未选中' };
+async function selectAppointmentRows(page, expectedCount) {
+  let state = await readAppointmentSelectionState(page);
+  if (state.batchActive && (state.checkedRows === expectedCount || state.header?.checked)) {
+    return { selectedCount: state.checkedRows || expectedCount, method: 'existing' };
+  }
+
+  if (!state.header?.visible) {
+    return { selectedCount: state.checkedRows, method: 'header', reason: '找不到表头 multi selection' };
+  }
+  if (state.header.disabled) {
+    return {
+      selectedCount: state.checkedRows,
+      method: 'header',
+      reason: `页面共有 ${expectedCount} 条，但表头 multi selection 处于禁用态`,
+    };
+  }
+
+  const headerIcon = page.locator('th [data-testid="beast-core-checkbox-checkIcon"], tr[data-testid="beast-core-table-header-tr"] [data-testid="beast-core-checkbox-checkIcon"]').first();
+  if (state.batchActive || state.header.checked || state.checkedRows) {
+    await headerIcon.click({ force: true, timeout: 3000 }).catch(() => page.mouse.click(state.header.x, state.header.y));
+    await page.waitForFunction(() => {
+      const batchButton = Array.from(document.querySelectorAll('button'))
+        .find((button) => /批量新建预约/.test(button.innerText || button.textContent || ''));
+      const checkbox = Array.from(document.querySelectorAll('th label[data-testid="beast-core-checkbox"], tr[data-testid="beast-core-table-header-tr"] label[data-testid="beast-core-checkbox"]'))
+        .find((item) => {
+          const rect = item.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
+      const input = checkbox?.querySelector('input[type="checkbox"], input[mode="checkbox"]');
+      return Boolean(batchButton?.disabled)
+        && checkbox?.getAttribute('data-checked') !== 'true'
+        && !input?.checked;
+    }, { timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(500);
+    state = await readAppointmentSelectionState(page);
+  }
+
+  const waitForSelection = () => page.waitForFunction(() => {
+      const batchButton = Array.from(document.querySelectorAll('button'))
+        .find((button) => /批量新建预约/.test(button.innerText || button.textContent || ''));
+      const checkboxes = Array.from(document.querySelectorAll('th label[data-testid="beast-core-checkbox"], tr[data-testid="beast-core-table-header-tr"] label[data-testid="beast-core-checkbox"]'));
+      const checkbox = checkboxes.find((item) => {
+        const rect = item.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+      const input = checkbox?.querySelector('input[type="checkbox"], input[mode="checkbox"]');
+      return Boolean(batchButton && !batchButton.disabled)
+        || checkbox?.getAttribute('data-checked') === 'true'
+        || Boolean(input?.checked);
+    }, { timeout: 3000 }).catch(() => {});
+  const headerLabel = page.locator(HEADER_MULTI_SELECTION_SELECTOR).first();
+  const headerInput = page.locator('th input[type="checkbox"], th input[mode="checkbox"], tr[data-testid="beast-core-table-header-tr"] input[type="checkbox"], tr[data-testid="beast-core-table-header-tr"] input[mode="checkbox"]').first();
+  const clickAttempts = [
+    () => headerIcon.click({ force: true, timeout: 3000 }),
+    () => headerInput.click({ force: true, timeout: 3000 }),
+    () => headerLabel.click({ force: true, timeout: 3000 }),
+    () => headerIcon.dispatchEvent('click', {}, { timeout: 3000 }),
+    () => headerInput.dispatchEvent('click', {}, { timeout: 3000 }),
+    () => headerLabel.dispatchEvent('click', {}, { timeout: 3000 }),
+    () => page.mouse.click(state.header.x, state.header.y),
+    () => page.evaluate(() => {
+      const isVisible = (node) => {
+        if (!node) return false;
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const checkbox = Array.from(document.querySelectorAll('th label[data-testid="beast-core-checkbox"], tr[data-testid="beast-core-table-header-tr"] label[data-testid="beast-core-checkbox"]'))
+        .find((item) => isVisible(item));
+      if (!checkbox) return false;
+      const icon = checkbox.querySelector('[data-testid="beast-core-checkbox-checkIcon"]');
+      const input = checkbox.querySelector('input[type="checkbox"], input[mode="checkbox"]');
+      const fire = (node, type) => node?.dispatchEvent(new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+      }));
+      for (const target of [icon, input, checkbox]) {
+        fire(target, 'mousedown');
+        fire(target, 'mouseup');
+        fire(target, 'click');
+      }
+      input?.click?.();
+      checkbox.click();
+      return true;
+    }),
+  ];
+  for (const clickAttempt of clickAttempts) {
+    await clickAttempt().catch(() => {});
+    await waitForSelection();
+    state = await readAppointmentSelectionState(page);
+    if (state.batchActive || state.header?.checked || state.checkedRows) break;
+  }
+  await page.waitForTimeout(300);
+
+  state = await readAppointmentSelectionState(page);
+  if (!state.batchActive) {
+    return {
+      selectedCount: state.checkedRows,
+      method: 'header',
+      reason: `已点击表头 multi selection，但批量新建预约按钮未启用；当前已选 ${state.checkedRows} 条`,
+    };
+  }
+  return { selectedCount: expectedCount, observedSelectedCount: state.checkedRows, method: 'header' };
+}
+
+async function openBatchAppointmentFromCurrentList(page, expectedCount) {
+  const selectState = await selectAppointmentRows(page, expectedCount);
+  if (selectState.selectedCount !== expectedCount) {
+    return { opened: false, selectedCount: selectState.selectedCount, reason: selectState.reason || '选中行数不匹配' };
   }
 
   const button = page.getByRole('button', { name: /批量新建预约/ }).first();
   await button.waitFor({ state: 'visible', timeout: 10_000 });
   const disabled = await button.evaluate((node) => node.disabled).catch(() => true);
-  if (disabled) return { opened: false, reason: '批量新建预约按钮仍为禁用态' };
+  if (disabled) return { opened: false, selectedCount: selectState.selectedCount, reason: '批量新建预约按钮仍为禁用态' };
   await button.click({ timeout: 10_000 });
   await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
   await page.waitForTimeout(1500);
-  return { opened: true, reason: '' };
+  return { opened: true, selectedCount: selectState.selectedCount, reason: '' };
 }
 
-async function fillAppointmentQuantities(page, quantity) {
-  return page.evaluate((nextQuantity) => {
-    const modal = Array.from(document.querySelectorAll('[role="dialog"], .MDL_outerWrapper_5-157-0, .modal, body')).find((node) => {
-      const text = node.innerText || '';
-      return /预约|送货/.test(text);
-    }) || document.body;
-    const allInputs = Array.from(modal.querySelectorAll('input'));
-    const visibleEditableInputs = allInputs.filter((input) => {
-      const rect = input.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0 && !input.disabled && !input.readOnly;
-    });
-    const inputs = new Set();
-    const textOf = (node) => String(node?.innerText || node?.textContent || '').replace(/\s+/g, '').trim();
-    const quantityLabels = Array.from(modal.querySelectorAll('*')).filter((node) => {
-      const text = textOf(node);
-      return text === '本次预约' || text === '预约数量' || text === '预约件数';
-    });
-    for (const label of quantityLabels) {
-      const labelRect = label.getBoundingClientRect();
-      const candidates = visibleEditableInputs
-        .map((input) => ({ input, rect: input.getBoundingClientRect() }))
-        .filter(({ rect }) => Math.abs((rect.y + rect.height / 2) - (labelRect.y + labelRect.height / 2)) < 36)
-        .sort((a, b) => Math.abs(a.rect.x - labelRect.x) - Math.abs(b.rect.x - labelRect.x));
-      if (candidates[0]) inputs.add(candidates[0].input);
+function batchCreateAppointmentUrl(meta, goodsIds) {
+  const url = new URL(`${APPOINTMENT_DELIVERY_URL}/create-appointment`);
+  url.searchParams.set('areaId', String(meta.areaId));
+  url.searchParams.set('date', new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date()));
+  url.searchParams.set('goodsId', goodsIds.join(','));
+  url.searchParams.set('warehouseGroupId', String(meta.group.warehouseGroupId));
+  url.searchParams.set('warehouseGroupName', meta.group.warehouseGroupName);
+  return url.toString();
+}
+
+async function openBatchAppointmentByGoodsIds(page, meta, goodsIds) {
+  await page.goto(batchCreateAppointmentUrl(meta, goodsIds), { waitUntil: 'domcontentloaded', timeout: 90_000 });
+  await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
+  await page.waitForTimeout(1500);
+}
+
+async function selectDriver(page, rule) {
+  const mobile = String(rule.driverMobile || '').trim();
+  if (!mobile) return { selected: false, label: '' };
+  const maskedMobile = maskMobile(mobile);
+  if (!maskedMobile) return { selected: false, label: '' };
+
+  const selectedAlready = await page.evaluate((masked) => {
+    const text = document.body.innerText || '';
+    return text.includes(masked) && !text.includes('请先选择司机');
+  }, maskedMobile).catch(() => false);
+  if (selectedAlready) return { selected: true, label: maskedMobile };
+
+  if (typeof page.removeLocatorHandler === 'function') {
+    await page.removeLocatorHandler(page.locator('[data-testid="beast-core-modal"]:visible').first()).catch(() => {});
+  }
+  await page.getByText('选择司机', { exact: true }).click({ timeout: 10_000 });
+  await page.waitForSelector('[data-testid="beast-core-modal"]', { state: 'visible', timeout: 10_000 });
+
+  const searchResult = await page.evaluate((keyword) => {
+    const isVisible = (node) => {
+      if (!node) return false;
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const modal = Array.from(document.querySelectorAll('[data-testid="beast-core-modal"]')).find(isVisible);
+    const inputs = Array.from(modal?.querySelectorAll('input') || [])
+      .filter((input) => isVisible(input) && !input.disabled && !input.readOnly);
+    const input = inputs.find((candidate) => /司机|手机|电话|搜索|请输入/.test(`${candidate.placeholder || ''} ${candidate.getAttribute('aria-label') || ''}`))
+      || inputs[0];
+    if (!input) return { searched: false, reason: '司机选择弹窗未找到搜索输入框' };
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    input.focus();
+    if (setter) setter.call(input, keyword);
+    else input.value = keyword;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    const searchButton = Array.from(modal.querySelectorAll('button, a, [role="button"]'))
+      .find((node) => /查询|搜索/.test(normalize(node.innerText || node.textContent)));
+    searchButton?.click();
+    return { searched: true, reason: '' };
+  }, mobile);
+  if (!searchResult.searched) throw new Error(searchResult.reason);
+  await page.waitForTimeout(1200);
+
+  const choice = await page.evaluate((masked) => {
+    const isVisible = (node) => {
+      if (!node) return false;
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const modal = Array.from(document.querySelectorAll('[data-testid="beast-core-modal"]')).find(isVisible);
+    const items = Array.from(modal?.querySelectorAll('[class*="driver-select-modal_driver-item"]') || [])
+      .filter((node) => isVisible(node) && normalize(node.innerText).includes(masked) && normalize(node.innerText).includes('选择'));
+    if (!items.length) return { selected: false, reason: `搜索后未找到 ${masked} 对应司机` };
+    if (items.length > 1) return { selected: false, reason: `搜索后 ${masked} 匹配到 ${items.length} 个司机，请检查司机号码是否唯一` };
+    const item = items[0];
+    const button = Array.from(item.querySelectorAll('button, a, [role="button"]'))
+      .find((node) => normalize(node.innerText || node.textContent) === '选择');
+    if (!button) return { selected: false, reason: `搜索到 ${masked}，但未找到该行“选择”按钮` };
+    const text = normalize(item.innerText);
+    button.click();
+    return { selected: true, text };
+  }, maskedMobile);
+  if (!choice.selected) {
+    throw new Error(`未精准选择司机手机号 ${mobile}（${maskedMobile}）：${choice.reason}`);
+  }
+
+  await page.waitForSelector('[data-testid="beast-core-modal"]', { state: 'hidden', timeout: 10_000 }).catch(() => {});
+  await page.waitForTimeout(800);
+  return { selected: true, label: choice.text };
+}
+
+async function countCreateAppointmentGoods(page) {
+  return page.evaluate(() => {
+    const url = new URL(location.href);
+    const urlGoodsIds = (url.searchParams.get('goodsId') || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (urlGoodsIds.length) return new Set(urlGoodsIds).size;
+    const bodyText = document.body.innerText || '';
+    return new Set(Array.from(bodyText.matchAll(/ID:\s*(\d+)/g)).map((match) => match[1])).size;
+  });
+}
+
+async function fillAppointmentQuantities(page, quantity, centerWarehouses) {
+  const selection = await page.evaluate(({ warehouses }) => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
+    const warehouseAliases = [...new Set(warehouses
+      .flatMap((warehouse) => String(warehouse || '').split(/[-—]/))
+      .map(normalize)
+      .filter(Boolean))];
+    const rowMatchesWarehouse = (rowText) => {
+      const normalizedRow = normalize(rowText);
+      return !warehouseAliases.length || warehouseAliases.some((warehouse) => normalizedRow.includes(warehouse));
+    };
+    const isChecked = (checkbox) => {
+      const input = checkbox?.querySelector('input[type="checkbox"], input[mode="checkbox"]');
+      return checkbox?.getAttribute('data-checked') === 'true' || Boolean(input?.checked);
+    };
+    const clickCheckbox = (checkbox) => {
+      const target = checkbox?.querySelector('[data-testid="beast-core-checkbox-checkIcon"]') || checkbox?.querySelector('input') || checkbox;
+      for (const node of [target, checkbox]) {
+        if (!node) continue;
+        node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, composed: true, view: window }));
+        node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, composed: true, view: window }));
+        node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true, view: window }));
+      }
+      checkbox?.click?.();
+    };
+    let matchedRows = 0;
+    let alreadyChecked = 0;
+    let clickedRows = 0;
+    const missingCheckboxRows = [];
+    for (const row of Array.from(document.querySelectorAll('tbody tr, tr'))) {
+      const rowText = row.innerText || '';
+      if (!/本次预约/.test(rowText) || !rowMatchesWarehouse(rowText)) continue;
+      matchedRows += 1;
+      const checkbox = row.querySelector('label[data-testid="beast-core-checkbox"]');
+      if (!checkbox) {
+        missingCheckboxRows.push(rowText.replace(/\s+/g, ' ').trim().slice(0, 120));
+        continue;
+      }
+      if (isChecked(checkbox)) {
+        alreadyChecked += 1;
+      } else {
+        clickCheckbox(checkbox);
+        clickedRows += 1;
+      }
     }
-    if (!inputs.size) {
-      for (const input of visibleEditableInputs) {
-        const rect = input.getBoundingClientRect();
-        const type = (input.getAttribute('type') || 'text').toLowerCase();
-        const hint = `${input.placeholder || ''} ${input.getAttribute('aria-label') || ''} ${input.name || ''}`;
-        if (/司机|手机|电话|时间|日期/.test(hint)) continue;
-        if (type === 'number' || /数量|件数|送货|预约|入库/.test(hint)) {
-          inputs.add(input);
-          continue;
-        }
-        if (type === 'text' && /^[0-9]*$/.test(input.value || '') && rect.width <= 180) inputs.add(input);
+    return { matchedRows, alreadyChecked, clickedRows, missingCheckboxRows };
+  }, { warehouses: centerWarehouses });
+
+  await page.waitForTimeout(600);
+
+  const fillResult = await page.evaluate(({ nextQuantity, warehouses }) => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
+    const warehouseTargets = warehouses.map(normalize).filter(Boolean);
+    const warehouseAliases = [...new Set(warehouses
+      .flatMap((warehouse) => String(warehouse || '').split(/[-—]/))
+      .map(normalize)
+      .filter(Boolean))];
+    const rowMatchesWarehouse = (rowText) => {
+      const normalizedRow = normalize(rowText);
+      return !warehouseAliases.length || warehouseAliases.some((warehouse) => normalizedRow.includes(warehouse));
+    };
+    const rows = Array.from(document.querySelectorAll('tbody tr, tr'))
+      .filter((row) => /本次预约/.test(row.innerText || '') && rowMatchesWarehouse(row.innerText || ''));
+    const inputs = [];
+    const stillDisabledRows = [];
+    for (const row of rows) {
+      const input = Array.from(row.querySelectorAll('input'))
+        .find((candidate) => {
+          const rect = candidate.getBoundingClientRect();
+          const type = String(candidate.type || '').toLowerCase();
+          return rect.width > 0 && rect.height > 0 && type !== 'checkbox' && candidate.getAttribute('mode') !== 'checkbox';
+        });
+      if (input && !input.disabled && !input.readOnly) {
+        inputs.push(input);
+      } else {
+        stillDisabledRows.push((row.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 120));
       }
     }
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
@@ -343,15 +665,23 @@ async function fillAppointmentQuantities(page, quantity) {
       else input.value = String(nextQuantity);
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keyup', { key: '1', bubbles: true }));
     }
-    return inputs.size;
-  }, quantity);
+    return {
+      filledInputs: inputs.length,
+      targetWarehouses: warehouseTargets.length || warehouseAliases.length,
+      stillDisabledRows,
+    };
+  }, { nextQuantity: quantity, warehouses: centerWarehouses });
+
+  return { ...selection, ...fillResult };
 }
 
 async function runRule(page, context, rule, { dryRun }) {
   const meta = await resolveWarehouseGroup(context, rule);
   console.log(`规则 #${rule.id} ${rule.warehouseGroup}：${meta.warehouses.map((item) => item.warehouseName).join(', ')}。`);
 
+  await page.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => {});
   await page.goto(APPOINTMENT_DELIVERY_URL, { waitUntil: 'domcontentloaded', timeout: 90_000 });
   await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
   await applyFilters(page, rule, meta);
@@ -364,8 +694,12 @@ async function runRule(page, context, rule, { dryRun }) {
     console.log(`规则 #${rule.id} 当前没有可预约商品，跳过预约送货 dry-run。`);
     return;
   }
+  const listGoodsIds = await readAppointmentListGoodsIds(page);
+  if (listGoodsIds.length !== expectedCount) {
+    throw new Error(`规则 #${rule.id} 列表商品 ID 校验失败：页面共有 ${expectedCount} 条，但读取到 ${listGoodsIds.length} 个商品 ID。`);
+  }
 
-  const pageEntry = await openBatchAppointmentFromCurrentList(page).catch((error) => ({
+  const pageEntry = await openBatchAppointmentFromCurrentList(page, expectedCount).catch((error) => ({
     opened: false,
     reason: error.message || String(error),
   }));
@@ -374,12 +708,31 @@ async function runRule(page, context, rule, { dryRun }) {
   }
   console.log(`规则 #${rule.id} 已通过表头全选进入批量新建预约页，预期预约 ${expectedCount} 条。`);
 
-  const filledInputs = await fillAppointmentQuantities(page, rule.quantity);
-  if (!filledInputs) throw new Error(`规则 #${rule.id} 已打开批量预约页，但没有找到可填写的预约件数输入框。`);
-  if (filledInputs !== expectedCount) {
-    throw new Error(`规则 #${rule.id} 预约数量校验失败：页面共有 ${expectedCount} 条，但实际填写 ${filledInputs} 条。`);
+  let appointmentGoodsCount = await countCreateAppointmentGoods(page);
+  if (appointmentGoodsCount !== expectedCount) {
+    console.log(`规则 #${rule.id} 批量页商品数 ${appointmentGoodsCount} 与列表 ${expectedCount} 不一致，按列表商品 ID 重建批量预约页。`);
+    await openBatchAppointmentByGoodsIds(page, meta, listGoodsIds);
+    appointmentGoodsCount = await countCreateAppointmentGoods(page);
+    if (appointmentGoodsCount !== expectedCount) {
+      throw new Error(`规则 #${rule.id} 预约商品数校验失败：列表页面共有 ${expectedCount} 条，但批量预约页包含 ${appointmentGoodsCount} 条。`);
+    }
   }
-  console.log(`规则 #${rule.id} 已填写预约件数 ${rule.quantity} 到 ${filledInputs} 个输入框。`);
+  const driverResult = await selectDriver(page, rule);
+  if (driverResult.selected) {
+    console.log(`规则 #${rule.id} 已选择司机：${maskMobile(rule.driverMobile)}。`);
+  }
+  const fillResult = await fillAppointmentQuantities(page, rule.quantity, meta.warehouses.map((item) => item.warehouseName));
+  const { filledInputs, targetWarehouses } = fillResult;
+  if (!filledInputs) {
+    const disabledHint = fillResult.stillDisabledRows?.length ? `；仍未解锁的行：${fillResult.stillDisabledRows.slice(0, 3).join(' / ')}` : '';
+    throw new Error(`规则 #${rule.id} 已打开批量预约页，但没有找到可填写的预约件数输入框${disabledHint}。`);
+  }
+  const expectedInputCount = expectedCount * Math.max(targetWarehouses, 1);
+  if (filledInputs !== expectedInputCount) {
+    const disabledHint = fillResult.stillDisabledRows?.length ? `，仍未解锁 ${fillResult.stillDisabledRows.length} 行` : '';
+    throw new Error(`规则 #${rule.id} 预约填写校验失败：${expectedCount} 条商品 × ${targetWarehouses} 个中心仓，应填写 ${expectedInputCount} 个输入框，实际填写 ${filledInputs} 个${disabledHint}。`);
+  }
+  console.log(`规则 #${rule.id} 已逐商品勾选 ${fillResult.matchedRows} 个仓库行，填写预约件数 ${rule.quantity} 到 ${filledInputs} 个输入框（${expectedCount} 条商品 × ${targetWarehouses} 个中心仓）。`);
   if (dryRun) {
     console.log(`规则 #${rule.id} dry-run：停在批量新建预约页，不点击确认提交。`);
     return;

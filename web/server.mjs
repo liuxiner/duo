@@ -134,9 +134,9 @@ const DEFAULT_REPORT_CONFIG = {
         region: '浙江省',
         warehouseGroup: '杭州仓组',
         centerWarehouses: ['杭州中心1仓', '杭州中心2仓'],
-        driverMobile: '',
+        driverMobile: '15090976592',
         quantity: 100,
-        preferredHour: '10:00',
+        preferredHour: '12:00',
         firstNotifyGroup: '杭州交仓',
         lastNotifyGroup: '杭州交仓',
         enabled: false,
@@ -146,9 +146,9 @@ const DEFAULT_REPORT_CONFIG = {
         region: '浙江省',
         warehouseGroup: '宁波仓组',
         centerWarehouses: ['宁波1仓'],
-        driverMobile: '',
+        driverMobile: '13486621270',
         quantity: 100,
-        preferredHour: '14:00',
+        preferredHour: '12:00',
         firstNotifyGroup: '安如山~宁波中泓北港云仓',
         lastNotifyGroup: '安如山-杭州办公室',
         enabled: false,
@@ -158,9 +158,9 @@ const DEFAULT_REPORT_CONFIG = {
         region: '浙江省',
         warehouseGroup: '温州仓组',
         centerWarehouses: ['温州1仓'],
-        driverMobile: '',
+        driverMobile: '17767375369',
         quantity: 100,
-        preferredHour: '10:00',
+        preferredHour: '12:00',
         firstNotifyGroup: '杭州安如山—温州诚达云仓',
         lastNotifyGroup: '安如山-杭州办公室',
         enabled: false,
@@ -733,9 +733,9 @@ async function sendMonitorErrorNotification(failure) {
       zh_cn: {
         title: '多多数字管家监控错误',
         content: [
-          [{ tag: 'text', text: `${beijingTimestamp()} 微信 App 上报 smoke test 未通过` }],
+          [{ tag: 'text', text: `${beijingTimestamp()} 微信上报通道自检未通过` }],
           [{ tag: 'text', text: `错误：${failure.reason}` }],
-          [{ tag: 'text', text: '已禁用微信上报按钮和自动上报入口，请修复桌面微信权限/登录/安装后重新检测。' }],
+          [{ tag: 'text', text: '已禁用微信上报按钮和自动上报入口，请修复微信登录/权限/安装后重新检测。' }],
         ],
       },
     };
@@ -796,16 +796,55 @@ function markDesktopWechatSmokeFailure(reason, phase = 'smoke') {
   return desktopWechatSmokeState;
 }
 
+function describeWechatyLoginStatus(status) {
+  const currentStatus = status?.status || '未知';
+  if (currentStatus === 'logged-in') return `微信机器人已登录：${status.loggedInUser || '-'}`;
+  if (currentStatus === 'scanning') return '微信机器人等待扫码登录。';
+  if (currentStatus === 'starting') return '微信机器人正在启动。';
+  if (currentStatus === 'error') return `微信机器人启动失败：${status.error || '未知错误'}`;
+  if (currentStatus === 'disabled') return status.reason || '微信机器人已禁用。';
+  return `微信机器人未登录（当前状态：${currentStatus}）。请先启动机器人并扫码登录。`;
+}
+
+function updateWechatyLoginSmokeState() {
+  const status = wechatyBot.getStatus();
+  const loggedIn = status.status === 'logged-in';
+  Object.assign(desktopWechatSmokeState, {
+    status: loggedIn ? 'completed' : 'failed',
+    ok: loggedIn,
+    disabled: !loggedIn,
+    reason: describeWechatyLoginStatus(status),
+    checkedAt: nowIso(),
+    channel: 'wechaty',
+    lastFailureSignature: loggedIn ? '' : desktopWechatSmokeState.lastFailureSignature,
+  });
+  return desktopWechatSmokeState;
+}
+
+async function ensureWechatyLoginStarted() {
+  const current = wechatyBot.getStatus();
+  if (['logged-in', 'scanning', 'starting'].includes(current.status)) return current;
+  if (current.status === 'error') await wechatyBot.stop().catch(() => {});
+  await wechatyBot.start();
+  return wechatyBot.getStatus();
+}
+
 async function runDesktopWechatSmokeTest({ force = false } = {}) {
   if (WEB_WECHAT_ENABLED) {
-    Object.assign(desktopWechatSmokeState, {
-      status: 'skipped',
-      ok: true,
-      disabled: false,
-      reason: 'Web 微信通道已显式启用，跳过桌面微信 smoke test。',
-      checkedAt: nowIso(),
-    });
-    return desktopWechatSmokeState;
+    try {
+      await ensureWechatyLoginStarted();
+    } catch (error) {
+      Object.assign(desktopWechatSmokeState, {
+        status: 'failed',
+        ok: false,
+        disabled: true,
+        reason: `微信机器人启动失败：${error.message}`,
+        checkedAt: nowIso(),
+        channel: 'wechaty',
+      });
+      return desktopWechatSmokeState;
+    }
+    return updateWechatyLoginSmokeState();
   }
   if (!force && desktopWechatSmokeState.ok === true) return desktopWechatSmokeState;
   if (desktopWechatSmokePromise) return desktopWechatSmokePromise;
@@ -867,11 +906,14 @@ function scheduleDesktopWechatSmokeTest() {
 }
 
 async function ensureDesktopWechatSmokeReady() {
-  const state = desktopWechatSmokeState.ok === true
+  const state = WEB_WECHAT_ENABLED
+    ? await runDesktopWechatSmokeTest()
+    : desktopWechatSmokeState.ok === true
     ? desktopWechatSmokeState
     : await runDesktopWechatSmokeTest();
   if (state.ok !== true) {
-    throw new Error(`微信 App 上报 smoke test 未通过：${state.reason}`);
+    const label = WEB_WECHAT_ENABLED ? '微信机器人登录检测' : '微信 App 上报 smoke test';
+    throw new Error(`${label}未通过：${state.reason}`);
   }
   return state;
 }
@@ -934,7 +976,7 @@ function normalizeConfigTimeList(value, fallback = []) {
 
 function normalizeStringList(value) {
   const values = (Array.isArray(value) ? value : [value])
-    .flatMap((item) => String(item || '').split(/[,\s，、-]+/));
+    .flatMap((item) => String(item || '').split(/[,\s，、]+/));
   return values.map((item) => String(item).trim()).filter(Boolean);
 }
 
@@ -1792,7 +1834,8 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === 'GET' && request.url === '/api/desktop-wechat-smoke') {
-      scheduleDesktopWechatSmokeTest();
+      if (WEB_WECHAT_ENABLED) await runDesktopWechatSmokeTest();
+      else scheduleDesktopWechatSmokeTest();
       sendJson(response, 200, { smoke: desktopWechatSmokeState });
       return;
     }
@@ -1804,8 +1847,14 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === 'GET' && request.url === '/api/status') {
-      scheduleDesktopWechatSmokeTest();
+      if (WEB_WECHAT_ENABLED) await runDesktopWechatSmokeTest();
+      else scheduleDesktopWechatSmokeTest();
       sendJson(response, 200, {
+        features: {
+          webWechatEnabled: WEB_WECHAT_ENABLED,
+          desktopWechatEnabled: DESKTOP_WECHAT_ENABLED,
+          wechatChannel: WEB_WECHAT_ENABLED ? 'wechaty' : 'desktop_wechat',
+        },
         sync: summarizeTask(activeSync),
         report: summarizeTask(activeReport),
         reservation: summarizeTask(activeReservation),

@@ -5,7 +5,7 @@ function normalizeText(value) {
 }
 
 function shouldPreserveModal(text) {
-  return /报价|价格|商家报价|查看报价信息/.test(normalizeText(text));
+  return /报价|价格|商家报价|查看报价信息|选择司机/.test(normalizeText(text));
 }
 
 function serviceKey(value) {
@@ -83,7 +83,7 @@ export async function installBlockingModalGuard(page) {
     if (shouldPreserveModal(`${title} ${modalText}`)) return;
     await clickModalClose(visibleModal, closeButton);
     console.log(`Closed blocking PDD modal${title ? `: ${title}` : ''}.`);
-  });
+  }, { noWaitAfter: true });
 }
 
 export async function getPddPageSize(page) {
