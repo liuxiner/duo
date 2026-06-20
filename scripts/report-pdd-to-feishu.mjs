@@ -28,12 +28,12 @@ const DEFAULT_NOTIFICATION_CONFIG = {
   retryDelaySeconds: REPORT_RETRY_DELAY_MS / 1000,
 };
 const DEFAULT_REPORT_ITEMS = [
-  { id: '1', region: '浙江省', warehouse: '杭州仓组', groupName: '杭州交仓', chatName: '杭州交仓', memberName: '翱翔巍澜', mentionNames: ['翱翔巍澜'], sendTimes: ['06:00', '07:00', '08:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
-  { id: '2', region: '浙江省', warehouse: '杭州仓组', groupName: '杭州交仓', chatName: '杭州交仓', memberName: '翱翔巍澜', mentionNames: ['翱翔巍澜'], sendTimes: ['12:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
-  { id: '3', region: '浙江省', warehouse: '宁波仓组', groupName: '安如山~宁波中泓北港云仓', chatName: '安如山~宁波中泓北港云仓', memberName: '8', mentionNames: ['8'], sendTimes: ['08:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
-  { id: '4', region: '浙江省', warehouse: '宁波仓组', groupName: '安如山~宁波中泓北港云仓', chatName: '安如山~宁波中泓北港云仓', memberName: '8', mentionNames: ['8'], sendTimes: ['12:00', '13:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
-  { id: '5', region: '浙江省', warehouse: '温州仓组', groupName: '杭州安如山—温州诚达云仓', chatName: '杭州安如山—温州诚达云仓', memberName: '诚达云仓王俊13339809298', mentionNames: ['诚达云仓王俊13339809298'], sendTimes: ['08:00', '09:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
-  { id: '6', region: '浙江省', warehouse: '温州仓组', groupName: '杭州安如山—温州诚达云仓', chatName: '杭州安如山—温州诚达云仓', memberName: '诚达云仓王俊13339809298', mentionNames: ['诚达云仓王俊13339809298'], sendTimes: ['12:00', '13:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
+  { id: '1', region: '浙江省', warehouse: '杭州仓组', warehouseKeywords: ['杭州中心1仓', '杭州中心2仓'], groupName: '杭州交仓', chatName: '杭州交仓', memberName: '翱翔巍澜', mentionNames: ['翱翔巍澜'], sendTimes: ['06:00', '07:00', '08:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
+  { id: '2', region: '浙江省', warehouse: '杭州仓组', warehouseKeywords: ['杭州中心1仓', '杭州中心2仓'], groupName: '杭州交仓', chatName: '杭州交仓', memberName: '翱翔巍澜', mentionNames: ['翱翔巍澜'], sendTimes: ['12:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
+  { id: '3', region: '浙江省', warehouse: '宁波仓组', warehouseKeywords: ['宁波1仓'], groupName: '安如山~宁波中泓北港云仓', chatName: '安如山~宁波中泓北港云仓', memberName: '8', mentionNames: ['8'], sendTimes: ['08:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
+  { id: '4', region: '浙江省', warehouse: '宁波仓组', warehouseKeywords: ['宁波1仓'], groupName: '安如山~宁波中泓北港云仓', chatName: '安如山~宁波中泓北港云仓', memberName: '8', mentionNames: ['8'], sendTimes: ['12:00', '13:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
+  { id: '5', region: '浙江省', warehouse: '温州仓组', warehouseKeywords: ['温州1仓'], groupName: '杭州安如山—温州诚达云仓', chatName: '杭州安如山—温州诚达云仓', memberName: '诚达云仓王俊13339809298', mentionNames: ['诚达云仓王俊13339809298'], sendTimes: ['08:00', '09:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
+  { id: '6', region: '浙江省', warehouse: '温州仓组', warehouseKeywords: ['温州1仓'], groupName: '杭州安如山—温州诚达云仓', chatName: '杭州安如山—温州诚达云仓', memberName: '诚达云仓王俊13339809298', mentionNames: ['诚达云仓王俊13339809298'], sendTimes: ['12:00', '13:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
 ];
 
 async function loadDotEnv(file = '.env') {
@@ -135,6 +135,12 @@ function normalizeTimeList(value) {
   return [...new Set(values.map(normalizeTime).filter(Boolean))];
 }
 
+function normalizeCommaList(value) {
+  const values = (Array.isArray(value) ? value : [value])
+    .flatMap((item) => String(item || '').split(/[,，、]+/));
+  return [...new Set(values.map((item) => String(item).trim()).filter(Boolean))];
+}
+
 function positiveInteger(value, fallback) {
   const next = Number(value);
   return Number.isFinite(next) && next > 0 ? Math.round(next) : fallback;
@@ -196,6 +202,7 @@ function normalizeReportItem(item, index = 0) {
     id: String(item.id || item.index || item['序号'] || index + 1),
     region: item.region || item['区域'] || '',
     warehouse: item.warehouse || item['仓库'] || '',
+    warehouseKeywords: normalizeCommaList(item.warehouseKeywords || item['匹配仓库'] || item['仓库匹配'] || item['仓库关键词']),
     groupName: item.groupName || item['群名'] || '',
     chatName: item.chatName || item['发送群名'] || item.groupName || item['群名'] || '',
     memberName: item.memberName || item['成员名'] || '',
@@ -241,6 +248,10 @@ function reportIsDue(item, { all = false, now = new Date(), ids = [], scheduledT
 }
 
 function reportFilterKeywords(item) {
+  const configured = normalizeCommaList(item.warehouseKeywords || item['匹配仓库'] || item['仓库匹配'] || item['仓库关键词'])
+    .map((keyword) => keyword.replace(/\s+/g, '').trim())
+    .filter(Boolean);
+  if (configured.length) return configured;
   const warehouse = String(item.warehouse || '').replace(/\s+/g, '').trim();
   if (!warehouse) return [];
   const keyword = warehouse.replace(/(?:仓库)?仓组$/, '').replace(/仓库$/, '');
@@ -250,7 +261,7 @@ function reportFilterKeywords(item) {
 function mergeDuplicateReports(items) {
   const merged = new Map();
   for (const item of items) {
-    const warehouseKey = reportFilterKeywords(item)[0] || String(item.warehouse || '').trim();
+    const warehouseKey = reportFilterKeywords(item).join('|') || String(item.warehouse || '').trim();
     const key = `${warehouseKey}::${String(item.chatName || '').trim()}::${String(item.wechatRoomName || '').trim()}`;
     const existing = merged.get(key);
     if (!existing) {

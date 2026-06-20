@@ -70,7 +70,7 @@
       backdrop-filter: blur(2px);
     }
     table { width: 100%; border-collapse: collapse; min-width: 1260px; }
-    table.wechat-config-table { min-width: 980px; }
+    table.wechat-config-table { min-width: 1180px; }
     th, td { border-bottom: 1px solid #e4e7ec; padding: 8px; vertical-align: middle; }
     th { position: sticky; top: 0; z-index: 1; background: #f8fafc; text-align: left; color: #475467; font-size: 12px; }
     td input { height: 32px; min-width: 92px; }
@@ -403,7 +403,7 @@
       min-width: 1220px;
     }
     table.wechat-config-table {
-      min-width: 940px;
+      min-width: 1140px;
     }
     th,
     td {
@@ -906,7 +906,7 @@
         <div class="section-head" style="margin-top:18px;">
           <div>
             <h2>微信群规则配置</h2>
-            <p class="hint">维护仓库、发送时间、截单时间、微信群名和微信 @成员。</p>
+            <p class="hint">维护仓库、匹配仓库、发送时间、截单时间、微信群名和微信 @成员。</p>
           </div>
           <div class="toolbar">
             <button id="wechat-add-row" class="light" type="button">新增规则</button>
@@ -922,6 +922,7 @@
                 <th class="narrow">选择</th>
                 <th class="narrow">序号</th>
                 <th>仓库</th>
+                <th>匹配仓库</th>
                 <th>发送时间</th>
                 <th>截单</th>
                 <th>整点</th>
@@ -1698,6 +1699,7 @@
         if (!item) continue;
         item.region = item.region || '浙江省';
         item.warehouse = row.querySelector('[data-wechat-field="warehouse"]').value.trim();
+        item.warehouseKeywords = splitCommaList(row.querySelector('[data-wechat-field="warehouseKeywords"]').value);
         item.sendTimes = splitTimeList(row.querySelector('[data-wechat-field="sendTimes"]').value);
         item.cutoffTime = row.querySelector('[data-wechat-field="cutoffTime"]').value.trim();
         item.topOfHour = row.querySelector('[data-wechat-field="topOfHour"]').checked;
@@ -1877,6 +1879,7 @@
           <td><input class="select-wechat-rule" data-id="${escapeHtml(item.id)}" type="checkbox" ${blocked ? 'disabled' : ''}></td>
           <td><strong>${escapeHtml(item.id)}</strong></td>
           <td><input class="wide" data-wechat-field="warehouse" value="${escapeHtml(item.warehouse || '')}" placeholder="杭州仓组" ${locked ? 'disabled' : ''}></td>
+          <td><input class="wide" data-wechat-field="warehouseKeywords" value="${escapeHtml((item.warehouseKeywords || []).join(', '))}" placeholder="杭州中心1仓, 杭州中心2仓" ${locked ? 'disabled' : ''}></td>
           <td><input class="times" data-wechat-field="sendTimes" value="${escapeHtml((item.sendTimes || []).join(', '))}" placeholder="08:00, 12:00" ${locked ? 'disabled' : ''}></td>
           <td><input data-wechat-field="cutoffTime" value="${escapeHtml(item.cutoffTime || '23:00')}" ${locked ? 'disabled' : ''}></td>
           <td><input data-wechat-field="topOfHour" type="checkbox" ${item.topOfHour ? 'checked' : ''} ${locked ? 'disabled' : ''}></td>
@@ -2198,6 +2201,7 @@
         id: nextId(),
         region: '浙江省',
         warehouse: '',
+        warehouseKeywords: [],
         groupName: '',
         chatName: '',
         memberName: '',

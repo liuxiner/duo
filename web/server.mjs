@@ -235,12 +235,12 @@ const DEFAULT_REPORT_CONFIG = {
     notifyWhenEmpty: false,
   },
   items: [
-    { id: '1', region: '浙江省', warehouse: '杭州仓组', groupName: '杭州交仓', chatName: '杭州交仓', memberName: '翱翔巍澜', mentionNames: ['翱翔巍澜'], sendTimes: ['06:00', '07:00', '08:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
-    { id: '2', region: '浙江省', warehouse: '杭州仓组', groupName: '杭州交仓', chatName: '杭州交仓', memberName: '翱翔巍澜', mentionNames: ['翱翔巍澜'], sendTimes: ['12:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
-    { id: '3', region: '浙江省', warehouse: '宁波仓组', groupName: '安如山~宁波中泓北港云仓', chatName: '安如山~宁波中泓北港云仓', memberName: '8', mentionNames: ['8'], sendTimes: ['08:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
-    { id: '4', region: '浙江省', warehouse: '宁波仓组', groupName: '安如山~宁波中泓北港云仓', chatName: '安如山~宁波中泓北港云仓', memberName: '8', mentionNames: ['8'], sendTimes: ['12:00', '13:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
-    { id: '5', region: '浙江省', warehouse: '温州仓组', groupName: '杭州安如山—温州诚达云仓', chatName: '杭州安如山—温州诚达云仓', memberName: '诚达云仓王俊13339809298', mentionNames: ['诚达云仓王俊13339809298'], sendTimes: ['08:00', '09:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
-    { id: '6', region: '浙江省', warehouse: '温州仓组', groupName: '杭州安如山—温州诚达云仓', chatName: '杭州安如山—温州诚达云仓', memberName: '诚达云仓王俊13339809298', mentionNames: ['诚达云仓王俊13339809298'], sendTimes: ['12:00', '13:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
+    { id: '1', region: '浙江省', warehouse: '杭州仓组', warehouseKeywords: ['杭州中心1仓', '杭州中心2仓'], groupName: '杭州交仓', chatName: '杭州交仓', memberName: '翱翔巍澜', mentionNames: ['翱翔巍澜'], sendTimes: ['06:00', '07:00', '08:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
+    { id: '2', region: '浙江省', warehouse: '杭州仓组', warehouseKeywords: ['杭州中心1仓', '杭州中心2仓'], groupName: '杭州交仓', chatName: '杭州交仓', memberName: '翱翔巍澜', mentionNames: ['翱翔巍澜'], sendTimes: ['12:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
+    { id: '3', region: '浙江省', warehouse: '宁波仓组', warehouseKeywords: ['宁波1仓'], groupName: '安如山~宁波中泓北港云仓', chatName: '安如山~宁波中泓北港云仓', memberName: '8', mentionNames: ['8'], sendTimes: ['08:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
+    { id: '4', region: '浙江省', warehouse: '宁波仓组', warehouseKeywords: ['宁波1仓'], groupName: '安如山~宁波中泓北港云仓', chatName: '安如山~宁波中泓北港云仓', memberName: '8', mentionNames: ['8'], sendTimes: ['12:00', '13:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
+    { id: '5', region: '浙江省', warehouse: '温州仓组', warehouseKeywords: ['温州1仓'], groupName: '杭州安如山—温州诚达云仓', chatName: '杭州安如山—温州诚达云仓', memberName: '诚达云仓王俊13339809298', mentionNames: ['诚达云仓王俊13339809298'], sendTimes: ['08:00', '09:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '20:00'], cutoffTime: '23:00', topOfHour: true, enabled: true },
+    { id: '6', region: '浙江省', warehouse: '温州仓组', warehouseKeywords: ['温州1仓'], groupName: '杭州安如山—温州诚达云仓', chatName: '杭州安如山—温州诚达云仓', memberName: '诚达云仓王俊13339809298', mentionNames: ['诚达云仓王俊13339809298'], sendTimes: ['12:00', '13:00', '19:00'], cutoffTime: '23:00', topOfHour: false, enabled: true },
   ],
 };
 
@@ -574,6 +574,16 @@ function windowsWechatPathCandidates() {
   return candidates;
 }
 
+function expandWechatExecutableCandidate(candidate) {
+  const value = String(candidate || '').trim();
+  if (!value) return [];
+  const candidates = [value];
+  if (path.basename(value).toLowerCase() === 'wexin.exe') {
+    candidates.push(path.join(path.dirname(value), 'Weixin.exe'));
+  }
+  return candidates;
+}
+
 function windowsWechatExecutableCandidates() {
   const programFiles = process.env.PROGRAMFILES || 'C:\\Program Files';
   const programFilesX86 = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
@@ -592,7 +602,7 @@ function windowsWechatExecutableCandidates() {
     path.join(localAppData, 'Microsoft', 'WindowsApps', 'WeChat.exe'),
     ...windowsWechatRegistryCandidates(),
     ...windowsWechatPathCandidates(),
-  ]);
+  ].flatMap(expandWechatExecutableCandidate));
 }
 
 function desktopWechatExecutableStatus() {
@@ -1253,6 +1263,12 @@ function normalizeNameList(value) {
   return String(value || '').split(/[,，]/).map((name) => name.trim()).filter(Boolean);
 }
 
+function normalizeCommaList(value) {
+  const values = (Array.isArray(value) ? value : [value])
+    .flatMap((item) => String(item || '').split(/[,，、]+/));
+  return [...new Set(values.map((item) => String(item).trim()).filter(Boolean))];
+}
+
 function enabledFromValue(value, defaultValue = false) {
   if (typeof value === 'boolean') return value;
   const text = String(value ?? '').trim().toLowerCase();
@@ -1777,6 +1793,7 @@ function normalizeConfig(config) {
       id: String(item.id || index + 1),
       region: String(item.region || item['区域'] || item['销售区域'] || '').trim(),
       warehouse: String(item.warehouse || item['仓库'] || item['仓组'] || '').trim(),
+      warehouseKeywords: normalizeCommaList(item.warehouseKeywords || item['匹配仓库'] || item['仓库匹配'] || item['仓库关键词']),
       groupName: String(item.groupName || item['群名'] || '').trim(),
       chatName: String(item.chatName || item['发送群名'] || item.groupName || item['群名'] || '').trim(),
       memberName: String(item.memberName || item['成员名'] || '').trim(),

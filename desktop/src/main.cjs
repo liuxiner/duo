@@ -416,6 +416,16 @@ function windowsWechatPathCandidates() {
   return candidates;
 }
 
+function expandWechatExecutableCandidate(candidate) {
+  const value = String(candidate || '').trim();
+  if (!value) return [];
+  const candidates = [value];
+  if (path.basename(value).toLowerCase() === 'wexin.exe') {
+    candidates.push(path.join(path.dirname(value), 'Weixin.exe'));
+  }
+  return candidates;
+}
+
 function windowsWechatExecutableCandidates() {
   const programFiles = process.env.PROGRAMFILES || 'C:\\Program Files';
   const programFilesX86 = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
@@ -435,7 +445,7 @@ function windowsWechatExecutableCandidates() {
     path.join(localAppData, 'Microsoft', 'WindowsApps', 'WeChat.exe'),
     ...windowsWechatRegistryCandidates(),
     ...windowsWechatPathCandidates(),
-  ]);
+  ].flatMap(expandWechatExecutableCandidate));
 }
 
 function wechatExecutableStatus() {

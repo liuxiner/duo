@@ -123,9 +123,16 @@ function Parse-Options {
   return $options
 }
 
+function Test-WeChatDesktopProcess {
+  param([System.Diagnostics.Process]$Process)
+  if (-not $Process) { return $false }
+  if ($Process.MainWindowHandle -eq 0) { return $false }
+  return (($Process.ProcessName -as [string]) -match '^(WeChat|Weixin|WeChatAppEx)$')
+}
+
 function Find-WeChatProcess {
   $process = Get-Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.MainWindowHandle -ne 0 -and ($_.ProcessName -match '^(WeChat|Weixin|WeChatAppEx)$' -or $_.MainWindowTitle -match 'WeChat|\u5FAE\u4FE1') } |
+    Where-Object { Test-WeChatDesktopProcess -Process $_ } |
     Select-Object -First 1
 
   if ($process) { return $process }
@@ -149,7 +156,24 @@ function Find-WeChatProcess {
     return $null
   }
 
-  $candidates = @(
+  function Expand-WeChatExecutableCandidate {
+    param([string]$Path)
+    $items = New-Object System.Collections.Generic.List[string]
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $items }
+    $clean = $Path.Trim().Trim('"')
+    if (-not [string]::IsNullOrWhiteSpace($clean)) {
+      $items.Add($clean)
+      if ([IO.Path]::GetFileName($clean) -ieq 'Wexin.exe') {
+        $directory = [IO.Path]::GetDirectoryName($clean)
+        if ($directory) {
+          $items.Add((Join-Path $directory 'Weixin.exe'))
+        }
+      }
+    }
+    return $items.ToArray()
+  }
+
+  $rawCandidates = @(
     ${env:MAO_WECHAT_EXE_PATH},
     (Join-OptionalPath ${env:ProgramFiles} 'Tencent\Weixin\Weixin.exe'),
     (Join-OptionalPath ${env:ProgramFiles} 'Tencent\WeChat\WeChat.exe'),
@@ -169,7 +193,12 @@ function Find-WeChatProcess {
     (Get-AppPathFromRegistry 'HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\WeChat.exe'),
     ((Get-Command Weixin.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source),
     ((Get-Command WeChat.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source)
-  ) | Where-Object { $_ -and (Test-Path $_) }
+  )
+
+  $candidates = @($rawCandidates |
+    ForEach-Object { Expand-WeChatExecutableCandidate $_ } |
+    Where-Object { $_ -and (Test-Path $_) } |
+    Select-Object -Unique)
 
   if ($candidates.Count -gt 0) {
     Write-AutoLog "starting WeChat from $($candidates[0])"
@@ -177,7 +206,7 @@ function Find-WeChatProcess {
     for ($i = 0; $i -lt 20; $i += 1) {
       Start-Sleep -Milliseconds 500
       $process = Get-Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.MainWindowHandle -ne 0 -and ($_.ProcessName -match '^(WeChat|Weixin|WeChatAppEx)$' -or $_.MainWindowTitle -match 'WeChat|\u5FAE\u4FE1') } |
+        Where-Object { Test-WeChatDesktopProcess -Process $_ } |
         Select-Object -First 1
       if ($process) { return $process }
     }
@@ -296,7 +325,7 @@ function Activate-WeChat {
   }
   $rect = Get-WindowRect -Handle $process.MainWindowHandle
   $script:ActiveWeChatProcess = $process
-  Write-AutoLog "activated WeChat pid=$($process.Id) title=$($process.MainWindowTitle) rect=$($rect.Left),$($rect.Top),$($rect.Width)x$($rect.Height)"
+  Write-AutoLog "activated WeChat pid=$($process.Id) process=$($process.ProcessName) title=$($process.MainWindowTitle) rect=$($rect.Left),$($rect.Top),$($rect.Width)x$($rect.Height)"
   return @{ Process = $process; Rect = $rect }
 }
 

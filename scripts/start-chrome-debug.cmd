@@ -212,6 +212,13 @@ if exist "%CANDIDATE%" (
     exit /b 0
   )
 )
+if /i "%CANDIDATE:~-9%"=="Wexin.exe" (
+  set "ALT_CANDIDATE=%CANDIDATE:~0,-9%Weixin.exe"
+  if exist "%ALT_CANDIDATE%" (
+    set "WECHAT_EXE=%ALT_CANDIDATE%"
+    exit /b 0
+  )
+)
 exit /b 0
 
 :start_wechat_app
