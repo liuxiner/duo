@@ -256,10 +256,19 @@ async function selectVisibleAppointmentRows(page) {
   return selected;
 }
 
-async function openBatchAppointmentDialog(page) {
-  const button = page.getByRole('button', { name: /批量新建预约/ }).first();
-  await button.waitFor({ state: 'visible', timeout: 10_000 });
-  await button.click({ timeout: 10_000 });
+function batchCreateAppointmentUrl(meta, goodsIds) {
+  const url = new URL(`${APPOINTMENT_DELIVERY_URL}/create-appointment`);
+  url.searchParams.set('areaId', String(meta.areaId));
+  url.searchParams.set('date', beijingDateKey());
+  url.searchParams.set('goodsId', goodsIds.join(','));
+  url.searchParams.set('warehouseGroupId', String(meta.group.warehouseGroupId));
+  url.searchParams.set('warehouseGroupName', meta.group.warehouseGroupName);
+  return url.toString();
+}
+
+async function openBatchAppointmentPage(page, meta, goodsIds) {
+  await page.goto(batchCreateAppointmentUrl(meta, goodsIds), { waitUntil: 'domcontentloaded', timeout: 90_000 });
+  await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
   await page.waitForTimeout(1500);
 }
 
@@ -269,15 +278,38 @@ async function fillAppointmentQuantities(page, quantity) {
       const text = node.innerText || '';
       return /预约|送货/.test(text);
     }) || document.body;
-    const inputs = Array.from(modal.querySelectorAll('input')).filter((input) => {
+    const allInputs = Array.from(modal.querySelectorAll('input'));
+    const visibleEditableInputs = allInputs.filter((input) => {
       const rect = input.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0 || input.disabled || input.readOnly) return false;
-      const type = (input.getAttribute('type') || 'text').toLowerCase();
-      const hint = `${input.placeholder || ''} ${input.getAttribute('aria-label') || ''} ${input.name || ''}`;
-      if (type === 'number') return true;
-      if (/数量|件数|送货|预约|入库/.test(hint)) return true;
-      return type === 'text' && /^[0-9]*$/.test(input.value || '') && rect.width <= 180;
+      return rect.width > 0 && rect.height > 0 && !input.disabled && !input.readOnly;
     });
+    const inputs = new Set();
+    const textOf = (node) => String(node?.innerText || node?.textContent || '').replace(/\s+/g, '').trim();
+    const quantityLabels = Array.from(modal.querySelectorAll('*')).filter((node) => {
+      const text = textOf(node);
+      return text === '本次预约' || text === '预约数量' || text === '预约件数';
+    });
+    for (const label of quantityLabels) {
+      const labelRect = label.getBoundingClientRect();
+      const candidates = visibleEditableInputs
+        .map((input) => ({ input, rect: input.getBoundingClientRect() }))
+        .filter(({ rect }) => Math.abs((rect.y + rect.height / 2) - (labelRect.y + labelRect.height / 2)) < 36)
+        .sort((a, b) => Math.abs(a.rect.x - labelRect.x) - Math.abs(b.rect.x - labelRect.x));
+      if (candidates[0]) inputs.add(candidates[0].input);
+    }
+    if (!inputs.size) {
+      for (const input of visibleEditableInputs) {
+        const rect = input.getBoundingClientRect();
+        const type = (input.getAttribute('type') || 'text').toLowerCase();
+        const hint = `${input.placeholder || ''} ${input.getAttribute('aria-label') || ''} ${input.name || ''}`;
+        if (/司机|手机|电话|时间|日期/.test(hint)) continue;
+        if (type === 'number' || /数量|件数|送货|预约|入库/.test(hint)) {
+          inputs.add(input);
+          continue;
+        }
+        if (type === 'text' && /^[0-9]*$/.test(input.value || '') && rect.width <= 180) inputs.add(input);
+      }
+    }
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
     for (const input of inputs) {
       if (setter) setter.call(input, String(nextQuantity));
@@ -285,7 +317,7 @@ async function fillAppointmentQuantities(page, quantity) {
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
     }
-    return inputs.length;
+    return inputs.size;
   }, quantity);
 }
 
@@ -293,21 +325,19 @@ async function runRule(page, context, rule, { dryRun }) {
   const meta = await resolveWarehouseGroup(context, rule);
   const goodsIds = await appointmentGoodsForRule(context, rule, meta);
   console.log(`规则 #${rule.id} ${rule.warehouseGroup}：${meta.warehouses.map((item) => item.warehouseName).join(', ')}，API 可预约候选 ${goodsIds.length} 个。`);
+  if (!goodsIds.length) {
+    console.log(`规则 #${rule.id} 当前没有可预约商品，跳过预约送货 dry-run。`);
+    return;
+  }
 
-  await page.goto(APPOINTMENT_DELIVERY_URL, { waitUntil: 'domcontentloaded', timeout: 90_000 });
-  await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
-  await applyFilters(page, rule, meta);
+  await openBatchAppointmentPage(page, meta, goodsIds);
+  console.log(`规则 #${rule.id} 已进入批量新建预约页，商品 ${goodsIds.length} 个。`);
 
-  const selectedRows = await selectVisibleAppointmentRows(page);
-  if (!selectedRows) throw new Error(`规则 #${rule.id} 未能在页面中勾选到“去预约”行，请确认筛选条件和页面登录状态。`);
-  console.log(`规则 #${rule.id} 已勾选 ${selectedRows} 行，准备批量新建预约。`);
-
-  await openBatchAppointmentDialog(page);
   const filledInputs = await fillAppointmentQuantities(page, rule.quantity);
-  if (!filledInputs) throw new Error(`规则 #${rule.id} 已打开批量预约弹窗，但没有找到可填写的预约件数输入框。`);
+  if (!filledInputs) throw new Error(`规则 #${rule.id} 已打开批量预约页，但没有找到可填写的预约件数输入框。`);
   console.log(`规则 #${rule.id} 已填写预约件数 ${rule.quantity} 到 ${filledInputs} 个输入框。`);
   if (dryRun) {
-    console.log(`规则 #${rule.id} dry-run：停在批量预约弹窗，不点击确认提交。`);
+    console.log(`规则 #${rule.id} dry-run：停在批量新建预约页，不点击确认提交。`);
     return;
   }
   throw new Error('真实提交暂未开放：请先完成 dry-run 校验，再显式实现 --commit 提交确认。');
@@ -349,3 +379,5 @@ try {
     await closePddBrowserContext(browser, context);
   }
 }
+
+if (dryRun) process.exit(0);
