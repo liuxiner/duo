@@ -26,6 +26,9 @@ public static class MaoWin32 {
   [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+  [DllImport("user32.dll")] public static extern IntPtr SetActiveWindow(IntPtr hWnd);
+  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
@@ -292,12 +295,37 @@ function Invoke-AltPulse {
 
 function Invoke-WeChatForeground {
   param([System.Diagnostics.Process]$Process, [string]$Reason = 'activate')
-  if (-not $Process) { return $false }
+  if (-not $Process) {
+    $Process = Find-WeChatProcess
+    if (-not $Process) { return $false }
+  }
   try { $Process.Refresh() } catch {}
   $handle = $Process.MainWindowHandle
-  if ($handle -eq [IntPtr]::Zero) { return $false }
+  if ($handle -eq [IntPtr]::Zero) {
+    Write-AutoLog "foreground reacquire needed reason=$Reason because handle is zero pid=$($Process.Id)"
+    $Process = Find-WeChatProcess
+    if (-not $Process) { return $false }
+    try { $Process.Refresh() } catch {}
+    $handle = $Process.MainWindowHandle
+    if ($handle -eq [IntPtr]::Zero) { return $false }
+  }
+  $script:ActiveWeChatProcess = $Process
   $flags = [uint32]($script:SWP_NOMOVE -bor $script:SWP_NOSIZE -bor $script:SWP_SHOWWINDOW)
   for ($attempt = 1; $attempt -le 5; $attempt += 1) {
+    $foregroundHandle = [MaoWin32]::GetForegroundWindow()
+    $foregroundPid = [uint32]0
+    $targetPid = [uint32]0
+    $foregroundThread = [MaoWin32]::GetWindowThreadProcessId($foregroundHandle, [ref]$foregroundPid)
+    $targetThread = [MaoWin32]::GetWindowThreadProcessId($handle, [ref]$targetPid)
+    $currentThread = [MaoWin32]::GetCurrentThreadId()
+    $attachedForeground = $false
+    $attachedTarget = $false
+    if ($foregroundThread -ne 0 -and $foregroundThread -ne $currentThread) {
+      $attachedForeground = [MaoWin32]::AttachThreadInput($currentThread, $foregroundThread, $true)
+    }
+    if ($targetThread -ne 0 -and $targetThread -ne $currentThread) {
+      $attachedTarget = [MaoWin32]::AttachThreadInput($currentThread, $targetThread, $true)
+    }
     [MaoWin32]::ShowWindowAsync($handle, $script:SW_RESTORE) | Out-Null
     Start-Sleep -Milliseconds 100
     try {
@@ -309,25 +337,56 @@ function Invoke-WeChatForeground {
     [MaoWin32]::SetWindowPos($handle, $script:HWND_NOTOPMOST, 0, 0, 0, 0, $flags) | Out-Null
     Invoke-AltPulse
     $setResult = [MaoWin32]::SetForegroundWindow($handle)
+    [MaoWin32]::SetActiveWindow($handle) | Out-Null
+    if ($attachedTarget) {
+      [MaoWin32]::AttachThreadInput($currentThread, $targetThread, $false) | Out-Null
+    }
+    if ($attachedForeground) {
+      [MaoWin32]::AttachThreadInput($currentThread, $foregroundThread, $false) | Out-Null
+    }
     Start-Sleep -Milliseconds (220 + ($attempt * 80))
     if (Test-WeChatForeground -Process $Process) {
       Write-AutoLog "foreground verified reason=$Reason attempt=$attempt pid=$($Process.Id)"
       return $true
     }
     $foreground = Format-ForegroundInfo (Get-ForegroundWindowInfo)
-    Write-AutoLog "foreground attempt failed reason=$Reason attempt=$attempt setResult=$setResult foreground=$foreground"
+    Write-AutoLog "foreground attempt failed reason=$Reason attempt=$attempt setResult=$setResult attachedForeground=$attachedForeground attachedTarget=$attachedTarget foreground=$foreground"
   }
   return $false
 }
 
 function Assert-WeChatForeground {
   param([System.Diagnostics.Process]$Process = $script:ActiveWeChatProcess, [string]$Context = 'operation')
-  if (-not $Process) { return }
+  if (-not $Process) {
+    $Process = Find-WeChatProcess
+    if (-not $Process) { return }
+  }
   if (Test-WeChatForeground -Process $Process) { return }
-  Invoke-WeChatForeground -Process $Process -Reason "assert-$Context" | Out-Null
+  $foregroundBefore = Format-ForegroundInfo (Get-ForegroundWindowInfo)
+  Write-AutoLog "foreground lost before $Context; foreground=$foregroundBefore; trying recovery"
+  if (Invoke-WeChatForeground -Process $Process -Reason "assert-$Context") {
+    Write-AutoLog "foreground recovered before $Context"
+    return
+  }
   if (Test-WeChatForeground -Process $Process) { return }
+  $fresh = Find-WeChatProcess
+  if ($fresh -and (Invoke-WeChatForeground -Process $fresh -Reason "assert-$Context-fresh")) {
+    Write-AutoLog "foreground recovered before $Context using fresh process pid=$($fresh.Id)"
+    return
+  }
   $foreground = Format-ForegroundInfo (Get-ForegroundWindowInfo)
   throw "WeChat is not foreground before $Context; foreground=$foreground. Stop to avoid operating the wrong app."
+}
+
+function Send-WeChatKeys {
+  param([string]$Keys, [string]$Context, [int]$AfterDelayMs = 0)
+  Assert-WeChatForeground -Context "sendkeys-$Context"
+  $foreground = Format-ForegroundInfo (Get-ForegroundWindowInfo)
+  Write-AutoLog "send keys context=$Context keys=$Keys foreground=$foreground"
+  [System.Windows.Forms.SendKeys]::SendWait($Keys)
+  if ($AfterDelayMs -gt 0) {
+    Start-Sleep -Milliseconds $AfterDelayMs
+  }
 }
 
 function Activate-WeChat {
@@ -348,11 +407,15 @@ function Activate-WeChat {
 function Click-Point {
   param([int]$X, [int]$Y, [string]$Name)
   Assert-WeChatForeground -Context "click-$Name"
+  $before = Format-ForegroundInfo (Get-ForegroundWindowInfo)
+  Write-AutoLog "click prepare name=$Name point=$X,$Y foreground=$before"
   [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($X, $Y)
   Start-Sleep -Milliseconds 80
+  Assert-WeChatForeground -Context "click-$Name-before-down"
   [MaoWin32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
   [MaoWin32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-  Write-AutoLog "clicked $Name at $X,$Y"
+  $after = Format-ForegroundInfo (Get-ForegroundWindowInfo)
+  Write-AutoLog "clicked $Name at $X,$Y foregroundAfter=$after"
   Start-Sleep -Milliseconds 220
 }
 
@@ -384,17 +447,14 @@ function Set-ClipboardFilesSafe {
 
 function Paste-Clipboard {
   Assert-WeChatForeground -Context 'paste'
-  [System.Windows.Forms.SendKeys]::SendWait('^v')
+  Send-WeChatKeys -Keys '^v' -Context 'paste' -AfterDelayMs 450
   Write-AutoLog 'sent Ctrl+V paste'
-  Start-Sleep -Milliseconds 450
 }
 
 function Clear-Input {
   Assert-WeChatForeground -Context 'clear-input'
-  [System.Windows.Forms.SendKeys]::SendWait('^a')
-  Start-Sleep -Milliseconds 80
-  [System.Windows.Forms.SendKeys]::SendWait('{DEL}')
-  Start-Sleep -Milliseconds 120
+  Send-WeChatKeys -Keys '^a' -Context 'clear-input-select-all' -AfterDelayMs 80
+  Send-WeChatKeys -Keys '{DEL}' -Context 'clear-input-delete' -AfterDelayMs 120
 }
 
 function Normalize-RoomText {
@@ -733,12 +793,10 @@ function Reset-ToMessageHomeForSearch {
   param([hashtable]$Rect)
   Write-AutoLog 'reset to message home before search'
   Assert-WeChatForeground -Context 'reset-search'
-  [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
-  Start-Sleep -Milliseconds 180
+  Send-WeChatKeys -Keys '{ESC}' -Context 'reset-search-before-tab' -AfterDelayMs 180
   Select-ChatsTab -Rect $Rect
   Start-Sleep -Milliseconds 220
-  [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
-  Start-Sleep -Milliseconds 160
+  Send-WeChatKeys -Keys '{ESC}' -Context 'reset-search-after-tab' -AfterDelayMs 160
 }
 
 function Open-Room {
@@ -760,8 +818,7 @@ function Open-Room {
     try {
       $selection = Click-SearchResult -Process $Process -Rect $Rect -Room $Room -ProbeIndex $attempt
       if (Wait-ActiveRoom -Process $Process -Rect $Rect -Room $Room -Attempts 3) {
-        [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
-        Start-Sleep -Milliseconds 180
+        Send-WeChatKeys -Keys '{ESC}' -Context 'search-room-dismiss' -AfterDelayMs 180
         Write-AutoLog "search room verified room=$Room attempt=$attempt selection=$selection"
         return $selection
       }
@@ -827,28 +884,24 @@ function Focus-MessageInput {
 function Move-CursorToInputEnd {
   param([hashtable]$Rect, [System.Diagnostics.Process]$Process = $null)
   Focus-MessageInput -Rect $Rect -Process $Process
-  [System.Windows.Forms.SendKeys]::SendWait('^{END}')
-  Start-Sleep -Milliseconds 160
+  Send-WeChatKeys -Keys '^{END}' -Context 'move-input-end' -AfterDelayMs 160
 }
 
 function Get-DraftText {
   param([hashtable]$Rect, [System.Diagnostics.Process]$Process = $null, [string]$Context)
   $sentinel = '__MAO_EMPTY_DRAFT_CHECK__' + [guid]::NewGuid().ToString() + '__'
   Focus-MessageInput -Rect $Rect -Process $Process
-  [System.Windows.Forms.SendKeys]::SendWait('^a')
-  Start-Sleep -Milliseconds 100
+  Send-WeChatKeys -Keys '^a' -Context "$Context-select-draft" -AfterDelayMs 100
   [System.Windows.Forms.Clipboard]::SetText($sentinel)
   Start-Sleep -Milliseconds 80
-  [System.Windows.Forms.SendKeys]::SendWait('^c')
-  Start-Sleep -Milliseconds 140
+  Send-WeChatKeys -Keys '^c' -Context "$Context-copy-draft" -AfterDelayMs 140
   $copied = ''
   try { $copied = [System.Windows.Forms.Clipboard]::GetText() } catch {}
   $draft = if ($copied -eq $sentinel) { '' } else { $copied }
   $preview = ($draft -replace "`r", '\r' -replace "`n", '\n')
   if ($preview.Length -gt 80) { $preview = $preview.Substring(0, 80) + '...' }
   Write-AutoLog "$Context draft text length=$($draft.Length) preview=$preview"
-  [System.Windows.Forms.SendKeys]::SendWait('^{END}')
-  Start-Sleep -Milliseconds 120
+  Send-WeChatKeys -Keys '^{END}' -Context "$Context-restore-caret" -AfterDelayMs 120
   return $draft
 }
 
@@ -867,12 +920,11 @@ function Mention-Members {
   param([string[]]$Mentions)
   foreach ($name in $Mentions) {
     Assert-WeChatForeground -Context 'mention'
-    [System.Windows.Forms.SendKeys]::SendWait('@')
-    Start-Sleep -Milliseconds 220
+    Send-WeChatKeys -Keys '@' -Context 'mention-open' -AfterDelayMs 220
     Set-ClipboardTextSafe -Text $name
     Paste-Clipboard
     Start-Sleep -Milliseconds 500
-    [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+    Send-WeChatKeys -Keys '{ENTER}' -Context 'mention-select'
     Write-AutoLog "selected mention: $name"
     Start-Sleep -Milliseconds 350
   }
@@ -880,7 +932,7 @@ function Mention-Members {
 
 function Press-SendEnter {
   Assert-WeChatForeground -Context 'send-enter'
-  [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+  Send-WeChatKeys -Keys '{ENTER}' -Context 'send-enter'
   Write-AutoLog 'pressed Enter for send'
   Start-Sleep -Milliseconds 500
 }
