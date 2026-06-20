@@ -1,5 +1,5 @@
 const { app, BrowserWindow, dialog, ipcMain, shell, systemPreferences } = require('electron');
-const { spawn } = require('node:child_process');
+const { execFileSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
@@ -133,17 +133,92 @@ const CHROME_SERVICES = {
   ...(WEB_WECHAT_ENABLED ? { wechat: WEB_WECHAT_CHROME_SERVICE } : {}),
 };
 
+function uniqueValues(values) {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+function existingChromeExecutable(candidate) {
+  const normalized = String(candidate || '').trim().replace(/^"(.+)"$/, '$1');
+  if (!normalized) return '';
+  const candidates = [normalized];
+  if (process.platform === 'win32') {
+    candidates.push(
+      path.join(normalized, 'chrome.exe'),
+      path.join(normalized, 'Application', 'chrome.exe'),
+      path.join(normalized, 'Bin', 'chrome.exe'),
+    );
+  }
+  for (const executable of candidates) {
+    try {
+      if (fs.existsSync(executable) && fs.statSync(executable).isFile()) return executable;
+    } catch {}
+  }
+  return '';
+}
+
+function windowsChromeRegistryCandidates() {
+  const keys = [
+    'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe',
+    'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe',
+    'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe',
+  ];
+  const candidates = [];
+  for (const key of keys) {
+    try {
+      const output = execFileSync('reg.exe', ['query', key, '/ve'], { encoding: 'utf8', windowsHide: true, timeout: 2500 });
+      for (const line of output.split(/\r?\n/)) {
+        const match = line.match(/^\s*(?:\(Default\)|\(默认\))\s+REG_\w+\s+(.+?)\s*$/i);
+        if (match) candidates.push(match[1]);
+      }
+    } catch {}
+  }
+  return candidates;
+}
+
+function windowsChromePathCandidates() {
+  try {
+    return execFileSync('where.exe', ['chrome.exe'], { encoding: 'utf8', windowsHide: true, timeout: 2500 })
+      .split(/\r?\n/)
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function windowsChromeExecutableCandidates() {
+  const localAppData = process.env.LOCALAPPDATA
+    || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Local') : '');
+  const installRoots = [
+    process.env.PROGRAMFILES || 'C:\\Program Files',
+    process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)',
+    localAppData,
+  ];
+  const installCandidates = installRoots.flatMap((root) => [
+    path.join(root, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(root, 'Google', 'Chrome', 'Bin', 'chrome.exe'),
+  ]);
+  return uniqueValues([
+    process.env.MAO_CHROME_PATH,
+    process.env.PDD_CHROME_PATH,
+    process.env.CHROME_PATH,
+    process.env.GOOGLE_CHROME_BIN,
+    ...installCandidates,
+    ...windowsChromeRegistryCandidates(),
+    ...windowsChromePathCandidates(),
+  ]);
+}
+
 function chromeExecutable() {
   const candidates = process.platform === 'darwin'
     ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome']
     : process.platform === 'win32'
-      ? [
-          path.join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
-          path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Google', 'Chrome', 'Application', 'chrome.exe'),
-          path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
-        ]
+      ? windowsChromeExecutableCandidates()
       : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium'];
-  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || '';
+  for (const candidate of candidates) {
+    const executable = existingChromeExecutable(candidate);
+    if (executable) return executable;
+  }
+  return '';
 }
 
 function readWorkspaceEnv() {
