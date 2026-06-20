@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,6 +49,8 @@ const PORT = Number(process.env.PORT || 4173);
 const LOCAL_WECHAT_BRIDGE_URL = `http://127.0.0.1:${PORT}`;
 const REPORT_CONFIG_PATH = path.resolve(ROOT, process.env.PDD_REPORT_CONFIG_PATH || 'data/report-config.json');
 const DESKTOP_WECHAT_LOG_RE = /^wechat-desktop-automation-(\d{4}-\d{2}-\d{2})\.log$/;
+const DESKTOP_WECHAT_LOCK_PATH = path.join(LOG_DIR, 'wechat-desktop-automation.lock');
+const DESKTOP_WECHAT_LOCK_TTL_MS = 5 * 60 * 1000;
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const FEISHU_REPORT_ENABLED = process.env.MAO_ENABLE_FEISHU_REPORT === 'true';
 const WEB_WECHAT_ENABLED = process.env.MAO_ENABLE_WEB_WECHAT === 'true';
@@ -551,45 +553,110 @@ function desktopWechatHelperPath() {
   return candidates.find((candidate) => existsSync(candidate)) || candidates[0];
 }
 
-function runDesktopWechatHelper(args, timeoutMs = 120_000) {
-  return new Promise((resolve, reject) => {
-    if (process.platform !== 'darwin' && process.platform !== 'win32') {
-      reject(new Error(`当前系统暂不支持桌面微信发送：${process.platform}`));
-      return;
+function isPidAlive(pid) {
+  const numericPid = Number(pid);
+  if (!Number.isInteger(numericPid) || numericPid <= 0) return false;
+  try {
+    process.kill(numericPid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readDesktopWechatAutomationLock() {
+  let lock = null;
+  try {
+    lock = JSON.parse(await readFile(DESKTOP_WECHAT_LOCK_PATH, 'utf8'));
+  } catch {
+    return null;
+  }
+  const startedAtMs = Date.parse(lock.startedAt || '');
+  const ageMs = Number.isFinite(startedAtMs) ? Date.now() - startedAtMs : DESKTOP_WECHAT_LOCK_TTL_MS + 1;
+  if (ageMs > DESKTOP_WECHAT_LOCK_TTL_MS || !isPidAlive(lock.pid)) {
+    await unlink(DESKTOP_WECHAT_LOCK_PATH).catch(() => {});
+    return null;
+  }
+  return lock;
+}
+
+async function acquireDesktopWechatAutomationLock(owner, args = []) {
+  const existing = await readDesktopWechatAutomationLock();
+  if (existing) {
+    throw new Error(`桌面微信自动化正在运行：${existing.owner || 'unknown'}，请稍后再试。`);
+  }
+  await mkdir(LOG_DIR, { recursive: true });
+  const lock = {
+    pid: process.pid,
+    owner,
+    args: args.map((arg) => String(arg || '').slice(0, 80)),
+    startedAt: new Date().toISOString(),
+  };
+  try {
+    await writeFile(DESKTOP_WECHAT_LOCK_PATH, JSON.stringify(lock), { encoding: 'utf8', flag: 'wx' });
+  } catch (error) {
+    if (error.code === 'EEXIST') {
+      const racedLock = await readDesktopWechatAutomationLock();
+      throw new Error(`桌面微信自动化正在运行：${racedLock?.owner || 'unknown'}，请稍后再试。`);
     }
-    const helperPath = desktopWechatHelperPath();
-    const command = process.platform === 'win32' ? 'powershell.exe' : helperPath;
-    const helperArgs = process.platform === 'win32'
-      ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helperPath, ...args]
-      : args;
-    const child = spawn(command, helperArgs, {
-      cwd: ROOT,
-      env: {
-        ...process.env,
-        MAO_APP_ROOT: NODE_ENTRY_ROOT,
-        MAO_WORKSPACE_PATH: ROOT,
-        MAO_LOG_DIR: LOG_DIR,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
+    throw error;
+  }
+  return async () => {
+    let current = null;
+    try {
+      current = JSON.parse(await readFile(DESKTOP_WECHAT_LOCK_PATH, 'utf8'));
+    } catch {}
+    if (current?.pid === lock.pid && current?.startedAt === lock.startedAt) {
+      await unlink(DESKTOP_WECHAT_LOCK_PATH).catch(() => {});
+    }
+  };
+}
+
+async function runDesktopWechatHelper(args, timeoutMs = 120_000, owner = 'web-server') {
+  const releaseLock = await acquireDesktopWechatAutomationLock(owner, args);
+  try {
+    return await new Promise((resolve, reject) => {
+      if (process.platform !== 'darwin' && process.platform !== 'win32') {
+        reject(new Error(`当前系统暂不支持桌面微信发送：${process.platform}`));
+        return;
+      }
+      const helperPath = desktopWechatHelperPath();
+      const command = process.platform === 'win32' ? 'powershell.exe' : helperPath;
+      const helperArgs = process.platform === 'win32'
+        ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helperPath, ...args]
+        : args;
+      const child = spawn(command, helperArgs, {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          MAO_APP_ROOT: NODE_ENTRY_ROOT,
+          MAO_WORKSPACE_PATH: ROOT,
+          MAO_LOG_DIR: LOG_DIR,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+      let stdout = '';
+      let stderr = '';
+      const timer = setTimeout(() => {
+        child.kill('SIGTERM');
+        reject(new Error(`桌面微信 helper 超时（${Math.round(timeoutMs / 1000)} 秒）。`));
+      }, timeoutMs);
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.once('error', (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.once('exit', (code, signal) => {
+        clearTimeout(timer);
+        if (code === 0) resolve({ stdout, stderr });
+        else reject(new Error((stderr || stdout || `helper 退出 code=${code} signal=${signal}`).trim()));
+      });
     });
-    let stdout = '';
-    let stderr = '';
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      reject(new Error(`桌面微信 helper 超时（${Math.round(timeoutMs / 1000)} 秒）。`));
-    }, timeoutMs);
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.once('error', (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.once('exit', (code, signal) => {
-      clearTimeout(timer);
-      if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error((stderr || stdout || `helper 退出 code=${code} signal=${signal}`).trim()));
-    });
-  });
+  } finally {
+    await releaseLock();
+  }
 }
 
 async function sendToDesktopWechat({ roomName, text = '', imagePaths = [], mentionNames = [] }) {
@@ -613,7 +680,7 @@ async function sendToDesktopWechat({ roomName, text = '', imagePaths = [], menti
   for (const imagePath of normalizedImages) args.push(`--image=${imagePath}`);
   let result;
   try {
-    result = await runDesktopWechatHelper(args);
+    result = await runDesktopWechatHelper(args, 120_000, 'web-send');
   } catch (error) {
     markDesktopWechatSmokeFailure(`微信 App 上报发送失败：${error.message}`, 'send');
     throw error;
@@ -729,6 +796,19 @@ async function runDesktopWechatSmokeTest({ force = false } = {}) {
   if (!force && desktopWechatSmokeState.ok === true) return desktopWechatSmokeState;
   if (desktopWechatSmokePromise) return desktopWechatSmokePromise;
 
+  const runningLock = await readDesktopWechatAutomationLock();
+  if (runningLock) {
+    Object.assign(desktopWechatSmokeState, {
+      status: desktopWechatSmokeState.ok === true ? 'completed' : 'unknown',
+      ok: desktopWechatSmokeState.ok,
+      disabled: desktopWechatSmokeState.ok !== true,
+      reason: `微信 App 正在执行自动化任务，跳过本轮 smoke test：${runningLock.owner || 'unknown'}`,
+      checkedAt: nowIso(),
+    });
+    appendMonitorNotificationLog(desktopWechatSmokeState.reason);
+    return desktopWechatSmokeState;
+  }
+
   desktopWechatSmokeState.status = 'running';
   desktopWechatSmokeState.ok = null;
   desktopWechatSmokeState.disabled = true;
@@ -738,7 +818,7 @@ async function runDesktopWechatSmokeTest({ force = false } = {}) {
     try {
       const helperPath = desktopWechatHelperPath();
       await stat(helperPath);
-      const result = await runDesktopWechatHelper(['--check-permission'], 15_000);
+      const result = await runDesktopWechatHelper(['--check-permission'], 15_000, 'smoke');
       let payload = {};
       try {
         payload = JSON.parse(result.stdout.trim().split('\n').filter(Boolean).at(-1) || '{}');

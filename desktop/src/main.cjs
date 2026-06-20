@@ -14,6 +14,7 @@ let quitting = false;
 
 const DEFAULT_SERVICE_START_TIMEOUT_MS = process.platform === 'win32' ? 90_000 : 45_000;
 const WECHAT_DESKTOP_AUTOMATION_TIMEOUT_MS = 45_000;
+const WECHAT_DESKTOP_AUTOMATION_LOCK_TTL_MS = 5 * 60 * 1000;
 
 function desktopPackage() {
   return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
@@ -46,6 +47,70 @@ function logsDir() {
 
 function serviceLogPath() {
   return path.join(logsDir(), 'service.log');
+}
+
+function wechatDesktopAutomationLockPath() {
+  return path.join(logsDir(), 'wechat-desktop-automation.lock');
+}
+
+function isPidAlive(pid) {
+  const numericPid = Number(pid);
+  if (!Number.isInteger(numericPid) || numericPid <= 0) return false;
+  try {
+    process.kill(numericPid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readWechatDesktopAutomationLock() {
+  const lockPath = wechatDesktopAutomationLockPath();
+  let lock = null;
+  try {
+    lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+  } catch {
+    return null;
+  }
+  const startedAtMs = Date.parse(lock.startedAt || '');
+  const ageMs = Number.isFinite(startedAtMs) ? Date.now() - startedAtMs : WECHAT_DESKTOP_AUTOMATION_LOCK_TTL_MS + 1;
+  if (ageMs > WECHAT_DESKTOP_AUTOMATION_LOCK_TTL_MS || !isPidAlive(lock.pid)) {
+    try { fs.unlinkSync(lockPath); } catch {}
+    return null;
+  }
+  return lock;
+}
+
+function acquireWechatDesktopAutomationLock(owner, args = []) {
+  const existing = readWechatDesktopAutomationLock();
+  if (existing) {
+    throw new Error(`桌面微信自动化正在运行：${existing.owner || 'unknown'}，请稍后再试。`);
+  }
+  fs.mkdirSync(logsDir(), { recursive: true });
+  const lock = {
+    pid: process.pid,
+    owner,
+    args: args.map((arg) => String(arg || '').slice(0, 80)),
+    startedAt: new Date().toISOString(),
+  };
+  try {
+    fs.writeFileSync(wechatDesktopAutomationLockPath(), JSON.stringify(lock), { encoding: 'utf8', flag: 'wx' });
+  } catch (error) {
+    if (error.code === 'EEXIST') {
+      const racedLock = readWechatDesktopAutomationLock();
+      throw new Error(`桌面微信自动化正在运行：${racedLock?.owner || 'unknown'}，请稍后再试。`);
+    }
+    throw error;
+  }
+  return () => {
+    let current = null;
+    try {
+      current = JSON.parse(fs.readFileSync(wechatDesktopAutomationLockPath(), 'utf8'));
+    } catch {}
+    if (current?.pid === lock.pid && current?.startedAt === lock.startedAt) {
+      try { fs.unlinkSync(wechatDesktopAutomationLockPath()); } catch {}
+    }
+  };
 }
 
 const WEB_WECHAT_CHROME_SERVICE = {
@@ -275,7 +340,7 @@ async function requestDesktopWechatAutomationPermissions() {
     appendServiceLog(serviceLogPath(), `[desktop-wechat-permission] app prompt requested appTrustedAfterPrompt=${appTrustedAfterPrompt}`);
     if (helper.installed) {
       try {
-        const helperResult = await runWechatDesktopAutomationHelper(['--check-permission', '--prompt'], 10_000);
+        const helperResult = await runWechatDesktopAutomationHelper(['--check-permission', '--prompt'], 10_000, 'permission');
         appendServiceLog(serviceLogPath(), `[desktop-wechat-permission] helper prompt stdout=${JSON.stringify(helperResult.stdout.trim())} stderr=${JSON.stringify(helperResult.stderr.trim())}`);
       } catch (error) {
         appendServiceLog(serviceLogPath(), `[desktop-wechat-permission] helper prompt failed ${error.message}`);
@@ -324,7 +389,8 @@ function runNodeRuntimeScript(scriptPath, args, timeoutMs = WECHAT_DESKTOP_AUTOM
   });
 }
 
-function runWechatDesktopAutomationHelper(args, timeoutMs = WECHAT_DESKTOP_AUTOMATION_TIMEOUT_MS) {
+function runWechatDesktopAutomationHelper(args, timeoutMs = WECHAT_DESKTOP_AUTOMATION_TIMEOUT_MS, owner = 'desktop-main') {
+  const releaseLock = acquireWechatDesktopAutomationLock(owner, args);
   return new Promise((resolve, reject) => {
     const helperPath = wechatDesktopAutomationHelperPath();
     const command = process.platform === 'win32' ? 'powershell.exe' : helperPath;
@@ -340,23 +406,33 @@ function runWechatDesktopAutomationHelper(args, timeoutMs = WECHAT_DESKTOP_AUTOM
         MAO_LOG_DIR: logsDir(),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     let stdout = '';
     let stderr = '';
+    let finished = false;
+    const finish = (callback) => {
+      if (finished) return;
+      finished = true;
+      releaseLock();
+      callback();
+    };
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
-      reject(new Error(`桌面微信 helper 超时（${Math.round(timeoutMs / 1000)} 秒）。`));
+      finish(() => reject(new Error(`桌面微信 helper 超时（${Math.round(timeoutMs / 1000)} 秒）。`)));
     }, timeoutMs);
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.once('error', (error) => {
       clearTimeout(timer);
-      reject(error);
+      finish(() => reject(error));
     });
     child.once('exit', (code, signal) => {
       clearTimeout(timer);
-      if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error((stderr || stdout || `helper 退出 code=${code} signal=${signal}`).trim()));
+      finish(() => {
+        if (code === 0) resolve({ stdout, stderr });
+        else reject(new Error((stderr || stdout || `helper 退出 code=${code} signal=${signal}`).trim()));
+      });
     });
   });
 }
@@ -387,7 +463,7 @@ async function createWechatDesktopDraft(options = {}) {
   for (const imagePath of imagePaths.map((item) => String(item || '').trim()).filter(Boolean)) {
     args.push(`--image=${imagePath}`);
   }
-  const result = await runWechatDesktopAutomationHelper(args, 120_000);
+  const result = await runWechatDesktopAutomationHelper(args, 120_000, 'desktop-send');
   return {
     ok: true,
     roomName,
@@ -411,7 +487,7 @@ async function testWechatDesktopKeyboard(options = {}) {
   const openRetry = Boolean(options.openRetry);
   const args = [openRetry ? '--open-retry-test' : (pressEnter ? '--keyboard-enter-test' : '--keyboard-test')];
   if (roomName) args.push(`--room=${roomName}`);
-  const result = await runWechatDesktopAutomationHelper(args, openRetry ? 90_000 : 30_000);
+  const result = await runWechatDesktopAutomationHelper(args, openRetry ? 90_000 : 30_000, openRetry ? 'desktop-open-retry-test' : 'desktop-keyboard-test');
   let payload = null;
   try {
     payload = JSON.parse(result.stdout.trim().split('\n').filter(Boolean).at(-1) || '{}');

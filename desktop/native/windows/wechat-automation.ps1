@@ -24,7 +24,12 @@ using System.Runtime.InteropServices;
 public static class MaoWin32 {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
 
   [StructLayout(LayoutKind.Sequential)]
@@ -40,6 +45,15 @@ public static class MaoWin32 {
 $LogDir = if ($env:MAO_LOG_DIR) { $env:MAO_LOG_DIR } else { Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'DuoduoDigitalManager\logs' }
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 $LogPath = Join-Path $LogDir ("wechat-desktop-automation-{0}.log" -f (Get-Date -Format 'yyyy-MM-dd'))
+$script:ActiveWeChatProcess = $null
+$script:SW_RESTORE = 9
+$script:SWP_NOSIZE = 0x0001
+$script:SWP_NOMOVE = 0x0002
+$script:SWP_SHOWWINDOW = 0x0040
+$script:HWND_TOPMOST = [IntPtr](-1)
+$script:HWND_NOTOPMOST = [IntPtr](-2)
+$script:VK_MENU = 0x12
+$script:KEYEVENTF_KEYUP = 0x0002
 
 function Write-AutoLog {
   param([string]$Message)
@@ -168,21 +182,107 @@ function Get-WindowRect {
   }
 }
 
+function Get-ForegroundWindowInfo {
+  $handle = [MaoWin32]::GetForegroundWindow()
+  $pidValue = [uint32]0
+  [MaoWin32]::GetWindowThreadProcessId($handle, [ref]$pidValue) | Out-Null
+  $name = ''
+  $title = ''
+  try {
+    $foregroundProcess = Get-Process -Id ([int]$pidValue) -ErrorAction Stop
+    $name = $foregroundProcess.ProcessName
+    $title = $foregroundProcess.MainWindowTitle
+  } catch {}
+  return @{
+    Handle = $handle
+    ProcessId = [int]$pidValue
+    ProcessName = $name
+    Title = $title
+  }
+}
+
+function Format-ForegroundInfo {
+  param([hashtable]$Info)
+  if (-not $Info) { return 'none' }
+  $title = (($Info.Title -as [string]) -replace '\s+', ' ').Trim()
+  if ($title.Length -gt 48) { $title = $title.Substring(0, 48) + '...' }
+  return "pid=$($Info.ProcessId) process=$($Info.ProcessName) title=$title"
+}
+
+function Test-WeChatForeground {
+  param([System.Diagnostics.Process]$Process)
+  if (-not $Process) { return $false }
+  $info = Get-ForegroundWindowInfo
+  if ($info.ProcessId -eq $Process.Id) { return $true }
+  if (($info.ProcessName -as [string]) -match '^(WeChat|Weixin|WeChatAppEx)$') { return $true }
+  return $false
+}
+
+function Invoke-AltPulse {
+  [MaoWin32]::keybd_event([byte]$script:VK_MENU, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 40
+  [MaoWin32]::keybd_event([byte]$script:VK_MENU, 0, [uint32]$script:KEYEVENTF_KEYUP, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 40
+}
+
+function Invoke-WeChatForeground {
+  param([System.Diagnostics.Process]$Process, [string]$Reason = 'activate')
+  if (-not $Process) { return $false }
+  try { $Process.Refresh() } catch {}
+  $handle = $Process.MainWindowHandle
+  if ($handle -eq [IntPtr]::Zero) { return $false }
+  $flags = [uint32]($script:SWP_NOMOVE -bor $script:SWP_NOSIZE -bor $script:SWP_SHOWWINDOW)
+  for ($attempt = 1; $attempt -le 5; $attempt += 1) {
+    [MaoWin32]::ShowWindowAsync($handle, $script:SW_RESTORE) | Out-Null
+    Start-Sleep -Milliseconds 100
+    try {
+      $shell = New-Object -ComObject WScript.Shell
+      $shell.AppActivate($Process.Id) | Out-Null
+    } catch {}
+    [MaoWin32]::BringWindowToTop($handle) | Out-Null
+    [MaoWin32]::SetWindowPos($handle, $script:HWND_TOPMOST, 0, 0, 0, 0, $flags) | Out-Null
+    [MaoWin32]::SetWindowPos($handle, $script:HWND_NOTOPMOST, 0, 0, 0, 0, $flags) | Out-Null
+    Invoke-AltPulse
+    $setResult = [MaoWin32]::SetForegroundWindow($handle)
+    Start-Sleep -Milliseconds (220 + ($attempt * 80))
+    if (Test-WeChatForeground -Process $Process) {
+      Write-AutoLog "foreground verified reason=$Reason attempt=$attempt pid=$($Process.Id)"
+      return $true
+    }
+    $foreground = Format-ForegroundInfo (Get-ForegroundWindowInfo)
+    Write-AutoLog "foreground attempt failed reason=$Reason attempt=$attempt setResult=$setResult foreground=$foreground"
+  }
+  return $false
+}
+
+function Assert-WeChatForeground {
+  param([System.Diagnostics.Process]$Process = $script:ActiveWeChatProcess, [string]$Context = 'operation')
+  if (-not $Process) { return }
+  if (Test-WeChatForeground -Process $Process) { return }
+  Invoke-WeChatForeground -Process $Process -Reason "assert-$Context" | Out-Null
+  if (Test-WeChatForeground -Process $Process) { return }
+  $foreground = Format-ForegroundInfo (Get-ForegroundWindowInfo)
+  throw "WeChat is not foreground before $Context; foreground=$foreground. Stop to avoid operating the wrong app."
+}
+
 function Activate-WeChat {
   $process = Find-WeChatProcess
   if (-not $process) {
     throw 'WeChat window was not found. Please open and log in to desktop WeChat.'
   }
-  [MaoWin32]::ShowWindowAsync($process.MainWindowHandle, 5) | Out-Null
-  [MaoWin32]::SetForegroundWindow($process.MainWindowHandle) | Out-Null
-  Start-Sleep -Milliseconds 350
+  if (-not (Invoke-WeChatForeground -Process $process -Reason 'activate')) {
+    $foreground = Format-ForegroundInfo (Get-ForegroundWindowInfo)
+    throw "Cannot bring WeChat to foreground; foreground=$foreground."
+  }
   $rect = Get-WindowRect -Handle $process.MainWindowHandle
+  $script:ActiveWeChatProcess = $process
   Write-AutoLog "activated WeChat pid=$($process.Id) title=$($process.MainWindowTitle) rect=$($rect.Left),$($rect.Top),$($rect.Width)x$($rect.Height)"
   return @{ Process = $process; Rect = $rect }
 }
 
 function Click-Point {
   param([int]$X, [int]$Y, [string]$Name)
+  Assert-WeChatForeground -Context "click-$Name"
   [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($X, $Y)
   Start-Sleep -Milliseconds 80
   [MaoWin32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
@@ -215,11 +315,13 @@ function Set-ClipboardFilesSafe {
 }
 
 function Paste-Clipboard {
+  Assert-WeChatForeground -Context 'paste'
   [System.Windows.Forms.SendKeys]::SendWait('^v')
   Start-Sleep -Milliseconds 450
 }
 
 function Clear-Input {
+  Assert-WeChatForeground -Context 'clear-input'
   [System.Windows.Forms.SendKeys]::SendWait('^a')
   Start-Sleep -Milliseconds 80
   [System.Windows.Forms.SendKeys]::SendWait('{DEL}')
@@ -561,6 +663,7 @@ function Select-ChatsTab {
 function Reset-ToMessageHomeForSearch {
   param([hashtable]$Rect)
   Write-AutoLog 'reset to message home before search'
+  Assert-WeChatForeground -Context 'reset-search'
   [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
   Start-Sleep -Milliseconds 180
   Select-ChatsTab -Rect $Rect
@@ -692,6 +795,7 @@ function Test-DraftContainsBody {
 function Mention-Members {
   param([string[]]$Mentions)
   foreach ($name in $Mentions) {
+    Assert-WeChatForeground -Context 'mention'
     [System.Windows.Forms.SendKeys]::SendWait('@')
     Start-Sleep -Milliseconds 220
     Set-ClipboardTextSafe -Text $name
@@ -704,6 +808,7 @@ function Mention-Members {
 }
 
 function Press-SendEnter {
+  Assert-WeChatForeground -Context 'send-enter'
   [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
   Write-AutoLog 'pressed Enter for send'
   Start-Sleep -Milliseconds 500
