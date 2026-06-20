@@ -53,7 +53,8 @@ const DESKTOP_WECHAT_LOCK_PATH = path.join(LOG_DIR, 'wechat-desktop-automation.l
 const DESKTOP_WECHAT_LOCK_TTL_MS = 5 * 60 * 1000;
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const FEISHU_REPORT_ENABLED = process.env.MAO_ENABLE_FEISHU_REPORT === 'true';
-const WEB_WECHAT_ENABLED = process.env.MAO_ENABLE_WEB_WECHAT === 'true';
+const WEB_WECHAT_ENABLED = process.platform === 'win32' || process.env.MAO_ENABLE_WEB_WECHAT === 'true';
+const DESKTOP_WECHAT_ENABLED = process.platform === 'darwin';
 const APP_ROUTE_PATHS = new Set(['/', '/sync', '/config', '/wechat', '/heartbeat', '/logs', '/desktop']);
 let activeSync = null;
 let activeReport = null;
@@ -80,7 +81,7 @@ function disabledWechatStatus() {
     loggedInUser: '',
     qrAvailable: false,
     disabled: true,
-    reason: 'Web 微信机器人已隐藏，当前默认使用桌面微信 App 发送。',
+    reason: 'Web 微信机器人已隐藏，当前默认使用桌面微信 App 发送。Windows 已恢复使用 Wechaty 通道。',
   };
 }
 
@@ -205,6 +206,7 @@ const APP_CONFIG_FIELDS = [
   'FEISHU_KANBAN_REVIEW_URL',
   'FEISHU_KANBAN_WRITEBACK',
   'PDD_CDP_URL',
+  'WECHATY_CDP_URL',
 ];
 
 const KANBAN_CONFIG_FIELDS = [
@@ -477,8 +479,12 @@ async function checkFeishuCredentials() {
 async function preflightChecks() {
   await loadDotEnv('.env', true);
   process.env.PDD_CDP_URL ||= 'http://127.0.0.1:9222';
+  process.env.WECHATY_CDP_URL ||= 'http://127.0.0.1:9333';
   const checks = await Promise.all([
     checkCdpService('pddChrome', 'PDD Chrome 服务', process.env.PDD_CDP_URL, 9222),
+    ...(WEB_WECHAT_ENABLED
+      ? [checkCdpService('wechatChrome', '微信 Chrome 服务', process.env.WECHATY_CDP_URL, 9333)]
+      : []),
     checkFeishuCredentials(),
   ]);
   const feishuTarget = Boolean(process.env.FEISHU_WIKI_URL?.trim() || process.env.FEISHU_WIKI_NODE_TOKEN?.trim() || process.env.FEISHU_SPREADSHEET_TOKEN?.trim());
@@ -554,6 +560,12 @@ function desktopWechatHelperPath() {
   return candidates.find((candidate) => existsSync(candidate)) || candidates[0];
 }
 
+function assertDesktopWechatAvailable() {
+  if (!DESKTOP_WECHAT_ENABLED) {
+    throw new Error('Windows 已恢复使用 Wechaty 通道，禁止操作桌面微信 App。');
+  }
+}
+
 function isPidAlive(pid) {
   const numericPid = Number(pid);
   if (!Number.isInteger(numericPid) || numericPid <= 0) return false;
@@ -614,6 +626,7 @@ async function acquireDesktopWechatAutomationLock(owner, args = []) {
 }
 
 async function runDesktopWechatHelper(args, timeoutMs = 120_000, owner = 'web-server') {
+  assertDesktopWechatAvailable();
   const releaseLock = await acquireDesktopWechatAutomationLock(owner, args);
   try {
     return await new Promise((resolve, reject) => {

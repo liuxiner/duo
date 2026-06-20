@@ -693,6 +693,11 @@
           <small>优先使用 `9222`，不可用时会自动切到附近可用端口。</small>
         </label>
         <datalist id="pdd-cdp-options"><option value="http://127.0.0.1:9222">本机 PDD Chrome</option></datalist>
+        <label>微信 Chrome 地址
+          <input name="WECHATY_CDP_URL" value="http://127.0.0.1:9333" list="wechaty-cdp-options">
+          <small>Windows 使用 Wechaty 通道，通过该 Chrome 调试端口登录微信。</small>
+        </label>
+        <datalist id="wechaty-cdp-options"><option value="http://127.0.0.1:9333">本机微信 Chrome</option></datalist>
       </form>
       <div class="preflight-actions">
         <button id="config-cancel" class="secondary" type="button">取消</button>
@@ -1020,6 +1025,7 @@
     let reportRequestPending = false;
     let wechatConfigDirty = false;
     let desktopWechatSmokeGate = { status: 'unknown', ok: null, disabled: true, reason: '等待微信上报自检' };
+    let desktopWechatAutomationDisabled = false;
     let wechatEventSource = null;
     let refreshTimer = null;
     let refreshInFlight = false;
@@ -1123,6 +1129,7 @@
 
     function preflightAction(check) {
       if (check.id === 'pddChrome') return '<button class="light preflight-launch" data-service="pdd" type="button">启动 PDD Chrome</button>';
+      if (check.id === 'wechatChrome') return '<button class="light preflight-launch" data-service="wechat" type="button">启动微信 Chrome</button>';
       return '<button class="light preflight-configure" type="button">配置</button>';
     }
 
@@ -1161,8 +1168,9 @@
         desktopWechatPermission.textContent = '未检查';
         return;
       }
+      desktopWechatAutomationDisabled = !status.supported || !status.implemented || Boolean(status.disabled);
       if (!status.supported) {
-        desktopWechatPermission.textContent = '当前系统不支持';
+        desktopWechatPermission.textContent = status.disabledReason || '当前系统不支持';
       } else if (!status.implemented) {
         desktopWechatPermission.textContent = 'Windows 适配待启用';
       } else if (!status.helperInstalled) {
@@ -1174,6 +1182,7 @@
       } else {
         desktopWechatPermission.textContent = '待授权';
       }
+      applyWechatSmokeGate(desktopWechatSmokeGate);
     }
 
     async function refreshDesktopWechatAutomationStatus() {
@@ -1520,7 +1529,7 @@
         desktopWechatEnterTest,
         desktopWechatOpenRetryTest,
         desktopWechatDraft,
-      ], smokeBlocked);
+      ], smokeBlocked || desktopWechatAutomationDisabled);
       for (const element of document.querySelectorAll('.wechat-run-one, .wechat-test-one, .select-wechat-rule')) {
         element.disabled = actionBlocked;
       }

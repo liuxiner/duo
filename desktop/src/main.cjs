@@ -25,7 +25,8 @@ const feedUrl = process.env.MAO_UPDATE_FEED_URL
   || desktopPkg.mao?.updateFeedUrl
   || '';
 const updater = createRuntimeUpdater({ app, feedUrl, bundledVersion: app.getVersion() });
-const WEB_WECHAT_ENABLED = process.env.MAO_ENABLE_WEB_WECHAT === 'true';
+const WEB_WECHAT_ENABLED = process.platform === 'win32' || process.env.MAO_ENABLE_WEB_WECHAT === 'true';
+const DESKTOP_WECHAT_ENABLED = process.platform === 'darwin';
 
 function bundledAppDir() {
   return app.isPackaged
@@ -316,10 +317,26 @@ function desktopAppAccessibilityTrusted(prompt = false) {
 function desktopWechatAutomationStatus() {
   const wechat = wechatExecutableStatus();
   const helper = checkWechatDesktopAutomationHelper();
+  if (!DESKTOP_WECHAT_ENABLED) {
+    return {
+      platform: process.platform,
+      supported: false,
+      implemented: false,
+      disabled: true,
+      disabledReason: 'Windows 已恢复使用 Wechaty 通道，禁止操作桌面微信 App。',
+      accessibilityTrusted: true,
+      permissionRequired: false,
+      wechatInstalled: wechat.installed,
+      wechatPath: wechat.path,
+      helperInstalled: helper.installed,
+      helperPath: helper.path,
+      helperError: helper.error || '',
+    };
+  }
   return {
     platform: process.platform,
-    supported: process.platform === 'darwin' || process.platform === 'win32',
-    implemented: process.platform === 'darwin' || process.platform === 'win32',
+    supported: true,
+    implemented: true,
     accessibilityTrusted: desktopAppAccessibilityTrusted(false),
     permissionRequired: process.platform === 'darwin',
     wechatInstalled: wechat.installed,
@@ -331,6 +348,7 @@ function desktopWechatAutomationStatus() {
 }
 
 async function requestDesktopWechatAutomationPermissions() {
+  if (!DESKTOP_WECHAT_ENABLED) return desktopWechatAutomationStatus();
   if (process.platform === 'darwin') {
     fs.mkdirSync(logsDir(), { recursive: true });
     const helper = checkWechatDesktopAutomationHelper();
@@ -390,6 +408,9 @@ function runNodeRuntimeScript(scriptPath, args, timeoutMs = WECHAT_DESKTOP_AUTOM
 }
 
 function runWechatDesktopAutomationHelper(args, timeoutMs = WECHAT_DESKTOP_AUTOMATION_TIMEOUT_MS, owner = 'desktop-main') {
+  if (!DESKTOP_WECHAT_ENABLED) {
+    return Promise.reject(new Error('Windows 已恢复使用 Wechaty 通道，禁止操作桌面微信 App。'));
+  }
   const releaseLock = acquireWechatDesktopAutomationLock(owner, args);
   return new Promise((resolve, reject) => {
     const helperPath = wechatDesktopAutomationHelperPath();
