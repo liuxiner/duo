@@ -12,3 +12,5 @@ data/pdd/*.csv
 
 data/*
 logs/*
+
+.DS_Store

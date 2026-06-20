@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
 import { mkdir, open, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pddStorageStatePath } from '../pdd-automation/clients/pdd-client.mjs';
@@ -54,7 +54,8 @@ const DESKTOP_WECHAT_LOCK_PATH = path.join(LOG_DIR, 'wechat-desktop-automation.l
 const DESKTOP_WECHAT_LOCK_TTL_MS = 5 * 60 * 1000;
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const REPORT_TIMEOUT_MS = 30 * 60 * 1000;
-const RESERVATION_TIMEOUT_MS = 30 * 60 * 1000;
+const RESERVATION_TIMEOUT_MS = positiveDurationMs(process.env.MAO_RESERVATION_TIMEOUT_MS, 12 * 60 * 1000);
+const RESERVATION_IDLE_TIMEOUT_MS = positiveDurationMs(process.env.MAO_RESERVATION_IDLE_TIMEOUT_MS, 6 * 60 * 1000);
 const TASK_KILL_GRACE_MS = 5 * 1000;
 const FEISHU_REPORT_ENABLED = process.env.MAO_ENABLE_FEISHU_REPORT === 'true';
 const WEB_WECHAT_RUNTIME_AVAILABLE = process.platform === 'win32'
@@ -86,7 +87,7 @@ const desktopWechatSmokeState = {
   status: 'unknown',
   ok: null,
   disabled: true,
-  reason: '等待微信上报自检',
+  reason: '等待微信上报安全检测',
   checkedAt: '',
   channel: configuredWechatChannel(),
   lastFailureSignature: '',
@@ -262,6 +263,7 @@ const APP_CONFIG_FIELDS = [
   'PDD_CDP_URL',
   'MAO_USE_DESKTOP_WECHAT',
   'MAO_WECHAT_CHANNEL',
+  'MAO_WECHAT_EXE_PATH',
   'WECHATY_CDP_URL',
 ];
 
@@ -534,15 +536,172 @@ async function checkFeishuCredentials() {
   }
 }
 
+function uniqueValues(values) {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+function windowsWechatRegistryCandidates() {
+  const keys = [
+    'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Weixin.exe',
+    'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\WeChat.exe',
+    'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Weixin.exe',
+    'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\WeChat.exe',
+    'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Weixin.exe',
+    'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\WeChat.exe',
+  ];
+  const candidates = [];
+  for (const key of keys) {
+    try {
+      const output = execFileSync('reg.exe', ['query', key, '/ve'], { encoding: 'utf8', windowsHide: true, timeout: 2500 });
+      for (const line of output.split(/\r?\n/)) {
+        const match = line.match(/^\s*(?:\(Default\)|\(默认\))\s+REG_\w+\s+(.+?)\s*$/i);
+        if (match) candidates.push(match[1]);
+      }
+    } catch {}
+  }
+  return candidates;
+}
+
+function windowsWechatPathCandidates() {
+  const candidates = [];
+  for (const name of ['Weixin.exe', 'WeChat.exe']) {
+    try {
+      candidates.push(...execFileSync('where.exe', [name], { encoding: 'utf8', windowsHide: true, timeout: 2500 })
+        .split(/\r?\n/)
+        .filter(Boolean));
+    } catch {}
+  }
+  return candidates;
+}
+
+function windowsWechatExecutableCandidates() {
+  const programFiles = process.env.PROGRAMFILES || 'C:\\Program Files';
+  const programFilesX86 = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
+  const localAppData = process.env.LOCALAPPDATA || '';
+  return uniqueValues([
+    process.env.MAO_WECHAT_EXE_PATH,
+    path.join(programFiles, 'Tencent', 'Weixin', 'Weixin.exe'),
+    path.join(programFiles, 'Tencent', 'WeChat', 'WeChat.exe'),
+    path.join(programFilesX86, 'Tencent', 'Weixin', 'Weixin.exe'),
+    path.join(programFilesX86, 'Tencent', 'WeChat', 'WeChat.exe'),
+    path.join(localAppData, 'Tencent', 'Weixin', 'Weixin.exe'),
+    path.join(localAppData, 'Tencent', 'WeChat', 'WeChat.exe'),
+    path.join(localAppData, 'Programs', 'Tencent', 'Weixin', 'Weixin.exe'),
+    path.join(localAppData, 'Programs', 'Tencent', 'WeChat', 'WeChat.exe'),
+    path.join(localAppData, 'Microsoft', 'WindowsApps', 'Weixin.exe'),
+    path.join(localAppData, 'Microsoft', 'WindowsApps', 'WeChat.exe'),
+    ...windowsWechatRegistryCandidates(),
+    ...windowsWechatPathCandidates(),
+  ]);
+}
+
+function desktopWechatExecutableStatus() {
+  if (process.platform === 'darwin') {
+    const appPath = '/Applications/WeChat.app';
+    return { installed: existsSync(appPath), path: appPath };
+  }
+  if (process.platform === 'win32') {
+    const executable = windowsWechatExecutableCandidates().find((candidate) => existsSync(candidate)) || '';
+    return { installed: Boolean(executable), path: executable };
+  }
+  return { installed: false, path: '' };
+}
+
+function checkDesktopWechatPreflight() {
+  const helperPath = desktopWechatHelperPath();
+  const helperInstalled = existsSync(helperPath);
+  if (!desktopWechatPlatformSupported()) {
+    return [
+      {
+        id: 'desktopWechatApp',
+        ok: false,
+        title: '微信 App',
+        detail: `当前系统暂不支持桌面微信 App 通道：${process.platform}`,
+      },
+      {
+        id: 'desktopWechatHelper',
+        ok: false,
+        title: '微信桌面自动化 helper',
+        detail: `当前系统暂不支持桌面微信自动化：${process.platform}`,
+      },
+    ];
+  }
+  const wechat = desktopWechatExecutableStatus();
+  return [
+    {
+      id: 'desktopWechatApp',
+      ok: wechat.installed,
+      title: '微信 App',
+      detail: wechat.installed
+        ? `已找到桌面微信：${wechat.path}`
+        : '未找到桌面微信。可在服务配置里填写 MAO_WECHAT_EXE_PATH，或安装 Weixin.exe / WeChat.exe。',
+      path: wechat.path,
+    },
+    {
+      id: 'desktopWechatHelper',
+      ok: helperInstalled,
+      title: '微信桌面自动化 helper',
+      detail: helperInstalled ? `helper 已就绪：${helperPath}` : `缺少 helper：${helperPath}`,
+      path: helperPath,
+    },
+  ];
+}
+
+// Channel-specific WeChat behavior lives behind this socket so checks and sends stay aligned.
+function wechatChannelSocket(channel = configuredWechatChannel()) {
+  if (channel === 'wechaty') {
+    return {
+      id: 'wechaty',
+      label: '微信机器人',
+      safetyLabel: '微信机器人登录检测',
+      heartbeatStartMessage: '开始检查拼多多和微信机器人登录状态。',
+      heartbeatSuccessMessage: '检查通过：拼多多和微信均已登录。',
+      safetyCheckMode: 'immediate',
+      reuseSuccessfulSafety: false,
+      preflightChecks: () => [
+        checkCdpService('wechatChrome', '微信 Chrome 服务', process.env.WECHATY_CDP_URL, 9333),
+      ],
+      runSafetyCheck: runWechatyLoginSafetyCheck,
+      scheduleSafetyCheck: scheduleWechatyLoginSafetyCheck,
+      checkHeartbeatStatus: checkWechatyHeartbeatStatus,
+      getPublicStatus: () => wechatyBot.getStatus(),
+      send: ({ roomName, text, imagePaths, mentionNames }) => wechatyBot.sendToRoom(
+        roomName,
+        text || '',
+        Array.isArray(imagePaths) ? imagePaths : [],
+        Array.isArray(mentionNames) ? mentionNames : [],
+      ),
+    };
+  }
+  return {
+    id: 'desktop_wechat',
+    label: '桌面微信',
+    safetyLabel: '微信 App 上报安全检测',
+    heartbeatStartMessage: '开始检查拼多多登录状态和桌面微信发送通道。',
+    heartbeatSuccessMessage: '检查通过：拼多多登录有效，桌面微信发送通道已启用。',
+    safetyCheckMode: 'scheduled',
+    reuseSuccessfulSafety: true,
+    preflightChecks: checkDesktopWechatPreflight,
+    runSafetyCheck: runDesktopWechatAppSafetyCheck,
+    scheduleSafetyCheck: scheduleDesktopWechatAppSafetyCheck,
+    checkHeartbeatStatus: checkDesktopWechatHeartbeatStatus,
+    getPublicStatus: inactiveWechatyStatus,
+    send: sendToDesktopWechat,
+  };
+}
+
+function activeWechatChannelSocket() {
+  return wechatChannelSocket(configuredWechatChannel());
+}
+
 async function preflightChecks() {
   await loadDotEnv('.env', true);
   process.env.PDD_CDP_URL ||= 'http://127.0.0.1:9222';
   process.env.WECHATY_CDP_URL ||= 'http://127.0.0.1:9333';
+  const wechatSocket = activeWechatChannelSocket();
   const checks = await Promise.all([
     checkCdpService('pddChrome', 'PDD Chrome 服务', process.env.PDD_CDP_URL, 9222),
-    ...(isWechatyChannel()
-      ? [checkCdpService('wechatChrome', '微信 Chrome 服务', process.env.WECHATY_CDP_URL, 9333)]
-      : []),
+    ...wechatSocket.preflightChecks(),
     checkFeishuCredentials(),
   ]);
   const feishuTarget = Boolean(process.env.FEISHU_WIKI_URL?.trim() || process.env.FEISHU_WIKI_NODE_TOKEN?.trim() || process.env.FEISHU_SPREADSHEET_TOKEN?.trim());
@@ -875,7 +1034,7 @@ async function disableSchedulerConfigForWechatFailure() {
 function markDesktopWechatSmokeFailure(reason, phase = 'smoke') {
   const failure = {
     phase,
-    reason: String(reason || '微信 App 上报 smoke test 未通过'),
+    reason: String(reason || '微信 App 上报安全检测未通过'),
     checkedAt: nowIso(),
   };
   desktopWechatSmokeState.status = 'failed';
@@ -924,34 +1083,28 @@ async function ensureWechatyLoginStarted() {
   return wechatyBot.getStatus();
 }
 
-async function runDesktopWechatSmokeTest({ force = false } = {}) {
-  if (desktopWechatSmokeState.channel !== configuredWechatChannel()) {
+async function runWechatyLoginSafetyCheck() {
+  const channel = 'wechaty';
+  try {
+    await ensureWechatyLoginStarted();
+  } catch (error) {
+    if (configuredWechatChannel() !== channel) return desktopWechatSmokeState;
     Object.assign(desktopWechatSmokeState, {
-      status: 'unknown',
-      ok: null,
+      status: 'failed',
+      ok: false,
       disabled: true,
-      reason: '等待微信上报自检',
-      checkedAt: '',
-      channel: configuredWechatChannel(),
-      lastFailureSignature: '',
+      reason: `微信机器人启动失败：${error.message}`,
+      checkedAt: nowIso(),
+      channel: 'wechaty',
     });
+    return desktopWechatSmokeState;
   }
-  if (isWechatyChannel()) {
-    try {
-      await ensureWechatyLoginStarted();
-    } catch (error) {
-      Object.assign(desktopWechatSmokeState, {
-        status: 'failed',
-        ok: false,
-        disabled: true,
-        reason: `微信机器人启动失败：${error.message}`,
-        checkedAt: nowIso(),
-        channel: 'wechaty',
-      });
-      return desktopWechatSmokeState;
-    }
-    return updateWechatyLoginSmokeState();
-  }
+  if (configuredWechatChannel() !== channel) return desktopWechatSmokeState;
+  return updateWechatyLoginSmokeState();
+}
+
+async function runDesktopWechatAppSafetyCheck({ force = false } = {}) {
+  const channel = 'desktop_wechat';
   if (!force && desktopWechatSmokeState.ok === true) return desktopWechatSmokeState;
   if (desktopWechatSmokePromise) return desktopWechatSmokePromise;
 
@@ -961,7 +1114,7 @@ async function runDesktopWechatSmokeTest({ force = false } = {}) {
       status: desktopWechatSmokeState.ok === true ? 'completed' : 'unknown',
       ok: desktopWechatSmokeState.ok,
       disabled: desktopWechatSmokeState.ok !== true,
-      reason: `微信 App 正在执行自动化任务，跳过本轮 smoke test：${runningLock.owner || 'unknown'}`,
+      reason: `微信 App 正在执行自动化任务，跳过本轮安全检测：${runningLock.owner || 'unknown'}`,
       checkedAt: nowIso(),
       channel: 'desktop_wechat',
     });
@@ -987,18 +1140,20 @@ async function runDesktopWechatSmokeTest({ force = false } = {}) {
       if (payload.trusted === false) {
         throw new Error('桌面应用尚未获得微信桌面自动化权限。');
       }
+      if (configuredWechatChannel() !== channel) return desktopWechatSmokeState;
       Object.assign(desktopWechatSmokeState, {
         status: 'completed',
         ok: true,
         disabled: false,
-        reason: '微信 App 上报 smoke test 通过',
+        reason: '微信 App 上报安全检测通过',
         checkedAt: nowIso(),
         channel: 'desktop_wechat',
         lastFailureSignature: '',
       });
-      appendMonitorNotificationLog('微信 App 上报 smoke test 通过。');
+      appendMonitorNotificationLog('微信 App 上报安全检测通过。');
       return desktopWechatSmokeState;
     } catch (error) {
+      if (configuredWechatChannel() !== channel) return desktopWechatSmokeState;
       return markDesktopWechatSmokeFailure(error.message, 'smoke');
     } finally {
       desktopWechatSmokePromise = null;
@@ -1007,25 +1162,40 @@ async function runDesktopWechatSmokeTest({ force = false } = {}) {
   return desktopWechatSmokePromise;
 }
 
-function scheduleDesktopWechatSmokeTest() {
-  if (desktopWechatSmokeState.channel !== configuredWechatChannel()) {
-    Object.assign(desktopWechatSmokeState, {
-      status: 'unknown',
-      ok: null,
-      disabled: true,
-      reason: '等待微信上报自检',
-      checkedAt: '',
-      channel: configuredWechatChannel(),
-      lastFailureSignature: '',
-    });
-  }
+async function runDesktopWechatSmokeTest({ force = false } = {}) {
+  resetWechatSmokeForCurrentChannel();
+  return activeWechatChannelSocket().runSafetyCheck({ force });
+}
+
+function scheduleWechatyLoginSafetyCheck() {
   if (desktopWechatSmokeState.status !== 'unknown' || desktopWechatSmokePromise) return;
-  runDesktopWechatSmokeTest().catch((error) => {
+  runWechatyLoginSafetyCheck().catch((error) => {
+    if (configuredWechatChannel() !== 'wechaty') return;
+    Object.assign(desktopWechatSmokeState, {
+      status: 'failed',
+      ok: false,
+      disabled: true,
+      reason: `微信机器人登录检测异常：${error.message}`,
+      checkedAt: nowIso(),
+      channel: 'wechaty',
+    });
+  });
+}
+
+function scheduleDesktopWechatAppSafetyCheck() {
+  if (desktopWechatSmokeState.status !== 'unknown' || desktopWechatSmokePromise) return;
+  runDesktopWechatAppSafetyCheck().catch((error) => {
+    if (configuredWechatChannel() !== 'desktop_wechat') return;
     markDesktopWechatSmokeFailure(error.message, 'smoke');
   });
 }
 
-function resetWechatSmokeForCurrentChannel(reason = '等待微信上报自检') {
+function scheduleDesktopWechatSmokeTest() {
+  resetWechatSmokeForCurrentChannel();
+  activeWechatChannelSocket().scheduleSafetyCheck();
+}
+
+function resetWechatSmokeForCurrentChannel(reason = '等待微信上报安全检测') {
   if (desktopWechatSmokeState.channel === configuredWechatChannel()) return;
   Object.assign(desktopWechatSmokeState, {
     status: 'unknown',
@@ -1039,14 +1209,14 @@ function resetWechatSmokeForCurrentChannel(reason = '等待微信上报自检') 
 }
 
 async function ensureDesktopWechatSmokeReady() {
-  const state = isWechatyChannel()
-    ? await runDesktopWechatSmokeTest()
-    : desktopWechatSmokeState.ok === true && desktopWechatSmokeState.channel === configuredWechatChannel()
+  const wechatSocket = activeWechatChannelSocket();
+  const state = wechatSocket.reuseSuccessfulSafety
+    && desktopWechatSmokeState.ok === true
+    && desktopWechatSmokeState.channel === configuredWechatChannel()
     ? desktopWechatSmokeState
     : await runDesktopWechatSmokeTest();
   if (state.ok !== true) {
-    const label = isWechatyChannel() ? '微信机器人登录检测' : '微信 App 上报 smoke test';
-    throw new Error(`${label}未通过：${state.reason}`);
+    throw new Error(`${wechatSocket.safetyLabel}未通过：${state.reason}`);
   }
   return state;
 }
@@ -1293,6 +1463,11 @@ function timeListIncludes(times = [], time = '') {
   return (Array.isArray(times) ? times : []).includes(time);
 }
 
+function positiveDurationMs(value, fallback) {
+  const next = Number(value);
+  return Number.isFinite(next) && next > 0 ? Math.round(next) : fallback;
+}
+
 function summarizeQueueTask(task) {
   if (!task) return null;
   const { child, onSuccess, env, ...safeTask } = task;
@@ -1355,7 +1530,7 @@ async function finishQueuedTask(task, { code = 0, signal = '', error = null } = 
   taskQueue.active = null;
 
   if (error || task.timedOut || code !== 0) {
-    const reason = error?.message || (task.timedOut ? '任务执行超时，已自动重置' : `子进程退出 code=${code} signal=${signal || '-'}`);
+    const reason = error?.message || (task.timedOut ? task.timeoutReason || '任务执行超时，已自动重置' : `子进程退出 code=${code} signal=${signal || '-'}`);
     task.status = 'failed';
     task.error = reason;
     task.taskRef.status = 'failed';
@@ -1398,6 +1573,7 @@ function processTaskQueue() {
   taskQueue.active = task;
   taskQueue.status = 'running';
   task.startedAt = nowIso();
+  task.lastOutputAt = task.startedAt;
   task.status = 'running';
   task.taskRef.status = 'running';
   task.taskRef.startedAt = task.startedAt;
@@ -1415,14 +1591,22 @@ function processTaskQueue() {
   });
   task.child = child;
   task.taskRef.child = child;
-  child.stdout.on('data', (chunk) => appendLogs(task.taskRef, chunk));
-  child.stderr.on('data', (chunk) => appendLogs(task.taskRef, chunk));
+  const handleOutput = (chunk) => {
+    task.lastOutputAt = nowIso();
+    task.taskRef.lastOutputAt = task.lastOutputAt;
+    appendLogs(task.taskRef, chunk);
+    resetIdleTimeout();
+  };
+  child.stdout.on('data', handleOutput);
+  child.stderr.on('data', handleOutput);
 
   let timeout = null;
+  let idleTimeout = null;
   let forceKill = null;
   let finished = false;
   const cleanup = () => {
     if (timeout) clearTimeout(timeout);
+    if (idleTimeout) clearTimeout(idleTimeout);
     if (forceKill) clearTimeout(forceKill);
   };
   const finish = (result) => {
@@ -1437,13 +1621,15 @@ function processTaskQueue() {
       setTimeout(processTaskQueue, 0).unref?.();
     });
   };
-
-  timeout = setTimeout(() => {
+  const terminateTimedOutTask = (reason) => {
+    if (finished || task.timedOut) return;
     task.timedOut = true;
+    task.timeoutReason = reason;
     task.status = 'resetting';
     task.taskRef.status = 'resetting';
-    appendLogs(task.taskRef, `[watchdog] ${task.label} 超过 ${Math.round(task.timeoutMs / 1000)} 秒，发送 SIGTERM。`);
-    appendTaskQueueLog(`超时重置：${task.label}。`);
+    task.taskRef.timeoutReason = reason;
+    appendLogs(task.taskRef, `[watchdog] ${reason}，发送 SIGTERM。`);
+    appendTaskQueueLog(`超时重置：${task.label}；${reason}。`);
     const cancelled = taskQueue.pending.splice(0);
     for (const pendingTask of cancelled) {
       pendingTask.status = 'cancelled';
@@ -1458,6 +1644,19 @@ function processTaskQueue() {
       safeKill(child, 'SIGKILL');
     }, TASK_KILL_GRACE_MS);
     forceKill.unref?.();
+  };
+  function resetIdleTimeout() {
+    if (!task.noOutputTimeoutMs) return;
+    if (idleTimeout) clearTimeout(idleTimeout);
+    idleTimeout = setTimeout(() => {
+      terminateTimedOutTask(`${task.label} 超过 ${Math.round(task.noOutputTimeoutMs / 1000)} 秒没有新日志输出，判定为卡住`);
+    }, task.noOutputTimeoutMs);
+    idleTimeout.unref?.();
+  }
+  resetIdleTimeout();
+
+  timeout = setTimeout(() => {
+    terminateTimedOutTask(`${task.label} 超过 ${Math.round(task.timeoutMs / 1000)} 秒`);
   }, task.timeoutMs);
   timeout.unref?.();
 
@@ -1805,26 +2004,27 @@ async function checkPddLoginStatus() {
   }
 }
 
-function checkWechatLoginStatus() {
-  if (isDesktopWechatChannel()) {
-    if (desktopWechatSmokeState.ok === false) {
-      return {
-        id: 'desktopWechat',
-        name: '桌面微信',
-        loggedIn: null,
-        ok: false,
-        alertable: false,
-        detail: `微信 App 上报 smoke test 未通过：${desktopWechatSmokeState.reason}`,
-      };
-    }
+function checkDesktopWechatHeartbeatStatus() {
+  if (desktopWechatSmokeState.ok === false) {
     return {
       id: 'desktopWechat',
       name: '桌面微信',
-      loggedIn: true,
-      ok: true,
-      detail: '已切换为桌面微信 App 发送；启动检查不再检测 Web 微信 Chrome。',
+      loggedIn: null,
+      ok: false,
+      alertable: false,
+      detail: `微信 App 上报安全检测未通过：${desktopWechatSmokeState.reason}`,
     };
   }
+  return {
+    id: 'desktopWechat',
+    name: '桌面微信',
+    loggedIn: true,
+    ok: true,
+    detail: '已切换为桌面微信 App 发送；启动检查不再检测 Web 微信 Chrome。',
+  };
+}
+
+function checkWechatyHeartbeatStatus() {
   const status = wechatyBot.getStatus();
   const loggedIn = status.status === 'logged-in';
   return {
@@ -1834,6 +2034,10 @@ function checkWechatLoginStatus() {
     ok: loggedIn,
     detail: loggedIn ? `已登录：${status.loggedInUser || '-'}` : `未登录（当前状态：${status.status || '未知'}）`,
   };
+}
+
+function checkWechatLoginStatus() {
+  return activeWechatChannelSocket().checkHeartbeatStatus();
 }
 
 function heartbeatIntervalMs(heartbeatConfig = defaultHeartbeatConfig()) {
@@ -1883,7 +2087,8 @@ async function runHeartbeatCheck({ manual = false } = {}) {
       return heartbeatMonitor.lastResult;
     }
 
-    appendHeartbeatLog(isWechatyChannel() ? '开始检查拼多多和微信机器人登录状态。' : '开始检查拼多多登录状态和桌面微信发送通道。');
+    const wechatSocket = activeWechatChannelSocket();
+    appendHeartbeatLog(wechatSocket.heartbeatStartMessage);
     const results = await Promise.all([
       checkPddLoginStatus(),
       Promise.resolve(checkWechatLoginStatus()),
@@ -1898,7 +2103,7 @@ async function runHeartbeatCheck({ manual = false } = {}) {
         appendHeartbeatLog(`检测异常，不发送登录告警：${indeterminateChecks.map((check) => `${check.name}（${check.detail}）`).join('；')}。`);
         heartbeatMonitor.status = 'failed';
       } else {
-        appendHeartbeatLog(isWechatyChannel() ? '检查通过：拼多多和微信均已登录。' : '检查通过：拼多多登录有效，桌面微信发送通道已启用。');
+        appendHeartbeatLog(wechatSocket.heartbeatSuccessMessage);
         heartbeatMonitor.status = 'completed';
       }
       return heartbeatMonitor.lastResult;
@@ -2025,8 +2230,10 @@ function startReservation({ dryRun = true, ids = [], includeDisabled = false, so
     env: {
       ELECTRON_RUN_AS_NODE: process.versions.electron ? '1' : process.env.ELECTRON_RUN_AS_NODE,
       PDD_AUTO_WAIT_FOR_LOGIN: 'true',
+      PDD_APPOINTMENT_TASK_TIMEOUT_MS: String(RESERVATION_TIMEOUT_MS),
     },
     timeoutMs: RESERVATION_TIMEOUT_MS,
+    noOutputTimeoutMs: RESERVATION_IDLE_TIMEOUT_MS,
   });
   return task;
 }
@@ -2243,7 +2450,8 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === 'GET' && request.url === '/api/desktop-wechat-smoke') {
-      if (isWechatyChannel()) await runDesktopWechatSmokeTest();
+      const wechatSocket = activeWechatChannelSocket();
+      if (wechatSocket.safetyCheckMode === 'immediate') await runDesktopWechatSmokeTest();
       else scheduleDesktopWechatSmokeTest();
       sendJson(response, 200, { smoke: desktopWechatSmokeState });
       return;
@@ -2257,6 +2465,7 @@ const server = createServer(async (request, response) => {
 
     if (request.method === 'GET' && request.url === '/api/status') {
       resetWechatSmokeForCurrentChannel();
+      const wechatSocket = activeWechatChannelSocket();
       const externalJobLock = await readJobLockStatus({ root: ROOT, logDir: LOG_DIR }).catch(() => null);
       sendJson(response, 200, {
         features: {
@@ -2264,7 +2473,8 @@ const server = createServer(async (request, response) => {
           webWechatRuntimeAvailable: WEB_WECHAT_RUNTIME_AVAILABLE,
           desktopWechatEnabled: isDesktopWechatChannel(),
           desktopWechatSupported: desktopWechatPlatformSupported(),
-          wechatChannel: configuredWechatChannel(),
+          wechatChannel: wechatSocket.id,
+          wechatChannelLabel: wechatSocket.label,
         },
         taskQueue: summarizeTaskQueue(),
         jobLock: externalJobLock ? {
@@ -2280,7 +2490,7 @@ const server = createServer(async (request, response) => {
         heartbeat: summarizeTask(heartbeatMonitor),
         monitorNotification: summarizeTask(monitorNotificationQueue),
         desktopWechat: { smoke: desktopWechatSmokeState },
-        wechat: wechatyBot.getStatus(),
+        wechat: wechatSocket.getPublicStatus(),
       });
       return;
     }
@@ -2407,10 +2617,10 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    // WeChat (Wechaty) API endpoints
+    // WeChat channel API endpoints
 
     if (request.method === 'GET' && request.url === '/api/wechat/status') {
-      sendJson(response, 200, isWechatyChannel() ? wechatyBot.getStatus() : inactiveWechatyStatus());
+      sendJson(response, 200, activeWechatChannelSocket().getPublicStatus());
       return;
     }
 
@@ -2495,14 +2705,7 @@ const server = createServer(async (request, response) => {
         sendJson(response, 400, { error: 'roomName is required' });
         return;
       }
-      const result = isWechatyChannel()
-        ? await wechatyBot.sendToRoom(
-            roomName,
-            text || '',
-            Array.isArray(imagePaths) ? imagePaths : [],
-            Array.isArray(mentionNames) ? mentionNames : [],
-          )
-        : await sendToDesktopWechat({ roomName, text, imagePaths, mentionNames });
+      const result = await activeWechatChannelSocket().send({ roomName, text, imagePaths, mentionNames });
       sendJson(response, 200, { ok: true, result });
       return;
     }

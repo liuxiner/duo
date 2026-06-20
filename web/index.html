@@ -714,6 +714,10 @@
         </label>
         <datalist id="pdd-cdp-options"><option value="http://127.0.0.1:9222">本机 PDD Chrome</option></datalist>
         <label class="switch"><input name="MAO_USE_DESKTOP_WECHAT" type="checkbox" value="true">微信 App 通道</label>
+        <label>微信 App 路径
+          <input name="MAO_WECHAT_EXE_PATH" autocomplete="off" placeholder="自动探测，必要时填写 Weixin.exe">
+          <small>Windows 安装位置不固定；可填完整路径，例如 C:\...\Weixin.exe。</small>
+        </label>
         <label>微信 Chrome 地址
           <input name="WECHATY_CDP_URL" value="http://127.0.0.1:9333" list="wechaty-cdp-options">
           <small>默认使用 Wechaty；开启微信 App 通道后不再检查该端口。</small>
@@ -996,11 +1000,11 @@
           <div class="metric"><span>业务版本</span><strong id="desktop-runtime-version">-</strong></div>
           <div class="metric"><span>更新状态</span><strong id="desktop-update-status">未检查</strong></div>
           <div class="metric"><span id="desktop-wechat-permission-label">微信桌面权限</span><strong id="desktop-wechat-permission">未检查</strong></div>
-          <div class="metric"><span id="desktop-wechat-smoke-label">微信上报自检</span><strong id="desktop-wechat-smoke-status">等待检测</strong></div>
+          <div class="metric"><span id="desktop-wechat-smoke-label">微信上报安全检测</span><strong id="desktop-wechat-smoke-status">等待检测</strong></div>
         </div>
         <div class="toolbar" style="margin-top:12px;">
           <button id="desktop-request-wechat-permission" type="button">申请微信桌面权限</button>
-          <button id="desktop-wechat-smoke-test" class="secondary" type="button">重新检测微信上报</button>
+          <button id="desktop-wechat-smoke-test" class="secondary" type="button">重新检测微信安全</button>
         </div>
         <div class="grid-form" id="desktop-wechat-debug-form" style="margin-top:12px;">
           <label>微信群名<input id="desktop-wechat-room" value="杭州交仓" autocomplete="off"></label>
@@ -1085,7 +1089,7 @@
     let wechatConfigDirty = false;
     let wechatChannelMode = 'wechaty';
     let preflightManualMode = false;
-    let desktopWechatSmokeGate = { status: 'unknown', ok: null, disabled: true, reason: '等待微信上报自检' };
+    let desktopWechatSmokeGate = { status: 'unknown', ok: null, disabled: true, reason: '等待微信上报安全检测' };
     let desktopWechatAutomationDisabled = false;
     let wechatEventSource = null;
     let refreshTimer = null;
@@ -1203,6 +1207,8 @@
     function preflightAction(check) {
       if (check.id === 'pddChrome') return '<button class="light preflight-launch" data-service="pdd" type="button">启动 PDD Chrome</button>';
       if (check.id === 'wechatChrome') return '<button class="light preflight-launch" data-service="wechat" type="button">启动微信 Chrome</button>';
+      if (check.id === 'desktopWechatApp') return '<button class="light preflight-configure" type="button">配置微信路径</button>';
+      if (check.id === 'desktopWechatHelper') return '<button class="light preflight-configure" type="button">配置服务</button>';
       return '<button class="light preflight-configure" type="button">配置</button>';
     }
 
@@ -1293,8 +1299,8 @@
       if (wechatBotToolbar) wechatBotToolbar.hidden = !isWechaty;
       if (wechatStatusCard) wechatStatusCard.hidden = !isWechaty;
       if (desktopWechatPermissionLabel) desktopWechatPermissionLabel.textContent = isWechaty ? '微信通道' : '微信桌面权限';
-      if (desktopWechatSmokeLabel) desktopWechatSmokeLabel.textContent = isWechaty ? '微信登录检测' : '微信上报自检';
-      if (desktopWechatSmokeTest) desktopWechatSmokeTest.textContent = isWechaty ? '检测微信登录' : '重新检测微信上报';
+      if (desktopWechatSmokeLabel) desktopWechatSmokeLabel.textContent = isWechaty ? '微信登录检测' : '微信上报安全检测';
+      if (desktopWechatSmokeTest) desktopWechatSmokeTest.textContent = isWechaty ? '检测微信登录' : '重新检测微信安全';
       if (desktopRequestWechatPermission) desktopRequestWechatPermission.hidden = isWechaty;
       if (desktopWechatDebugForm) desktopWechatDebugForm.hidden = isWechaty;
       if (isWechaty && desktopWechatPermission) {
@@ -1368,7 +1374,7 @@
         const response = await fetch('/api/desktop-wechat-smoke', { method: force ? 'POST' : 'GET' });
         const body = await response.json();
         applyWechatSmokeGate(body.smoke || desktopWechatSmokeGate);
-        if (!response.ok) throw new Error(body.error || body.smoke?.reason || '微信上报自检失败');
+        if (!response.ok) throw new Error(body.error || body.smoke?.reason || '微信上报安全检测失败');
         renderConfig();
       } catch (error) {
         applyWechatSmokeGate({ status: 'failed', ok: false, disabled: true, reason: error.message });
@@ -1667,7 +1673,7 @@
     }
     function assertWechatSmokeReady() {
       if (!isWechatSmokeBlocked()) return true;
-      const label = wechatChannelMode === 'wechaty' ? '微信登录检测未通过' : '微信 App 上报 smoke test 未通过';
+      const label = wechatChannelMode === 'wechaty' ? '微信登录检测未通过' : '微信 App 上报安全检测未通过';
       alert(`${label}：${desktopWechatSmokeGate.reason || '请先重新检测微信上报'}`);
       return false;
     }

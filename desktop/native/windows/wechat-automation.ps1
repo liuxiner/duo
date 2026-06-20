@@ -136,19 +136,39 @@ function Find-WeChatProcess {
     return Join-Path $Base $Child
   }
 
+  function Get-AppPathFromRegistry {
+    param([string]$Key)
+    try {
+      $output = & reg.exe query $Key /ve 2>$null
+      foreach ($line in $output) {
+        if ($line -match 'REG_\w+\s+(.+?)\s*$') {
+          return $Matches[1].Trim()
+        }
+      }
+    } catch {}
+    return $null
+  }
+
   $candidates = @(
-    (Join-OptionalPath ${env:ProgramFiles} 'Tencent\WeChat\WeChat.exe'),
+    ${env:MAO_WECHAT_EXE_PATH},
     (Join-OptionalPath ${env:ProgramFiles} 'Tencent\Weixin\Weixin.exe'),
-    (Join-OptionalPath ${env:ProgramFiles(x86)} 'Tencent\WeChat\WeChat.exe'),
+    (Join-OptionalPath ${env:ProgramFiles} 'Tencent\WeChat\WeChat.exe'),
     (Join-OptionalPath ${env:ProgramFiles(x86)} 'Tencent\Weixin\Weixin.exe'),
-    (Join-OptionalPath ${env:LOCALAPPDATA} 'Tencent\WeChat\WeChat.exe'),
+    (Join-OptionalPath ${env:ProgramFiles(x86)} 'Tencent\WeChat\WeChat.exe'),
     (Join-OptionalPath ${env:LOCALAPPDATA} 'Tencent\Weixin\Weixin.exe'),
-    (Join-OptionalPath ${env:LOCALAPPDATA} 'Programs\Tencent\WeChat\WeChat.exe'),
+    (Join-OptionalPath ${env:LOCALAPPDATA} 'Tencent\WeChat\WeChat.exe'),
     (Join-OptionalPath ${env:LOCALAPPDATA} 'Programs\Tencent\Weixin\Weixin.exe'),
-    (Join-OptionalPath ${env:LOCALAPPDATA} 'Microsoft\WindowsApps\WeChat.exe'),
+    (Join-OptionalPath ${env:LOCALAPPDATA} 'Programs\Tencent\WeChat\WeChat.exe'),
     (Join-OptionalPath ${env:LOCALAPPDATA} 'Microsoft\WindowsApps\Weixin.exe'),
-    ((Get-Command WeChat.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source),
-    ((Get-Command Weixin.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source)
+    (Join-OptionalPath ${env:LOCALAPPDATA} 'Microsoft\WindowsApps\WeChat.exe'),
+    (Get-AppPathFromRegistry 'HKCU\Software\Microsoft\Windows\CurrentVersion\App Paths\Weixin.exe'),
+    (Get-AppPathFromRegistry 'HKCU\Software\Microsoft\Windows\CurrentVersion\App Paths\WeChat.exe'),
+    (Get-AppPathFromRegistry 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Weixin.exe'),
+    (Get-AppPathFromRegistry 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\WeChat.exe'),
+    (Get-AppPathFromRegistry 'HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\Weixin.exe'),
+    (Get-AppPathFromRegistry 'HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\WeChat.exe'),
+    ((Get-Command Weixin.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source),
+    ((Get-Command WeChat.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source)
   ) | Where-Object { $_ -and (Test-Path $_) }
 
   if ($candidates.Count -gt 0) {

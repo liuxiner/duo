@@ -11,6 +11,7 @@ import { closeBlockingModals } from './pdd-page-tools.mjs';
 const ROOT = path.resolve(process.env.MAO_WORKSPACE_PATH || process.cwd());
 const APPOINTMENT_DELIVERY_URL = 'https://mc.pinduoduo.com/ddmc-mms/appointment-delivery';
 const HEADER_MULTI_SELECTION_SELECTOR = 'th label[data-testid="beast-core-checkbox"], tr[data-testid="beast-core-table-header-tr"] label[data-testid="beast-core-checkbox"]';
+const DEFAULT_APPOINTMENT_TASK_TIMEOUT_MS = 12 * 60 * 1000;
 const DEFAULT_AREA_IDS = { 浙江省: 31 };
 const DEFAULT_RESERVATION_ITEMS = [
   {
@@ -55,6 +56,11 @@ function argValue(name, fallback = '') {
 
 function hasArg(name) {
   return process.argv.includes(name);
+}
+
+function positiveDurationMs(value, fallback) {
+  const next = Number(value);
+  return Number.isFinite(next) && next > 0 ? Math.round(next) : fallback;
 }
 
 async function loadDotEnv(file = '.env') {
@@ -364,6 +370,13 @@ async function readAppointmentListGoodsIds(page) {
 
 async function readAppointmentSelectionState(page) {
   return page.evaluate(() => {
+    const numberFromText = (value) => {
+      const text = String(value || '').replace(/,/g, '');
+      const match = text.match(/(?:已选(?:择)?|选中)\s*(\d+)\s*(?:条|项|个|件)?/);
+      if (!match) return null;
+      const count = Number(match[1]);
+      return Number.isFinite(count) ? count : null;
+    };
     const isVisible = (node) => {
       if (!node) return false;
       const rect = node.getBoundingClientRect();
@@ -407,6 +420,8 @@ async function readAppointmentSelectionState(page) {
       .filter(Boolean);
     const batchButton = Array.from(document.querySelectorAll('button'))
       .find((button) => /批量新建预约/.test(button.innerText || button.textContent || ''));
+    const bodyText = document.body.innerText || '';
+    const selectedSummaryCount = numberFromText(bodyText);
     const headerPoint = checkbox && isVisible(checkbox) ? centerOf(checkbox) : null;
     return {
       header: checkbox ? {
@@ -420,15 +435,24 @@ async function readAppointmentSelectionState(page) {
       checkedRows: rowCheckboxes.filter((item) => item.checked).length,
       selectableRows: rowCheckboxes.filter((item) => !item.disabled).length,
       visibleRows: rows.length,
+      selectedSummaryCount,
       batchActive: Boolean(batchButton && !batchButton.disabled),
     };
   });
 }
 
+function selectedCountFromState(state, expectedCount) {
+  if (Number.isFinite(state?.selectedSummaryCount)) return state.selectedSummaryCount;
+  if (Number.isFinite(state?.checkedRows) && state.checkedRows > 0) return state.checkedRows;
+  if (state?.header?.checked && state?.selectableRows === expectedCount) return expectedCount;
+  return null;
+}
+
 async function selectAppointmentRows(page, expectedCount) {
   let state = await readAppointmentSelectionState(page);
-  if (state.batchActive && (state.checkedRows === expectedCount || state.header?.checked)) {
-    return { selectedCount: state.checkedRows || expectedCount, method: 'existing' };
+  let observedSelectedCount = selectedCountFromState(state, expectedCount);
+  if (state.batchActive && observedSelectedCount === expectedCount) {
+    return { selectedCount: observedSelectedCount, observedSelectedCount, method: 'existing' };
   }
 
   if (!state.header?.visible) {
@@ -460,6 +484,7 @@ async function selectAppointmentRows(page, expectedCount) {
     }, { timeout: 5000 }).catch(() => {});
     await page.waitForTimeout(500);
     state = await readAppointmentSelectionState(page);
+    observedSelectedCount = selectedCountFromState(state, expectedCount);
   }
 
   const waitForSelection = () => page.waitForFunction(() => {
@@ -516,11 +541,22 @@ async function selectAppointmentRows(page, expectedCount) {
     await clickAttempt().catch(() => {});
     await waitForSelection();
     state = await readAppointmentSelectionState(page);
-    if (state.batchActive || state.header?.checked || state.checkedRows) break;
+    observedSelectedCount = selectedCountFromState(state, expectedCount);
+    if (observedSelectedCount === expectedCount && state.batchActive) break;
   }
   await page.waitForTimeout(300);
 
   state = await readAppointmentSelectionState(page);
+  observedSelectedCount = selectedCountFromState(state, expectedCount);
+  if (observedSelectedCount !== expectedCount) {
+    const actualText = observedSelectedCount == null ? '无法读取' : `${observedSelectedCount} 条`;
+    return {
+      selectedCount: observedSelectedCount ?? state.checkedRows,
+      observedSelectedCount,
+      method: 'header',
+      reason: `页面共有 ${expectedCount} 条，但表头全选后实际选中 ${actualText}（可选 ${state.selectableRows} 条，页面可见 ${state.visibleRows} 条）`,
+    };
+  }
   if (!state.batchActive) {
     return {
       selectedCount: state.checkedRows,
@@ -528,7 +564,7 @@ async function selectAppointmentRows(page, expectedCount) {
       reason: `已点击表头 multi selection，但批量新建预约按钮未启用；当前已选 ${state.checkedRows} 条`,
     };
   }
-  return { selectedCount: expectedCount, observedSelectedCount: state.checkedRows, method: 'header' };
+  return { selectedCount: observedSelectedCount, observedSelectedCount, method: 'header' };
 }
 
 async function openBatchAppointmentFromCurrentList(page, expectedCount) {
@@ -546,7 +582,7 @@ async function openBatchAppointmentFromCurrentList(page, expectedCount) {
   await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
   await closeBlockingModals(page);
   await page.waitForTimeout(1500);
-  return { opened: true, selectedCount: selectState.selectedCount, reason: '' };
+  return { opened: true, selectedCount: selectState.selectedCount, observedSelectedCount: selectState.observedSelectedCount, reason: '' };
 }
 
 function batchCreateAppointmentUrl(meta, goodsIds, schedule) {
@@ -976,7 +1012,7 @@ async function runRule(page, context, rule, { dryRun }) {
   if (!pageEntry.opened) {
     throw new Error(`规则 #${rule.id} 页面共有 ${expectedCount} 条，但批量入口未启用：${pageEntry.reason}`);
   }
-  console.log(`规则 #${rule.id} 已通过表头全选进入批量新建预约页，预期预约 ${expectedCount} 条。`);
+  console.log(`规则 #${rule.id} 已通过表头全选选中 ${pageEntry.selectedCount}/${expectedCount} 条商品，进入批量新建预约页。`);
 
   let appointmentGoodsCount = await countCreateAppointmentGoods(page);
   if (appointmentGoodsCount !== expectedCount) {
@@ -1050,21 +1086,38 @@ const cfg = {
 
 let browser;
 let context;
-await withJobLock(`delivery-appointment:${dryRun ? 'dry-run' : 'commit'}`, async () => {
-  try {
-    ({ browser, context } = await createPddBrowserContext(cfg));
-    const { page } = await loginAndSavePddStorageState(cfg, context);
-    for (const rule of rules) {
-      await runRule(page, context, rule, { dryRun });
-    }
-    console.log(`预约${dryRun ? '演练' : '执行'}完成：${rules.length} 条规则。`);
-  } finally {
-    if (!dryRun) await closePddBrowserContext(browser, context);
-    else if (browser) {
-      // CDP 模式下仅断开 Playwright，保留页面供人工确认 dry-run 结果。
+const appointmentTaskTimeoutMs = positiveDurationMs(process.env.PDD_APPOINTMENT_TASK_TIMEOUT_MS, DEFAULT_APPOINTMENT_TASK_TIMEOUT_MS);
+let appointmentTaskWatchdog = null;
+try {
+  appointmentTaskWatchdog = setTimeout(async () => {
+    console.error(`预约送货任务超过 ${Math.round(appointmentTaskTimeoutMs / 1000)} 秒仍未结束，判定为超时失败。`);
+    try {
       await closePddBrowserContext(browser, context);
+    } catch (error) {
+      console.error(`预约送货超时后关闭浏览器失败：${error.message}`);
     }
-  }
-}, { root: ROOT });
+    process.exit(1);
+  }, appointmentTaskTimeoutMs);
+  appointmentTaskWatchdog.unref?.();
+
+  await withJobLock(`delivery-appointment:${dryRun ? 'dry-run' : 'commit'}`, async () => {
+    try {
+      ({ browser, context } = await createPddBrowserContext(cfg));
+      const { page } = await loginAndSavePddStorageState(cfg, context);
+      for (const rule of rules) {
+        await runRule(page, context, rule, { dryRun });
+      }
+      console.log(`预约${dryRun ? '演练' : '执行'}完成：${rules.length} 条规则。`);
+    } finally {
+      if (!dryRun) await closePddBrowserContext(browser, context);
+      else if (browser) {
+        // CDP 模式下仅断开 Playwright，保留页面供人工确认 dry-run 结果。
+        await closePddBrowserContext(browser, context);
+      }
+    }
+  }, { root: ROOT });
+} finally {
+  if (appointmentTaskWatchdog) clearTimeout(appointmentTaskWatchdog);
+}
 
 if (dryRun) process.exit(0);

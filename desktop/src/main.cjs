@@ -29,7 +29,6 @@ const feedUrl = process.env.MAO_UPDATE_FEED_URL
   || desktopPkg.mao?.updateFeedUrl
   || '';
 const updater = createRuntimeUpdater({ app, feedUrl, bundledVersion: app.getVersion() });
-const WEB_WECHAT_ENABLED = process.platform === 'win32' || process.env.MAO_ENABLE_WEB_WECHAT === 'true';
 const DESKTOP_WECHAT_ENABLED = process.platform === 'darwin' || process.platform === 'win32';
 
 function bundledAppDir() {
@@ -126,16 +125,20 @@ const WEB_WECHAT_CHROME_SERVICE = {
   url: 'https://wx.qq.com/',
 };
 
-const CHROME_SERVICES = {
-  pdd: {
-    envKey: 'PDD_CDP_URL',
-    defaultPort: 9222,
-    candidatePorts: 12,
-    profile: 'pdd-chrome',
-    url: 'https://mc.pinduoduo.com/ddmc-mms/order/management',
-  },
-  ...(WEB_WECHAT_ENABLED ? { wechat: WEB_WECHAT_CHROME_SERVICE } : {}),
+const PDD_CHROME_SERVICE = {
+  envKey: 'PDD_CDP_URL',
+  defaultPort: 9222,
+  candidatePorts: 12,
+  profile: 'pdd-chrome',
+  url: 'https://mc.pinduoduo.com/ddmc-mms/order/management',
 };
+
+function chromeServices() {
+  return {
+    pdd: PDD_CHROME_SERVICE,
+    ...(isWechatyChannel() ? { wechat: WEB_WECHAT_CHROME_SERVICE } : {}),
+  };
+}
 
 function uniqueValues(values) {
   return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
@@ -244,6 +247,35 @@ function readWorkspaceConfigValue(key) {
   return raw;
 }
 
+function truthyConfig(value, defaultValue = false) {
+  if (value == null || value === '') return defaultValue;
+  return ['1', 'true', 'yes', 'y', 'on'].includes(String(value).toLowerCase());
+}
+
+function normalizeWechatChannel(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (['desktop', 'desktop_wechat', 'wechat_app', 'app'].includes(text)) return 'desktop_wechat';
+  if (['wechaty', 'web', 'web_wechat', 'webwechat'].includes(text)) return 'wechaty';
+  return '';
+}
+
+function configuredWechatChannel() {
+  const explicit = normalizeWechatChannel(readWorkspaceConfigValue('MAO_WECHAT_CHANNEL') || process.env.MAO_WECHAT_CHANNEL);
+  if (explicit) return explicit;
+  const desktopWechat = readWorkspaceConfigValue('MAO_USE_DESKTOP_WECHAT') || process.env.MAO_USE_DESKTOP_WECHAT;
+  if (truthyConfig(desktopWechat, false)) return 'desktop_wechat';
+  if (process.env.MAO_ENABLE_WEB_WECHAT === 'true') return 'wechaty';
+  return process.platform === 'win32' ? 'wechaty' : 'desktop_wechat';
+}
+
+function isWechatyChannel() {
+  return configuredWechatChannel() === 'wechaty';
+}
+
+function isDesktopWechatChannel() {
+  return configuredWechatChannel() === 'desktop_wechat';
+}
+
 function writeWorkspaceConfig(partial) {
   const envPath = path.join(workspaceDir(), '.env');
   const source = readWorkspaceEnv();
@@ -298,7 +330,7 @@ function candidatePorts(definition, configuredUrl) {
 }
 
 async function resolveChromeServiceEndpoint(service) {
-  const definition = CHROME_SERVICES[service];
+  const definition = chromeServices()[service];
   if (!definition) throw new Error('未知 Chrome 服务。');
   const configuredUrl = readWorkspaceConfigValue(definition.envKey) || `http://127.0.0.1:${definition.defaultPort}`;
   const directProbe = await probeChromeEndpoint(configuredUrl);
@@ -327,7 +359,10 @@ async function resolveChromeServiceEndpoint(service) {
 }
 
 async function launchChromeService(service) {
-  const definition = CHROME_SERVICES[service];
+  if (service === 'wechat' && isDesktopWechatChannel()) {
+    return launchDesktopWechatApp();
+  }
+  const definition = chromeServices()[service];
   if (!definition) throw new Error('未知 Chrome 服务。');
   const executable = chromeExecutable();
   if (!executable) throw new Error('未找到 Google Chrome，请先安装 Chrome。');
@@ -347,28 +382,91 @@ async function launchChromeService(service) {
   return { ok: true, port: resolved.port, url: resolved.url, profileDir, reused: false, changed: resolved.changed };
 }
 
+function windowsWechatRegistryCandidates() {
+  const keys = [
+    'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Weixin.exe',
+    'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\WeChat.exe',
+    'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Weixin.exe',
+    'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\WeChat.exe',
+    'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Weixin.exe',
+    'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\WeChat.exe',
+  ];
+  const candidates = [];
+  for (const key of keys) {
+    try {
+      const output = execFileSync('reg.exe', ['query', key, '/ve'], { encoding: 'utf8', windowsHide: true, timeout: 2500 });
+      for (const line of output.split(/\r?\n/)) {
+        const match = line.match(/^\s*(?:\(Default\)|\(默认\))\s+REG_\w+\s+(.+?)\s*$/i);
+        if (match) candidates.push(match[1]);
+      }
+    } catch {}
+  }
+  return candidates;
+}
+
+function windowsWechatPathCandidates() {
+  const candidates = [];
+  for (const name of ['Weixin.exe', 'WeChat.exe']) {
+    try {
+      candidates.push(...execFileSync('where.exe', [name], { encoding: 'utf8', windowsHide: true, timeout: 2500 })
+        .split(/\r?\n/)
+        .filter(Boolean));
+    } catch {}
+  }
+  return candidates;
+}
+
+function windowsWechatExecutableCandidates() {
+  const programFiles = process.env.PROGRAMFILES || 'C:\\Program Files';
+  const programFilesX86 = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
+  const localAppData = process.env.LOCALAPPDATA || '';
+  return uniqueValues([
+    readWorkspaceConfigValue('MAO_WECHAT_EXE_PATH'),
+    process.env.MAO_WECHAT_EXE_PATH,
+    path.join(programFiles, 'Tencent', 'Weixin', 'Weixin.exe'),
+    path.join(programFiles, 'Tencent', 'WeChat', 'WeChat.exe'),
+    path.join(programFilesX86, 'Tencent', 'Weixin', 'Weixin.exe'),
+    path.join(programFilesX86, 'Tencent', 'WeChat', 'WeChat.exe'),
+    path.join(localAppData, 'Tencent', 'Weixin', 'Weixin.exe'),
+    path.join(localAppData, 'Tencent', 'WeChat', 'WeChat.exe'),
+    path.join(localAppData, 'Programs', 'Tencent', 'Weixin', 'Weixin.exe'),
+    path.join(localAppData, 'Programs', 'Tencent', 'WeChat', 'WeChat.exe'),
+    path.join(localAppData, 'Microsoft', 'WindowsApps', 'Weixin.exe'),
+    path.join(localAppData, 'Microsoft', 'WindowsApps', 'WeChat.exe'),
+    ...windowsWechatRegistryCandidates(),
+    ...windowsWechatPathCandidates(),
+  ]);
+}
+
 function wechatExecutableStatus() {
   if (process.platform === 'darwin') {
     const appPath = '/Applications/WeChat.app';
     return { installed: fs.existsSync(appPath), path: appPath };
   }
   if (process.platform === 'win32') {
-    const candidates = [
-      path.join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Tencent', 'WeChat', 'WeChat.exe'),
-      path.join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Tencent', 'Weixin', 'Weixin.exe'),
-      path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Tencent', 'WeChat', 'WeChat.exe'),
-      path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Tencent', 'Weixin', 'Weixin.exe'),
-      path.join(process.env.LOCALAPPDATA || '', 'Tencent', 'WeChat', 'WeChat.exe'),
-      path.join(process.env.LOCALAPPDATA || '', 'Tencent', 'Weixin', 'Weixin.exe'),
-      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Tencent', 'WeChat', 'WeChat.exe'),
-      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Tencent', 'Weixin', 'Weixin.exe'),
-      path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WindowsApps', 'WeChat.exe'),
-      path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WindowsApps', 'Weixin.exe'),
-    ];
-    const executable = candidates.find((candidate) => candidate && fs.existsSync(candidate)) || '';
+    const executable = windowsWechatExecutableCandidates().find((candidate) => fs.existsSync(candidate)) || '';
     return { installed: Boolean(executable), path: executable };
   }
   return { installed: false, path: '' };
+}
+
+function launchDesktopWechatApp() {
+  if (!DESKTOP_WECHAT_ENABLED) throw new Error(`当前系统暂不支持桌面微信自动化：${process.platform}`);
+  const wechat = wechatExecutableStatus();
+  if (!wechat.installed) throw new Error('未找到桌面微信，请先安装并登录 WeChat。');
+  const command = process.platform === 'darwin' ? 'open' : wechat.path;
+  const args = process.platform === 'darwin' ? ['-a', 'WeChat'] : [];
+  const child = spawn(command, args, {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: false,
+  });
+  child.unref();
+  return {
+    ok: true,
+    app: 'desktop_wechat',
+    path: wechat.path,
+  };
 }
 
 function wechatDesktopAutomationHelperPath() {
@@ -453,6 +551,11 @@ function normalizeAutomationText(value, fallback = '') {
   return String(value || fallback).trim();
 }
 
+function desktopWechatEnv() {
+  const exePath = readWorkspaceConfigValue('MAO_WECHAT_EXE_PATH') || process.env.MAO_WECHAT_EXE_PATH || '';
+  return exePath ? { MAO_WECHAT_EXE_PATH: exePath } : {};
+}
+
 function runNodeRuntimeScript(scriptPath, args, timeoutMs = WECHAT_DESKTOP_AUTOMATION_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [scriptPath, ...args], {
@@ -463,6 +566,7 @@ function runNodeRuntimeScript(scriptPath, args, timeoutMs = WECHAT_DESKTOP_AUTOM
         MAO_APP_ROOT: activeAppDir(),
         MAO_WORKSPACE_PATH: workspaceDir(),
         MAO_LOG_DIR: logsDir(),
+        ...desktopWechatEnv(),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -504,6 +608,7 @@ function runWechatDesktopAutomationHelper(args, timeoutMs = WECHAT_DESKTOP_AUTOM
         MAO_APP_ROOT: activeAppDir(),
         MAO_WORKSPACE_PATH: workspaceDir(),
         MAO_LOG_DIR: logsDir(),
+        ...desktopWechatEnv(),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
