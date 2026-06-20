@@ -583,6 +583,17 @@ function helperLogPreview(value, maxLength = 1200) {
   return text.length > maxLength ? `${text.slice(0, maxLength)}...<truncated ${text.length - maxLength}>` : text;
 }
 
+function localDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function desktopWechatAutomationLogTail() {
+  return tailFile(path.join(logsDir(), `wechat-desktop-automation-${localDateKey()}.log`), 24_000);
+}
+
 function runNodeRuntimeScript(scriptPath, args, timeoutMs = WECHAT_DESKTOP_AUTOMATION_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [scriptPath, ...args], {
@@ -658,7 +669,7 @@ function runWechatDesktopAutomationHelper(args, timeoutMs = WECHAT_DESKTOP_AUTOM
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
       const durationMs = Date.now() - startedAt;
-      appendServiceLog(serviceLogPath(), `[desktop-wechat-helper] timeout owner=${owner} pid=${child.pid || 'unknown'} durationMs=${durationMs} stdout=${JSON.stringify(helperLogPreview(stdout))} stderr=${JSON.stringify(helperLogPreview(stderr))}`);
+      appendServiceLog(serviceLogPath(), `[desktop-wechat-helper] timeout owner=${owner} pid=${child.pid || 'unknown'} durationMs=${durationMs} stdout=${JSON.stringify(helperLogPreview(stdout))} stderr=${JSON.stringify(helperLogPreview(stderr))} helperLogTail=${JSON.stringify(helperLogPreview(desktopWechatAutomationLogTail(), 2400))}`);
       finish(() => reject(new Error(`桌面微信 helper 超时（${Math.round(timeoutMs / 1000)} 秒）。`)));
     }, timeoutMs);
     child.stdout.on('data', (chunk) => { stdout += chunk; });
@@ -673,7 +684,8 @@ function runWechatDesktopAutomationHelper(args, timeoutMs = WECHAT_DESKTOP_AUTOM
       clearTimeout(timer);
       finish(() => {
         const durationMs = Date.now() - startedAt;
-        appendServiceLog(serviceLogPath(), `[desktop-wechat-helper] exit owner=${owner} pid=${child.pid || 'unknown'} code=${code} signal=${signal || ''} durationMs=${durationMs} stdout=${JSON.stringify(helperLogPreview(stdout))} stderr=${JSON.stringify(helperLogPreview(stderr))}`);
+        const helperLogTail = code === 0 ? '' : helperLogPreview(desktopWechatAutomationLogTail(), 2400);
+        appendServiceLog(serviceLogPath(), `[desktop-wechat-helper] exit owner=${owner} pid=${child.pid || 'unknown'} code=${code} signal=${signal || ''} durationMs=${durationMs} stdout=${JSON.stringify(helperLogPreview(stdout))} stderr=${JSON.stringify(helperLogPreview(stderr))}${helperLogTail ? ` helperLogTail=${JSON.stringify(helperLogTail)}` : ''}`);
         if (code === 0) resolve({ stdout, stderr });
         else reject(new Error((stderr || stdout || `helper 退出 code=${code} signal=${signal}`).trim()));
       });

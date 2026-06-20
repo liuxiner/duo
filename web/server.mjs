@@ -157,6 +157,7 @@ function inactiveWechatyBot(reason = '') {
     onScan: () => {},
     onLogin: () => {},
     onLogout: () => {},
+    onError: () => {},
     start: async () => status(),
     stop: async () => status(),
     sendToRoom: async () => {
@@ -2646,6 +2647,18 @@ wechatyBot.onLogin((user) => {
 
 wechatyBot.onLogout(() => {
   broadcastSSE('logout', {});
+});
+
+wechatyBot.onError((error) => {
+  if (!isWechatyChannel()) return;
+  const reason = error?.message || String(error || 'unknown');
+  const restart = enqueueWechatyRestartTask({
+    source: 'wechaty-error',
+    reason: `微信机器人运行错误：${reason}`,
+  });
+  appendTaskQueueLog(restart?.alreadyQueued
+    ? `微信机器人运行错误，重启任务已在队列中：${reason}`
+    : `微信机器人运行错误，已插入高优先级重启任务：${reason}`);
 });
 
 const server = createServer(async (request, response) => {

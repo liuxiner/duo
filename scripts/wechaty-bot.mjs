@@ -267,6 +267,7 @@ export class WechatyBot {
     this.scanCallbacks = new Set();
     this.loginCallbacks = new Set();
     this.logoutCallbacks = new Set();
+    this.errorCallbacks = new Set();
   }
 
   onScan(callback) {
@@ -284,8 +285,20 @@ export class WechatyBot {
     return () => this.logoutCallbacks.delete(callback);
   }
 
+  onError(callback) {
+    this.errorCallbacks.add(callback);
+    return () => this.errorCallbacks.delete(callback);
+  }
+
+  notifyError(error) {
+    for (const cb of this.errorCallbacks) {
+      try { cb(error); } catch (e) { console.error('[Wechaty] error callback error:', e); }
+    }
+  }
+
   async start() {
-    if (this.bot) return;
+    if (this.bot && ['logged-in', 'scanning', 'starting'].includes(this.effectiveStatus())) return;
+    if (this.bot) await this.stop();
 
     const cdpUrl = process.env.WECHATY_CDP_URL || '';
     if (!cdpUrl) {
@@ -310,6 +323,7 @@ export class WechatyBot {
       this.qrData = null;
       this.lastError = error?.message || String(error);
       console.error(`[Wechaty] bridge error: ${compactErrorMessage(error)}`);
+      this.notifyError(error);
     });
 
     this.bot = WechatyBuilder.build({
@@ -365,6 +379,7 @@ export class WechatyBot {
       this.qrData = null;
       this.lastError = error.message;
       console.error(`[Wechaty] error: ${error.message}`);
+      this.notifyError(error);
     });
 
     try {
