@@ -128,7 +128,7 @@ const WEB_WECHAT_CHROME_SERVICE = {
   defaultPort: 9333,
   candidatePorts: 12,
   profile: 'wechat-chrome',
-  url: 'https://wx.qq.com/',
+  url: 'https://wx.qq.com/?lang=zh_CN&target=t',
 };
 
 const PDD_CHROME_SERVICE = {
@@ -316,6 +316,42 @@ async function probeChromeEndpoint(url) {
   }
 }
 
+function isUsableWechatPageUrl(value) {
+  try {
+    const url = new URL(value);
+    return /^(wx\.qq\.com|web\.wechat\.com)$/.test(url.hostname)
+      && url.pathname === '/';
+  } catch {
+    return false;
+  }
+}
+
+async function listChromePages(url) {
+  const response = await fetch(new URL('/json/list', url), { signal: AbortSignal.timeout(2500) });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const pages = await response.json();
+  return Array.isArray(pages) ? pages : [];
+}
+
+async function openChromeDebugPage(url, targetUrl) {
+  const endpoint = new URL(`/json/new?${encodeURIComponent(targetUrl)}`, url);
+  let response = await fetch(endpoint, { method: 'PUT', signal: AbortSignal.timeout(2500) }).catch((error) => error);
+  if (response instanceof Error || !response.ok) {
+    response = await fetch(endpoint, { signal: AbortSignal.timeout(2500) });
+  }
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json().catch(() => ({}));
+}
+
+async function ensureChromeServicePage(service, url, targetUrl) {
+  if (service !== 'wechat') return { opened: false, pageUrl: '' };
+  const pages = await listChromePages(url).catch(() => []);
+  const usable = pages.find((page) => page?.type === 'page' && isUsableWechatPageUrl(page.url));
+  if (usable) return { opened: false, pageUrl: usable.url };
+  const opened = await openChromeDebugPage(url, targetUrl).catch(() => ({}));
+  return { opened: Boolean(opened.url), pageUrl: opened.url || targetUrl };
+}
+
 async function isPortFree(port) {
   return new Promise((resolve) => {
     const server = net.createServer();
@@ -378,7 +414,10 @@ async function launchChromeService(service) {
   const executable = chromeExecutable();
   if (!executable) throw new Error('未找到 Google Chrome，请先安装 Chrome。');
   const resolved = await resolveChromeServiceEndpoint(service);
-  if (resolved.reused) return { ok: true, port: resolved.port, url: resolved.url, reused: true, changed: resolved.changed };
+  if (resolved.reused) {
+    const page = await ensureChromeServicePage(service, resolved.url, definition.url);
+    return { ok: true, port: resolved.port, url: resolved.url, reused: true, changed: resolved.changed, pageUrl: page.pageUrl, pageOpened: page.opened };
+  }
   const profileDir = path.join(workspaceDir(), '.chrome', definition.profile);
   fs.mkdirSync(profileDir, { recursive: true });
   const child = spawn(executable, [

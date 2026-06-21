@@ -7,12 +7,35 @@ import puppeteer from 'puppeteer';
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = path.resolve(process.env.MAO_WORKSPACE_PATH || APP_ROOT);
 const DEFAULT_NAVIGATION_TIMEOUT_MS = 30_000;
+const WECHAT_WEB_ENTRY_URL = 'https://wx.qq.com/?lang=zh_CN&target=t';
 
 function wechatPageScore(page) {
   const url = page.url();
-  if (/^https:\/\/(wx\.qq\.com|web\.wechat\.com)/.test(url)) return 2;
+  try {
+    const parsed = new URL(url);
+    if (/^(wx\.qq\.com|web\.wechat\.com)$/.test(parsed.hostname)) {
+      if (parsed.pathname === '/cgi-bin/mmwebwx-bin/webwxnewloginpage') return 0;
+      if (parsed.pathname === '/') return 3;
+      return 1;
+    }
+  } catch {}
   if (url === 'chrome://newtab/' || url === 'chrome://new-tab-page/' || url === 'about:blank') return 1;
   return 0;
+}
+
+function normalizeWechatNavigationUrl(url) {
+  const text = String(url || '');
+  return /^https:\/\/wx\.qq\.com\/?$/.test(text) ? WECHAT_WEB_ENTRY_URL : text;
+}
+
+function isWechatLoginCallbackUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return /^(wx\.qq\.com|web\.wechat\.com)$/.test(parsed.hostname)
+      && parsed.pathname === '/cgi-bin/mmwebwx-bin/webwxnewloginpage';
+  } catch {
+    return false;
+  }
 }
 
 function isDuplicateLoginError(error) {
@@ -102,16 +125,25 @@ function installNavigationCompatibility(puppet, {
       const originalGoto = page.goto.bind(page);
       const originalReload = page.reload.bind(page);
 
-      page.goto = (url, options = {}) => originalGoto(url, {
+      page.goto = (url, options = {}) => originalGoto(normalizeWechatNavigationUrl(url), {
         waitUntil: 'domcontentloaded',
         timeout,
         ...options,
       });
-      page.reload = (options = {}) => originalReload({
-        waitUntil: 'domcontentloaded',
-        timeout,
-        ...options,
-      });
+      page.reload = (options = {}) => {
+        if (isWechatLoginCallbackUrl(page.url())) {
+          return originalGoto(WECHAT_WEB_ENTRY_URL, {
+            waitUntil: 'domcontentloaded',
+            timeout,
+            ...options,
+          });
+        }
+        return originalReload({
+          waitUntil: 'domcontentloaded',
+          timeout,
+          ...options,
+        });
+      };
       return page;
     };
     return browser;

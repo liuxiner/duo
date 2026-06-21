@@ -45,7 +45,7 @@ if /i "%MODE%"=="all" (
     call :start_wechat_app
     if errorlevel 1 exit /b 1
   ) else (
-    call :start_service "WeChat" "%WECHAT_PORT%" "%BASE_PROFILE%\wechat-chrome" "https://wx.qq.com/"
+    call :start_service "WeChat" "%WECHAT_PORT%" "%BASE_PROFILE%\wechat-chrome" "https://wx.qq.com/?lang=zh_CN^&target=t"
   )
   goto :done
 )
@@ -60,7 +60,7 @@ if /i "%MODE%"=="wechat" (
     call :start_wechat_app
     if errorlevel 1 exit /b 1
   ) else (
-    call :start_service "WeChat" "%WECHAT_PORT%" "%BASE_PROFILE%\wechat-chrome" "https://wx.qq.com/"
+    call :start_service "WeChat" "%WECHAT_PORT%" "%BASE_PROFILE%\wechat-chrome" "https://wx.qq.com/?lang=zh_CN^&target=t"
   )
   goto :done
 )

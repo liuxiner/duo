@@ -314,6 +314,7 @@ const KANBAN_CONFIG_FIELDS = [
   'FEISHU_KANBAN_WRITEBACK',
 ];
 
+const WECHAT_WEB_ENTRY_URL = 'https://wx.qq.com/?lang=zh_CN&target=t';
 const WEB_WECHAT_CDP_SERVICE = { envKey: 'WECHATY_CDP_URL', title: '微信 Chrome 服务', defaultPort: 9333, candidatePorts: 12 };
 const PDD_CDP_SERVICE = { envKey: 'PDD_CDP_URL', title: 'PDD Chrome 服务', defaultPort: 9222, candidatePorts: 12 };
 
@@ -499,6 +500,48 @@ async function probeChromeEndpoint(url) {
   } catch (error) {
     return { ok: false, error: error.message };
   }
+}
+
+function isUsableWechatPageUrl(value) {
+  try {
+    const url = new URL(value);
+    return /^(wx\.qq\.com|web\.wechat\.com)$/.test(url.hostname)
+      && url.pathname === '/';
+  } catch {
+    return false;
+  }
+}
+
+async function listChromePages(url) {
+  const response = await fetch(new URL('/json/list', url), { signal: AbortSignal.timeout(2500) });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const pages = await response.json();
+  return Array.isArray(pages) ? pages : [];
+}
+
+async function openChromeDebugPage(url, targetUrl) {
+  const endpoint = new URL(`/json/new?${encodeURIComponent(targetUrl)}`, url);
+  let response = await fetch(endpoint, { method: 'PUT', signal: AbortSignal.timeout(2500) }).catch((error) => error);
+  if (response instanceof Error || !response.ok) {
+    response = await fetch(endpoint, { signal: AbortSignal.timeout(2500) });
+  }
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json().catch(() => ({}));
+}
+
+async function ensureWechatChromePage(url) {
+  const pages = await listChromePages(url);
+  const usable = pages.find((page) => page?.type === 'page' && isUsableWechatPageUrl(page.url));
+  if (usable) {
+    return { ok: true, opened: false, pageUrl: usable.url, detail: `微信页已就绪：${usable.url}` };
+  }
+  const opened = await openChromeDebugPage(url, WECHAT_WEB_ENTRY_URL);
+  return {
+    ok: true,
+    opened: true,
+    pageUrl: opened.url || WECHAT_WEB_ENTRY_URL,
+    detail: `未发现可用微信页，已打开 ${WECHAT_WEB_ENTRY_URL}`,
+  };
 }
 
 async function resolveCdpService(id, configuredUrl) {
@@ -1137,7 +1180,23 @@ async function ensureWechatyLoginStarted() {
 async function checkWechatyChromeStatus() {
   await loadDotEnv('.env', true);
   process.env.WECHATY_CDP_URL ||= 'http://127.0.0.1:9333';
-  return checkCdpService('wechatChrome', '微信 Chrome 服务', process.env.WECHATY_CDP_URL, 9333);
+  const chrome = await checkCdpService('wechatChrome', '微信 Chrome 服务', process.env.WECHATY_CDP_URL, 9333);
+  if (!chrome.ok) return chrome;
+  try {
+    const page = await ensureWechatChromePage(chrome.url || process.env.WECHATY_CDP_URL);
+    return {
+      ...chrome,
+      detail: `${chrome.detail}；${page.detail}`,
+      pageUrl: page.pageUrl,
+      pageOpened: page.opened,
+    };
+  } catch (error) {
+    return {
+      ...chrome,
+      ok: false,
+      detail: `${chrome.detail}；微信页检查失败：${error.message}`,
+    };
+  }
 }
 
 async function runWechatyLoginSafetyCheck() {
