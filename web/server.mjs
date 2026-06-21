@@ -160,6 +160,7 @@ function inactiveWechatyBot(reason = '') {
     onError: () => {},
     start: async () => status(),
     stop: async () => status(),
+    reload: async () => status(),
     sendToRoom: async () => {
       throw new Error(status().reason);
     },
@@ -1124,11 +1125,19 @@ function updateWechatyLoginSmokeState() {
 }
 
 async function ensureWechatyLoginStarted() {
+  const chrome = await checkWechatyChromeStatus();
+  if (!chrome.ok) throw new Error(`微信 Chrome 监听端口不可用：${chrome.detail}`);
   const current = wechatyBot.getStatus();
   if (['logged-in', 'scanning', 'starting'].includes(current.status)) return current;
   if (current.status === 'error') await wechatyBot.stop().catch(() => {});
   await wechatyBot.start();
   return wechatyBot.getStatus();
+}
+
+async function checkWechatyChromeStatus() {
+  await loadDotEnv('.env', true);
+  process.env.WECHATY_CDP_URL ||= 'http://127.0.0.1:9333';
+  return checkCdpService('wechatChrome', '微信 Chrome 服务', process.env.WECHATY_CDP_URL, 9333);
 }
 
 async function runWechatyLoginSafetyCheck() {
@@ -1189,7 +1198,7 @@ async function sendWechatyRestartFailureAlert(reason, append) {
     ok: false,
     detail: `检测异常：${error.message}`,
   }));
-  const wechatCheck = checkWechatyHeartbeatStatus();
+  const wechatCheck = await checkWechatyHeartbeatStatus();
   const results = [pddCheck, wechatCheck];
   const failedChecks = results.filter((check) => check.loggedIn === false);
   const alertFailures = failedChecks.length ? failedChecks : [{
@@ -1238,6 +1247,16 @@ async function restartWechatyBotWithRetries(reason, append) {
   for (let attempt = 1; attempt <= WECHATY_RESTART_ATTEMPTS; attempt += 1) {
     append(`[wechat-restart] attempt ${attempt}/${WECHATY_RESTART_ATTEMPTS} begin reason=${reason || '-'} before=${describeWechatyPublicStatus(lastStatus)}`);
     try {
+      const chrome = await checkWechatyChromeStatus();
+      append(`[wechat-restart] attempt ${attempt}/${WECHATY_RESTART_ATTEMPTS} chrome check ok=${chrome.ok} detail=${chrome.detail}`);
+      if (!chrome.ok) throw new Error(`微信 Chrome 监听端口不可用：${chrome.detail}`);
+      try {
+        await wechatyBot.reload();
+        append(`[wechat-restart] attempt ${attempt}/${WECHATY_RESTART_ATTEMPTS} requested WeChat page reload`);
+        await wait(1500);
+      } catch (reloadError) {
+        append(`[wechat-restart] attempt ${attempt}/${WECHATY_RESTART_ATTEMPTS} reload skipped: ${reloadError.message}`);
+      }
       await wechatyBot.stop().catch((error) => {
         append(`[wechat-restart] attempt ${attempt} stop warning: ${error.message}`);
       });
@@ -2281,21 +2300,34 @@ function checkDesktopWechatHeartbeatStatus() {
   };
 }
 
-function checkWechatyHeartbeatStatus() {
+async function checkWechatyHeartbeatStatus() {
+  const chrome = await checkWechatyChromeStatus();
   const status = wechatyBot.getStatus();
   const loggedIn = status.status === 'logged-in';
+  if (!chrome.ok) {
+    return {
+      id: 'wechat',
+      name: '微信机器人',
+      loggedIn: false,
+      ok: false,
+      detail: `微信 Chrome 监听端口不可用：${chrome.detail}`,
+      cdp: chrome,
+      botStatus: status.status || '未知',
+    };
+  }
   return {
     id: 'wechat',
     name: '微信机器人',
     loggedIn,
     ok: loggedIn,
     detail: loggedIn
-      ? `已登录：${status.loggedInUser || '-'}`
-      : (status.reason || `未登录（当前状态：${status.status || '未知'}）`),
+      ? `已登录：${status.loggedInUser || '-'}；${chrome.detail}`
+      : (status.reason || `未登录（当前状态：${status.status || '未知'}；${chrome.detail}）`),
+    cdp: chrome,
   };
 }
 
-function checkWechatLoginStatus() {
+async function checkWechatLoginStatus() {
   return activeWechatChannelSocket().checkHeartbeatStatus();
 }
 
@@ -2350,7 +2382,7 @@ async function runHeartbeatCheck({ manual = false } = {}) {
     appendHeartbeatLog(wechatSocket.heartbeatStartMessage);
     const results = await Promise.all([
       checkPddLoginStatus(),
-      Promise.resolve(checkWechatLoginStatus()),
+      checkWechatLoginStatus(),
     ]);
     const failedChecks = results.filter((check) => check.loggedIn === false);
     const indeterminateChecks = results.filter((check) => check.loggedIn == null);
@@ -2972,14 +3004,14 @@ const server = createServer(async (request, response) => {
         sendJson(response, 410, { error: inactiveWechatyStatus().reason, status: wechatyBot.getStatus() });
         return;
       }
-      const current = wechatyBot.getStatus();
-      if (current.status === 'logged-in' || current.status === 'scanning' || current.status === 'starting') {
-        sendJson(response, 200, { ok: true, status: current.status });
-        return;
-      }
-      if (current.status === 'error') await wechatyBot.stop();
-      await wechatyBot.start();
-      sendJson(response, 200, { ok: true, status: wechatyBot.getStatus().status });
+      const safety = await runWechatyLoginSafetyCheck();
+      const status = wechatyBot.getStatus();
+      const accepted = ['logged-in', 'scanning', 'starting'].includes(status.status);
+      sendJson(response, accepted ? 200 : 503, {
+        ok: accepted,
+        status: status.status,
+        reason: safety.reason,
+      });
       return;
     }
 

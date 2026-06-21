@@ -409,6 +409,14 @@ export class WechatyBot {
     this.lastError = null;
   }
 
+  async reload() {
+    const bridge = this.bot?.puppet?.bridge;
+    if (!bridge || typeof bridge.reload !== 'function') {
+      throw new Error('Wechaty browser bridge reload is not available.');
+    }
+    await bridge.reload();
+  }
+
   effectiveStatus() {
     if (this.status === 'error' && this.loggedInUser && isDuplicateLoginError({ message: this.lastError })) {
       return 'logged-in';
