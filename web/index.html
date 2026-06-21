@@ -770,67 +770,39 @@
         <div class="section-head">
           <div>
             <h2>配置中心</h2>
-            <p class="hint">按飞书异常通知和预约规则维护运营流水线。</p>
+            <p class="hint">统一维护通知目标、违规检查和预约送货任务。</p>
           </div>
           <button id="open-service-config" class="secondary" type="button">服务配置</button>
         </div>
         <div class="config-stack">
           <div class="config-band">
             <div class="subhead">
-              <h3>飞书异常通知</h3>
+              <h3>通知目标</h3>
               <button id="save-config" type="button">保存配置</button>
             </div>
             <div class="config-fields">
               <label class="span-2">飞书通知群<input id="notification-admin-group" autocomplete="off"></label>
               <label>@成员<input id="notification-mention-names" autocomplete="off"></label>
+              <label class="span-2">微信群名<input id="notification-wechat-room-name" autocomplete="off"></label>
+              <label>微信 @成员<input id="notification-wechat-mention-names" autocomplete="off"></label>
               <input id="notification-sender-strategy" type="hidden" value="http_api">
-              <label>最大重试<input id="notification-max-retries" type="number" min="1" step="1"></label>
-              <label>最小间隔(秒)<input id="notification-interval-min" type="number" min="1" step="1"></label>
-              <label>最大间隔(秒)<input id="notification-interval-max" type="number" min="1" step="1"></label>
-              <label>重试等待(秒)<input id="notification-retry-delay" type="number" min="1" step="1"></label>
+              <input id="notification-max-retries" type="hidden" value="2">
+              <input id="notification-interval-min" type="hidden" value="2">
+              <input id="notification-interval-max" type="hidden" value="5">
+              <input id="notification-retry-delay" type="hidden" value="10">
             </div>
           </div>
 
-          <div class="config-band" hidden>
-            <h3>违规检查</h3>
+          <div class="config-band">
+            <div class="subhead">
+              <h3>违规检查</h3>
+              <button id="violation-run-now" class="secondary" type="button">测试违规检查</button>
+            </div>
             <div class="config-fields">
               <label class="switch"><input id="violation-check-enabled" type="checkbox">违规检查</label>
               <label class="span-2">检查时间<input id="violation-check-run-times" autocomplete="off" placeholder="08:50, 14:50, 20:50"></label>
               <label class="switch"><input id="violation-only-pending" type="checkbox">只通知待处理</label>
               <label class="switch"><input id="violation-notify-empty" type="checkbox">空结果通知</label>
-            </div>
-            <p class="config-note">帮助用户及时完成申诉和处理违规。通知模板：</p>
-            <div class="violation-template" aria-label="违规检查通知模板">
-              <table>
-                <thead>
-                  <tr>
-                    <th>销售区域</th>
-                    <th>仓组名称</th>
-                    <th>仓库</th>
-                    <th>违规编号</th>
-                    <th>违规类型</th>
-                    <th>销售日期</th>
-                    <th>违规发起时间</th>
-                    <th>违规金额</th>
-                    <th>处理进度</th>
-                    <th>操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td>浙江省</td>
-                    <td>浙江仓组1-宁波仓组</td>
-                    <td>--</td>
-                    <td>8324020</td>
-                    <td>延迟到货-尾波迟到</td>
-                    <td>2026-06-17</td>
-                    <td>2026-06-18 11:38:21</td>
-                    <td>¥1000</td>
-                    <td>平台处理中</td>
-                    <td>修改申述材料</td>
-                  </tr>
-                </tbody>
-              </table>
             </div>
             <div hidden>
               <input id="schedule-monitor-enabled" type="checkbox">
@@ -854,7 +826,7 @@
               <label class="span-2">尾约执行时间<input id="reservation-last-run-times" autocomplete="off"></label>
               <label class="switch"><input id="reservation-dry-run" type="checkbox">预约演练</label>
               <label class="switch"><input id="reservation-last-enabled" type="checkbox">生成尾约</label>
-              <label class="switch"><input id="reservation-notify-admin" type="checkbox">通知管理群</label>
+              <label class="switch"><input id="reservation-notify-admin" type="checkbox">微信群通知</label>
             </div>
             <div id="reservation-config-table-wrap" class="table-wrap">
               <table class="reservation-config-table">
@@ -971,6 +943,7 @@
         <div id="sync-log-panel" class="log-panel"></div>
         <div id="report-log-panel" class="log-panel" style="margin-top: 12px;"></div>
         <div id="reservation-log-panel" class="log-panel" style="margin-top: 12px;"></div>
+        <div id="violation-log-panel" class="log-panel" style="margin-top: 12px;"></div>
         <div id="monitor-notification-log-panel" class="log-panel" style="margin-top: 12px;"></div>
         <div id="scheduler-log-panel" class="log-panel" style="margin-top: 12px;"></div>
         <div id="heartbeat-log-panel" class="log-panel" style="margin-top: 12px;"></div>
@@ -1035,6 +1008,8 @@
     const saveConfig = document.querySelector('#save-config');
     const notificationAdminGroup = document.querySelector('#notification-admin-group');
     const notificationMentionNames = document.querySelector('#notification-mention-names');
+    const notificationWechatRoomName = document.querySelector('#notification-wechat-room-name');
+    const notificationWechatMentionNames = document.querySelector('#notification-wechat-mention-names');
     const notificationSenderStrategy = document.querySelector('#notification-sender-strategy');
     const notificationIntervalMin = document.querySelector('#notification-interval-min');
     const notificationIntervalMax = document.querySelector('#notification-interval-max');
@@ -1054,6 +1029,7 @@
     const violationCheckRunTimes = document.querySelector('#violation-check-run-times');
     const violationOnlyPending = document.querySelector('#violation-only-pending');
     const violationNotifyEmpty = document.querySelector('#violation-notify-empty');
+    const violationRunNow = document.querySelector('#violation-run-now');
     const reservationDryRunNow = document.querySelector('#reservation-dry-run-now');
     const addReservationRow = document.querySelector('#add-reservation-row');
     const reservationConfigBody = document.querySelector('#reservation-config-body');
@@ -1063,6 +1039,7 @@
     const syncLogPanel = document.querySelector('#sync-log-panel');
     const reportLogPanel = document.querySelector('#report-log-panel');
     const reservationLogPanel = document.querySelector('#reservation-log-panel');
+    const violationLogPanel = document.querySelector('#violation-log-panel');
     const monitorNotificationLogPanel = document.querySelector('#monitor-notification-log-panel');
     const wechatAddRow = document.querySelector('#wechat-add-row');
     const wechatRunSelected = document.querySelector('#wechat-run-selected');
@@ -1728,6 +1705,8 @@
       config.notification = {
         adminGroup: notificationAdminGroup.value.trim(),
         mentionNames: splitCommaList(notificationMentionNames.value),
+        wechatRoomName: notificationWechatRoomName.value.trim(),
+        wechatMentionNames: splitCommaList(notificationWechatMentionNames.value),
         senderStrategy: notificationSenderStrategy.value,
         sendIntervalSeconds: {
           min: Math.min(minInterval, maxInterval),
@@ -1744,6 +1723,7 @@
         createLastAppointmentEnabled: reservationLastEnabled.checked,
         dryRun: reservationDryRun.checked,
         notifyAdmin: reservationNotifyAdmin.checked,
+        notifyWechat: reservationNotifyAdmin.checked,
         items: config.reservation?.items || [],
       };
       config.scheduleMonitor = {
@@ -1753,7 +1733,7 @@
         notifyOnChangeOnly: scheduleMonitorChangeOnly.checked,
       };
       config.violationCheck = {
-        enabled: false,
+        enabled: violationCheckEnabled.checked,
         runTimes: splitTimeList(violationCheckRunTimes.value),
         onlyPendingAppeals: violationOnlyPending.checked,
         notifyWhenEmpty: violationNotifyEmpty.checked,
@@ -1792,6 +1772,8 @@
       const interval = notification.sendIntervalSeconds || {};
       notificationAdminGroup.value = notification.adminGroup || '杭州交仓';
       notificationMentionNames.value = (notification.mentionNames || ['鑫']).join(', ');
+      notificationWechatRoomName.value = notification.wechatRoomName || '杭州交仓';
+      notificationWechatMentionNames.value = (notification.wechatMentionNames || ['鑫']).join(', ');
       notificationSenderStrategy.value = 'http_api';
       notificationIntervalMin.value = interval.min || 2;
       notificationIntervalMax.value = interval.max || 5;
@@ -1804,7 +1786,7 @@
       reservationLastRunTimes.value = (reservation.lastRunTimes || ['23:10']).join(', ');
       reservationDryRun.checked = reservation.dryRun !== false;
       reservationLastEnabled.checked = reservation.createLastAppointmentEnabled !== false;
-      reservationNotifyAdmin.checked = reservation.notifyAdmin !== false;
+      reservationNotifyAdmin.checked = reservation.notifyWechat !== false && reservation.notifyAdmin !== false;
 
       const scheduleMonitor = config.scheduleMonitor || {};
       scheduleMonitorEnabled.checked = Boolean(scheduleMonitor.enabled);
@@ -1821,11 +1803,14 @@
       setControlGroupDisabled([
         notificationAdminGroup,
         notificationMentionNames,
+        notificationWechatRoomName,
+        notificationWechatMentionNames,
         notificationSenderStrategy,
         notificationIntervalMin,
         notificationIntervalMax,
         notificationMaxRetries,
         notificationRetryDelay,
+        violationRunNow,
         reservationDryRunNow,
         reservationEnabled,
         reservationFirstRunTimes,
@@ -1856,7 +1841,7 @@
           <td><input class="wide" data-reservation-field="centerWarehouses" value="${escapeHtml((item.centerWarehouses || []).join(', '))}" ${locked ? 'disabled' : ''}></td>
           <td><input data-reservation-field="driverMobile" value="${escapeHtml(item.driverMobile || '')}" ${locked ? 'disabled' : ''}></td>
           <td><input data-reservation-field="quantity" type="number" min="1" step="1" value="${escapeHtml(item.quantity || 100)}" ${locked ? 'disabled' : ''}></td>
-          <td><input data-reservation-field="preferredHour" value="${escapeHtml(item.preferredHour || '21:00')}" placeholder="21:00" ${locked ? 'disabled' : ''}></td>
+          <td><input data-reservation-field="preferredHour" value="${escapeHtml(item.preferredHour || '12:00')}" placeholder="12:00" ${locked ? 'disabled' : ''}></td>
           <td><input class="wide" data-reservation-field="firstNotifyGroup" value="${escapeHtml(item.firstNotifyGroup || '')}" ${locked ? 'disabled' : ''}></td>
           <td><input class="wide" data-reservation-field="lastNotifyGroup" value="${escapeHtml(item.lastNotifyGroup || '')}" ${locked ? 'disabled' : ''}></td>
           <td><label class="switch"><input data-reservation-field="enabled" type="checkbox" ${item.enabled ? 'checked' : ''} ${locked ? 'disabled' : ''}>${item.enabled ? '启' : '停'}</label></td>
@@ -2024,6 +2009,7 @@
         const sync = state.sync || { status: 'idle', logs: [], previewLogs: [] };
         const report = state.report || { status: 'idle', logs: [], previewLogs: [] };
         const reservation = state.reservation || { status: 'idle', logs: [], previewLogs: [] };
+        const violation = state.violation || { status: 'idle', logs: [], previewLogs: [] };
         const scheduler = state.scheduler || { status: 'idle', logs: [], previewLogs: [] };
         const heartbeat = state.heartbeat || { status: 'idle', logs: [], previewLogs: [] };
         const monitorNotification = state.monitorNotification || { status: 'idle', logs: [], previewLogs: [] };
@@ -2037,6 +2023,7 @@
         renderLogPanel(syncLogPanel, 'sync', '同步日志', sync);
         renderLogPanel(reportLogPanel, 'report', '微信上报日志', report);
         renderLogPanel(reservationLogPanel, 'reservation', '预约送货日志', reservation);
+        renderLogPanel(violationLogPanel, 'violation', '违规检查日志', violation);
         renderLogPanel(monitorNotificationLogPanel, 'monitorNotification', '监控错误通知队列', monitorNotification);
         renderLogPanel(schedulerLogPanel, 'scheduler', '定时上报日志', scheduler);
         renderLogPanel(heartbeatLogPanel, 'heartbeat', '心跳监控日志', heartbeat);
@@ -2055,7 +2042,7 @@
         let nextDelay = 5000;
         try {
           const state = await refresh();
-          const tasks = [state?.sync, state?.report, state?.reservation, state?.scheduler, state?.heartbeat, state?.monitorNotification];
+          const tasks = [state?.sync, state?.report, state?.reservation, state?.violation, state?.scheduler, state?.heartbeat, state?.monitorNotification];
           nextDelay = tasks.some((task) => task?.status === 'running') ? 1500 : 5000;
         } catch {
           nextDelay = 8000;
@@ -2167,6 +2154,18 @@
       if (!response.ok) throw new Error(body.error || '启动预约演练失败');
       await refresh();
     }
+    async function startViolationCheck() {
+      syncConfigFromTable();
+      syncWechatConfigFromTable();
+      syncHeartbeatConfigFromForm();
+      syncAdvancedConfigFromForm();
+      syncReservationConfigFromTable();
+      await saveCurrentConfig();
+      const response = await fetch('/api/violation/run', { method: 'POST' });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || '启动违规检查失败');
+      await refresh();
+    }
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -2235,7 +2234,7 @@
         centerWarehouses: [],
         driverMobile: '',
         quantity: 100,
-        preferredHour: '21:00',
+        preferredHour: '12:00',
         firstNotifyGroup: '',
         lastNotifyGroup: '',
         enabled: true,
@@ -2252,6 +2251,16 @@
         alert(error.message);
       } finally {
         reservationDryRunNow.disabled = false;
+      }
+    });
+    violationRunNow.addEventListener('click', async () => {
+      violationRunNow.disabled = true;
+      try {
+        await startViolationCheck();
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        violationRunNow.disabled = false;
       }
     });
     wechatSaveConfig.addEventListener('click', async () => {

@@ -21,7 +21,7 @@ const DEFAULT_RESERVATION_ITEMS = [
     centerWarehouses: ['杭州中心1仓', '杭州中心2仓'],
     driverMobile: '15090976592',
     quantity: 100,
-    preferredHour: '21:00',
+    preferredHour: '12:00',
     enabled: false,
   },
   {
@@ -31,7 +31,7 @@ const DEFAULT_RESERVATION_ITEMS = [
     centerWarehouses: ['宁波1仓'],
     driverMobile: '13486621270',
     quantity: 100,
-    preferredHour: '21:00',
+    preferredHour: '12:00',
     enabled: false,
   },
   {
@@ -41,7 +41,7 @@ const DEFAULT_RESERVATION_ITEMS = [
     centerWarehouses: ['温州1仓'],
     driverMobile: '17767375369',
     quantity: 100,
-    preferredHour: '21:00',
+    preferredHour: '12:00',
     enabled: false,
   },
 ];
@@ -148,7 +148,7 @@ function targetDeliveryDateKey() {
 }
 
 function deliverySlotFor(rule, deliveryDate) {
-  const [hour, minute] = normalizeTime(rule.preferredHour || '21:00', '21:00').split(':').map(Number);
+  const [hour, minute] = normalizeTime(rule.preferredHour || '12:00', '12:00').split(':').map(Number);
   const endHour = (hour + 1) % 24;
   return {
     deliveryDate,
@@ -178,6 +178,49 @@ async function readReportConfig() {
   }
 }
 
+function wechatNotifyTarget(reportConfig = {}) {
+  const notification = reportConfig.notification || {};
+  const roomName = String(process.env.PDD_NOTIFY_WECHAT_ROOM_NAME || notification.wechatRoomName || '').trim();
+  const mentionNames = splitList(process.env.PDD_NOTIFY_WECHAT_MENTION_NAMES || notification.wechatMentionNames || '');
+  const enabled = process.env.PDD_NOTIFY_WECHAT_ENABLED !== 'false' && Boolean(roomName);
+  return { enabled, roomName, mentionNames };
+}
+
+async function sendWechatNotification(text, reportConfig = {}) {
+  const target = wechatNotifyTarget(reportConfig);
+  if (!target.enabled) {
+    console.log('预约送货微信群通知已关闭或未配置微信群名，跳过发送。');
+    return null;
+  }
+  const bridgeUrl = process.env.WECHAT_BRIDGE_URL || 'http://127.0.0.1:4173';
+  console.log(`准备发送预约送货结果到微信群 ${target.roomName}${target.mentionNames.length ? `，@${target.mentionNames.join(', ')}` : ''}。`);
+  const response = await fetch(`${bridgeUrl}/api/wechat/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      roomName: target.roomName,
+      text,
+      imagePaths: [],
+      mentionNames: target.mentionNames,
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`预约送货微信群通知失败：${body.error || response.statusText}`);
+  const sent = body.result || {};
+  console.log(`预约送货结果已发送到微信群 ${sent.roomName || target.roomName}${(sent.mentionNames || target.mentionNames).length ? `，已@${(sent.mentionNames || target.mentionNames).join(', ')}` : ''}。`);
+  return sent;
+}
+
+function failureNotificationText(rule, error) {
+  return [
+    '预约送货上报：失败',
+    `仓库：${rule.warehouseGroup || '-'}`,
+    `司机：${maskMobile(rule.driverMobile) || '-'}`,
+    `预约时间：${beijingTimestamp()}`,
+    `失败原因：${error.message || String(error)}`,
+  ].join('\n');
+}
+
 function normalizeRule(item = {}, index = 0) {
   const defaults = defaultReservationItemFor(item, index);
   const configuredWarehouses = splitList(item.centerWarehouses || item.centerWarehouse || item['中心仓']);
@@ -189,7 +232,7 @@ function normalizeRule(item = {}, index = 0) {
     centerWarehouses: configuredWarehouses.length ? configuredWarehouses : [...(defaults.centerWarehouses || [])],
     driverMobile: String(item.driverMobile || item['司机号码'] || defaults.driverMobile || '').trim(),
     quantity: Number.isFinite(quantity) && quantity > 0 ? Math.round(quantity) : 100,
-    preferredHour: normalizeTime(item.preferredHour || item['预约时间'] || item['送货时间'] || defaults.preferredHour, '21:00'),
+    preferredHour: normalizeTime(item.preferredHour || item['预约时间'] || item['送货时间'] || defaults.preferredHour, '12:00'),
     enabled: enabledFromValue(item.enabled ?? item['状态'], defaults.enabled ?? false),
   };
 }
@@ -997,8 +1040,17 @@ async function runRule(page, context, rule, { dryRun }) {
   }
   console.log(`规则 #${rule.id} 页面共有 ${expectedCount} 条。`);
   if (expectedCount <= 0) {
-    console.log(`规则 #${rule.id} 当前没有可预约商品，跳过预约送货 dry-run。`);
-    return;
+    const reportText = [
+      '预约送货上报：跳过',
+      `仓库：${rule.warehouseGroup}（${warehouseNames.join('、')}）`,
+      `司机：${maskMobile(rule.driverMobile)}`,
+      '商品数：0',
+      `送货时间：${schedule.reportText}`,
+      `预约时间：${createdAt}`,
+      '说明：当前没有可预约商品',
+    ].join('\n');
+    console.log(reportText);
+    return { skipped: true, submitted: false, expectedCount, filledInputs: 0, totalReservedQuantity: 0, schedule, createdAt, reportText };
   }
   const listGoodsIds = await readAppointmentListGoodsIds(page);
   if (listGoodsIds.length !== expectedCount) {
@@ -1052,15 +1104,16 @@ async function runRule(page, context, rule, { dryRun }) {
     `页面时间选项：${schedule.pageText}`,
     `预约时间：${createdAt}`,
   ];
+  const reportText = reportLines.join('\n');
   if (dryRun) {
-    console.log(reportLines.join('\n'));
+    console.log(reportText);
     console.log(`规则 #${rule.id} dry-run：停在批量新建预约页，不点击确认提交。`);
-    return { submitted: false, expectedCount, filledInputs, totalReservedQuantity, schedule, createdAt };
+    return { submitted: false, expectedCount, filledInputs, totalReservedQuantity, schedule, createdAt, reportText };
   }
   const submitResult = await submitAppointment(page);
   console.log(`规则 #${rule.id} 已点击确认提交：${submitResult.successText}。`);
-  console.log(reportLines.join('\n'));
-  return { submitted: true, expectedCount, filledInputs, totalReservedQuantity, schedule, createdAt, submitResult };
+  console.log(reportText);
+  return { submitted: true, expectedCount, filledInputs, totalReservedQuantity, schedule, createdAt, submitResult, reportText };
 }
 
 await loadDotEnv();
@@ -1105,7 +1158,16 @@ try {
       ({ browser, context } = await createPddBrowserContext(cfg));
       const { page } = await loginAndSavePddStorageState(cfg, context);
       for (const rule of rules) {
-        await runRule(page, context, rule, { dryRun });
+        let result;
+        try {
+          result = await runRule(page, context, rule, { dryRun });
+        } catch (error) {
+          await sendWechatNotification(failureNotificationText(rule, error), config).catch((notifyError) => {
+            console.error(`预约送货失败通知发送失败：${notifyError.message}`);
+          });
+          throw error;
+        }
+        if (result?.reportText) await sendWechatNotification(result.reportText, config);
       }
       console.log(`预约${dryRun ? '演练' : '执行'}完成：${rules.length} 条规则。`);
     } finally {

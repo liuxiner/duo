@@ -56,6 +56,8 @@ const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const REPORT_TIMEOUT_MS = 30 * 60 * 1000;
 const RESERVATION_TIMEOUT_MS = positiveDurationMs(process.env.MAO_RESERVATION_TIMEOUT_MS, 12 * 60 * 1000);
 const RESERVATION_IDLE_TIMEOUT_MS = positiveDurationMs(process.env.MAO_RESERVATION_IDLE_TIMEOUT_MS, 6 * 60 * 1000);
+const VIOLATION_TIMEOUT_MS = positiveDurationMs(process.env.MAO_VIOLATION_TIMEOUT_MS, 8 * 60 * 1000);
+const VIOLATION_IDLE_TIMEOUT_MS = positiveDurationMs(process.env.MAO_VIOLATION_IDLE_TIMEOUT_MS, 4 * 60 * 1000);
 const TASK_KILL_GRACE_MS = 5 * 1000;
 const WECHATY_RESTART_ATTEMPTS = 3;
 const WECHATY_RESTART_SETTLE_MS = 12_000;
@@ -69,6 +71,7 @@ let webWechatRuntimeLoadError = '';
 let activeSync = null;
 let activeReport = null;
 let activeReservation = null;
+let activeViolation = null;
 let activeWechatRestart = null;
 let activeScheduler = null;
 let schedulerTimer = null;
@@ -202,6 +205,8 @@ const DEFAULT_REPORT_CONFIG = {
   notification: {
     adminGroup: '杭州交仓',
     mentionNames: ['鑫'],
+    wechatRoomName: '杭州交仓',
+    wechatMentionNames: ['鑫'],
     senderStrategy: 'http_api',
     sendIntervalSeconds: { min: 2, max: 5 },
     maxRetries: 2,
@@ -220,6 +225,7 @@ const DEFAULT_REPORT_CONFIG = {
     createLastAppointmentEnabled: true,
     dryRun: true,
     notifyAdmin: true,
+    notifyWechat: true,
     items: [
       {
         id: '1',
@@ -228,7 +234,7 @@ const DEFAULT_REPORT_CONFIG = {
         centerWarehouses: ['杭州中心1仓', '杭州中心2仓'],
         driverMobile: '15090976592',
         quantity: 100,
-        preferredHour: '21:00',
+        preferredHour: '12:00',
         firstNotifyGroup: '杭州交仓',
         lastNotifyGroup: '杭州交仓',
         enabled: false,
@@ -240,7 +246,7 @@ const DEFAULT_REPORT_CONFIG = {
         centerWarehouses: ['宁波1仓'],
         driverMobile: '13486621270',
         quantity: 100,
-        preferredHour: '21:00',
+        preferredHour: '12:00',
         firstNotifyGroup: '安如山~宁波中泓北港云仓',
         lastNotifyGroup: '安如山-杭州办公室',
         enabled: false,
@@ -252,7 +258,7 @@ const DEFAULT_REPORT_CONFIG = {
         centerWarehouses: ['温州1仓'],
         driverMobile: '17767375369',
         quantity: 100,
-        preferredHour: '21:00',
+        preferredHour: '12:00',
         firstNotifyGroup: '杭州安如山—温州诚达云仓',
         lastNotifyGroup: '安如山-杭州办公室',
         enabled: false,
@@ -1602,6 +1608,7 @@ function defaultNotificationConfig() {
   return {
     ...defaults,
     mentionNames: [...defaults.mentionNames],
+    wechatMentionNames: [...defaults.wechatMentionNames],
     sendIntervalSeconds: { ...defaults.sendIntervalSeconds },
   };
 }
@@ -1613,6 +1620,8 @@ function normalizeNotificationConfig(input = {}) {
   return {
     adminGroup: String(input.adminGroup || defaults.adminGroup).trim(),
     mentionNames: normalizeNameList(input.mentionNames?.length ? input.mentionNames : defaults.mentionNames),
+    wechatRoomName: String(input.wechatRoomName || input.wechatGroupName || defaults.wechatRoomName).trim(),
+    wechatMentionNames: normalizeNameList(input.wechatMentionNames?.length ? input.wechatMentionNames : defaults.wechatMentionNames),
     senderStrategy: ['wechaty', 'desktop_wechat', 'http_api', 'weixin_v4'].includes(input.senderStrategy)
       ? input.senderStrategy
       : defaults.senderStrategy,
@@ -1655,7 +1664,7 @@ function normalizeReservationItem(item = {}, index = 0) {
     centerWarehouses: centerWarehouses.length ? centerWarehouses : [...(defaults.centerWarehouses || [])],
     driverMobile: String(item.driverMobile || item['司机号码'] || defaults.driverMobile || '').trim(),
     quantity,
-    preferredHour: normalizeConfigTime(item.preferredHour || item['预约时间'] || item['送货时间'] || defaults.preferredHour) || '21:00',
+    preferredHour: normalizeConfigTime(item.preferredHour || item['预约时间'] || item['送货时间'] || defaults.preferredHour) || '12:00',
     firstNotifyGroup: String(item.firstNotifyGroup || item['首约通知群'] || defaults.firstNotifyGroup || '').trim(),
     lastNotifyGroup: String(item.lastNotifyGroup || item['尾约通知群'] || defaults.lastNotifyGroup || '').trim(),
     enabled: enabledFromValue(item.enabled ?? item['状态'] ?? item['状态(启/停)'], defaults.enabled ?? false),
@@ -1674,6 +1683,9 @@ function normalizeReservationConfig(input = {}) {
       : defaults.createLastAppointmentEnabled,
     dryRun: typeof input.dryRun === 'boolean' ? input.dryRun : defaults.dryRun,
     notifyAdmin: typeof input.notifyAdmin === 'boolean' ? input.notifyAdmin : defaults.notifyAdmin,
+    notifyWechat: typeof input.notifyWechat === 'boolean'
+      ? input.notifyWechat
+      : (typeof input.notifyAdmin === 'boolean' ? input.notifyAdmin : defaults.notifyWechat),
     items: rawItems.map(normalizeReservationItem),
   };
 }
@@ -1762,6 +1774,24 @@ function scheduleConfigEnabled(config = {}) {
 
 function timeListIncludes(times = [], time = '') {
   return (Array.isArray(times) ? times : []).includes(time);
+}
+
+function wechatNotificationTarget(config = {}) {
+  const notification = config.notification || defaultNotificationConfig();
+  return {
+    roomName: String(notification.wechatRoomName || '').trim(),
+    mentionNames: normalizeNameList(notification.wechatMentionNames || []),
+  };
+}
+
+function wechatNotificationEnv(config = {}, enabled = true) {
+  const target = wechatNotificationTarget(config);
+  return {
+    PDD_NOTIFY_WECHAT_ENABLED: enabled && target.roomName ? 'true' : 'false',
+    PDD_NOTIFY_WECHAT_ROOM_NAME: target.roomName,
+    PDD_NOTIFY_WECHAT_MENTION_NAMES: target.mentionNames.join(','),
+    WECHAT_BRIDGE_URL: LOCAL_WECHAT_BRIDGE_URL,
+  };
 }
 
 function positiveDurationMs(value, fallback) {
@@ -2088,10 +2118,17 @@ function normalizeConfig(config) {
   if (!items.length) throw new Error('至少需要一条上报规则。');
   const heartbeatInput = config?.heartbeat || {};
   const notificationInput = config?.notification || {};
+  const firstWechatItem = items.find((item) => item?.wechatEnabled !== false && String(item?.wechatRoomName || '').trim())
+    || items.find((item) => String(item?.wechatRoomName || '').trim())
+    || {};
   const notification = normalizeNotificationConfig({
     ...notificationInput,
     adminGroup: notificationInput.adminGroup || heartbeatInput.feishuChatName,
     mentionNames: notificationInput.mentionNames?.length ? notificationInput.mentionNames : heartbeatInput.mentionNames,
+    wechatRoomName: notificationInput.wechatRoomName || firstWechatItem.wechatRoomName || heartbeatInput.feishuChatName,
+    wechatMentionNames: notificationInput.wechatMentionNames?.length
+      ? notificationInput.wechatMentionNames
+      : (firstWechatItem.wechatMentionNames || heartbeatInput.mentionNames),
   });
   const defaultHeartbeat = defaultHeartbeatConfig();
   const intervalMinutes = Number(heartbeatInput.intervalMinutes || defaultHeartbeat.intervalMinutes);
@@ -2570,7 +2607,7 @@ function startReport({ all = false, dryRun = false, ids = [], channel = 'both', 
   return task;
 }
 
-function startReservation({ dryRun = true, ids = [], includeDisabled = false, source = 'manual', scheduledTime = '' } = {}) {
+async function startReservation({ dryRun = true, ids = [], includeDisabled = false, source = 'manual', scheduledTime = '', config = null } = {}) {
   const args = [path.join(NODE_ENTRY_ROOT, 'scripts/create-pdd-delivery-appointment.mjs')];
   if (dryRun) args.push('--dry-run');
   else args.push('--commit');
@@ -2582,6 +2619,9 @@ function startReservation({ dryRun = true, ids = [], includeDisabled = false, so
   if (queuedTaskWithKey(key)) {
     throw new Error(`任务已在中心队列中：预约送货${dryRun ? '演练' : '提交'}`);
   }
+  const reportConfig = config || await readReportConfig();
+  const reservationConfig = reportConfig.reservation || {};
+  const notifyWechat = reservationConfig.notifyWechat !== false && reservationConfig.notifyAdmin !== false;
 
   const task = {
     status: 'idle',
@@ -2603,9 +2643,45 @@ function startReservation({ dryRun = true, ids = [], includeDisabled = false, so
       ELECTRON_RUN_AS_NODE: process.versions.electron ? '1' : process.env.ELECTRON_RUN_AS_NODE,
       PDD_AUTO_WAIT_FOR_LOGIN: 'true',
       PDD_APPOINTMENT_TASK_TIMEOUT_MS: String(RESERVATION_TIMEOUT_MS),
+      ...wechatNotificationEnv(reportConfig, notifyWechat),
     },
     timeoutMs: RESERVATION_TIMEOUT_MS,
     noOutputTimeoutMs: RESERVATION_IDLE_TIMEOUT_MS,
+  });
+  return task;
+}
+
+async function startViolationCheck({ source = 'manual', scheduledTime = '', config = null } = {}) {
+  const reportConfig = config || await readReportConfig();
+  const key = source === 'scheduler'
+    ? `scheduled-violation:${scheduledTime || beijingTimestamp().slice(0, 16)}`
+    : `violation:${Date.now()}`;
+  if (queuedTaskWithKey(key)) {
+    throw new Error(`任务已在中心队列中：违规检查`);
+  }
+
+  const task = {
+    status: 'idle',
+    logs: [],
+    requestedAt: nowIso(),
+    source,
+    scheduledTime,
+  };
+  activeViolation = task;
+  enqueueChildTask({
+    key,
+    label: source === 'scheduler' ? '定时违规检查' : '违规检查',
+    taskRef: task,
+    args: [path.join(NODE_ENTRY_ROOT, 'scripts/check-pdd-violations.mjs')],
+    env: {
+      ELECTRON_RUN_AS_NODE: process.versions.electron ? '1' : process.env.ELECTRON_RUN_AS_NODE,
+      PDD_AUTO_WAIT_FOR_LOGIN: 'true',
+      PDD_VIOLATION_TASK_TIMEOUT_MS: String(VIOLATION_TIMEOUT_MS),
+      ...wechatNotificationEnv(reportConfig, true),
+      ...(scheduledTime ? { PDD_VIOLATION_SCHEDULED_TIME: scheduledTime } : {}),
+    },
+    timeoutMs: VIOLATION_TIMEOUT_MS,
+    noOutputTimeoutMs: VIOLATION_IDLE_TIMEOUT_MS,
   });
   return task;
 }
@@ -2689,18 +2765,29 @@ async function runSchedulerTick() {
       );
     if (reservationDue) {
       try {
-        startReservation({
+        await startReservation({
           dryRun: reservation.dryRun !== false,
           source: 'scheduler',
           scheduledTime: minuteKey,
+          config: reportConfig,
         });
         appendLogs(activeScheduler, `[scheduler] ${minuteKey} 已投递预约送货任务到中心队列。`);
       } catch (error) {
         appendLogs(activeScheduler, `[scheduler] ${minuteKey} 预约送货投递跳过：${error.message}`);
       }
     }
-    if (reportConfig.violationCheck?.enabled) {
-      appendLogs(activeScheduler, `[scheduler] ${minuteKey} 违规检查配置已启用，但当前版本尚未开放执行器，未投递任务。`);
+    const violationCheck = reportConfig.violationCheck || {};
+    if (violationCheck.enabled && timeListIncludes(violationCheck.runTimes, minuteTime)) {
+      try {
+        await startViolationCheck({
+          source: 'scheduler',
+          scheduledTime: minuteKey,
+          config: reportConfig,
+        });
+        appendLogs(activeScheduler, `[scheduler] ${minuteKey} 已投递违规检查任务到中心队列。`);
+      } catch (error) {
+        appendLogs(activeScheduler, `[scheduler] ${minuteKey} 违规检查投递跳过：${error.message}`);
+      }
     }
   }
   scheduleSchedulerTick();
@@ -2870,6 +2957,7 @@ const server = createServer(async (request, response) => {
         sync: summarizeTask(activeSync),
         report: summarizeTask(activeReport),
         reservation: summarizeTask(activeReservation),
+        violation: summarizeTask(activeViolation),
         wechatRestart: summarizeTask(activeWechatRestart),
         scheduler: summarizeTask(activeScheduler),
         heartbeat: summarizeTask(heartbeatMonitor),
@@ -2972,12 +3060,22 @@ const server = createServer(async (request, response) => {
         sendJson(response, 403, { error: '真实提交预约暂未开放，请先使用预约演练确认页面填写结果。' });
         return;
       }
-      startReservation({
+      await startReservation({
         dryRun: true,
         ids: normalizedIds,
         includeDisabled: Boolean(includeDisabled || normalizedIds.length),
       });
       sendJson(response, 202, { status: activeReservation.status, queueId: activeReservation.queueId });
+      return;
+    }
+
+    if (request.method === 'POST' && request.url === '/api/violation/run') {
+      if (isQueueTaskActive(activeViolation)) {
+        sendJson(response, 409, { error: '已有违规检查任务在中心队列中。' });
+        return;
+      }
+      await startViolationCheck({ source: 'manual' });
+      sendJson(response, 202, { status: activeViolation.status, queueId: activeViolation.queueId });
       return;
     }
 
@@ -3121,7 +3219,7 @@ process.once('SIGINT', shutdown);
 
 readReportConfig()
   .then((config) => {
-    if (config.schedulerEnabled) startScheduler();
+    if (scheduleConfigEnabled(config)) startScheduler();
     startHeartbeatMonitor();
   })
   .catch((error) => {
