@@ -70,24 +70,6 @@ $script:HWND_TOPMOST = [IntPtr](-1)
 $script:HWND_NOTOPMOST = [IntPtr](-2)
 $script:VK_MENU = 0x12
 $script:KEYEVENTF_KEYUP = 0x0002
-$script:UseTopmostActivate = ([string]$env:MAO_WECHAT_TOPMOST_ACTIVATE).ToLowerInvariant() -eq 'true'
-$script:DebugCaptureEnabled = ([string]$env:MAO_WECHAT_DEBUG_CAPTURE).ToLowerInvariant() -eq 'true'
-$script:DebugCaptureDir = ''
-$script:DebugCaptureSeq = 0
-$script:DebugUiALimit = 220
-$script:TrustedRoomName = ''
-$script:TrustedRoomExpiresAt = [DateTime]::MinValue
-$script:RenderSettleMs = 900
-try {
-  if (-not [string]::IsNullOrWhiteSpace($env:MAO_WECHAT_RENDER_DELAY_MS)) {
-    $script:RenderSettleMs = [Math]::Max(0, [int]$env:MAO_WECHAT_RENDER_DELAY_MS)
-  }
-} catch {}
-try {
-  if (-not [string]::IsNullOrWhiteSpace($env:MAO_WECHAT_DEBUG_UIA_LIMIT)) {
-    $script:DebugUiALimit = [Math]::Max(20, [int]$env:MAO_WECHAT_DEBUG_UIA_LIMIT)
-  }
-} catch {}
 
 function Write-AutoLog {
   param([string]$Message)
@@ -95,34 +77,16 @@ function Write-AutoLog {
   Add-Content -Path $LogPath -Value $line -Encoding UTF8
 }
 
-function Wait-WeChatRenderSettle {
-  param([string]$Context, [int]$ExtraMs = 0)
-  $delay = [Math]::Max([int]$script:RenderSettleMs, $ExtraMs)
-  if ($delay -le 0) { return }
-  Write-AutoLog "wait WeChat render settle context=$Context ms=$delay"
-  Start-Sleep -Milliseconds $delay
-}
-
 trap {
   Write-AutoLog "fatal error: $($_.Exception.Message)"
   if ($_.ScriptStackTrace) {
     Write-AutoLog "fatal stack: $($_.ScriptStackTrace)"
-  }
-  try {
-    if ($script:DebugCaptureEnabled -and (Get-Command Write-DebugState -ErrorAction SilentlyContinue)) {
-      Write-DebugState -Context 'fatal' -IncludeUiA
-    }
-  } catch {
-    Write-AutoLog "fatal debug capture failed: $($_.Exception.Message)"
   }
   throw
 }
 
 function Emit-Json {
   param([hashtable]$Payload)
-  if ($script:DebugCaptureEnabled -and -not [string]::IsNullOrWhiteSpace($script:DebugCaptureDir)) {
-    $Payload['debugDir'] = $script:DebugCaptureDir
-  }
   $Payload | ConvertTo-Json -Compress -Depth 8
 }
 
@@ -199,22 +163,6 @@ function Get-WindowTitle {
   return $builder.ToString()
 }
 
-function Test-WindowHandleUsable {
-  param([IntPtr]$Handle, [int]$ExpectedProcessId = 0)
-  if ($Handle -eq [IntPtr]::Zero) { return $false }
-  $pidValue = [uint32]0
-  try {
-    [MaoWin32]::GetWindowThreadProcessId($Handle, [ref]$pidValue) | Out-Null
-  } catch {
-    return $false
-  }
-  if ($pidValue -eq 0) { return $false }
-  if ($ExpectedProcessId -gt 0 -and [int]$pidValue -ne $ExpectedProcessId) { return $false }
-  $rect = New-Object MaoWin32+RECT
-  if (-not [MaoWin32]::GetWindowRect($Handle, [ref]$rect)) { return $false }
-  return (($rect.Right - $rect.Left) -gt 0 -and ($rect.Bottom - $rect.Top) -gt 0)
-}
-
 function Get-WeChatTopLevelWindows {
   $items = New-Object System.Collections.Generic.List[object]
   $callback = [MaoEnumWindowsProc]{
@@ -259,28 +207,8 @@ function Test-WeChatMainWindowCandidate {
   param([object]$Window)
   if (-not $Window) { return $false }
   if (-not [bool]$Window.Visible) { return $false }
-  $windowTitle = $Window.Title -as [string]
-  $windowWidth = [int]$Window.Width
-  $windowHeight = [int]$Window.Height
-  if (($Window.ProcessName -as [string]) -eq 'WeChatAppEx') { return $false }
-  if ([string]::IsNullOrWhiteSpace($windowTitle)) { return $false }
-  if ($windowWidth -lt 450) { return $false }
-  if ($windowHeight -lt 360) { return $false }
-  if ($windowTitle -eq 'Weixin' -and $windowWidth -le 760) { return $false }
-  return $true
-}
-
-function Test-WeChatPreferredWindowCandidate {
-  param([object]$Window)
-  if (-not $Window) { return $false }
-  $processName = $Window.ProcessName -as [string]
-  $windowTitle = $Window.Title -as [string]
-  $windowWidth = [int]$Window.Width
-  $windowHeight = [int]$Window.Height
-  if ($processName -eq 'WeChatAppEx') { return $false }
-  if ([string]::IsNullOrWhiteSpace($windowTitle)) { return $false }
-  if ($windowWidth -lt 450) { return $false }
-  if ($windowHeight -lt 360) { return $false }
+  if ([int]$Window.Width -lt 450) { return $false }
+  if ([int]$Window.Height -lt 360) { return $false }
   return $true
 }
 
@@ -299,210 +227,6 @@ function Assert-SingleWeChatMainWindow {
   throw "Multiple WeChat main windows detected ($($mainWindows.Count)). Close duplicate WeChat/chat windows before running RPA."
 }
 
-function Test-WeChatSearchPopupCandidate {
-  param([object]$Window, [hashtable]$Rect = $null)
-  if (-not $Window) { return $false }
-  if (-not [bool]$Window.Visible) { return $false }
-  if (($Window.Title -as [string]) -ne 'Weixin') { return $false }
-  $windowLeft = [int]$Window.Left
-  $windowTop = [int]$Window.Top
-  $windowWidth = [int]$Window.Width
-  $windowHeight = [int]$Window.Height
-  if ($windowWidth -lt 360 -or $windowWidth -gt 760) { return $false }
-  if ($windowHeight -lt 180) { return $false }
-  if ($Rect) {
-    $minLeft = [int]$Rect.Left - 80
-    $maxLeft = [int]$Rect.Right + 20
-    $minTop = [int]$Rect.Top - 40
-    $rectHeight = [double]$Rect.Height
-    $topScaled = $rectHeight * 0.32
-    $topAllowance = [Math]::Max(150.0, $topScaled)
-    $topAllowance = [Math]::Min(260.0, $topAllowance)
-    $maxTop = [int]$Rect.Top + [int]$topAllowance
-    if ($windowLeft -lt $minLeft) { return $false }
-    if ($windowLeft -gt $maxLeft) { return $false }
-    if ($windowTop -lt $minTop) { return $false }
-    if ($windowTop -gt $maxTop) { return $false }
-  }
-  return $true
-}
-
-function Find-WeChatSearchPopupWindow {
-  param([hashtable]$Rect = $null)
-  $windows = @(Get-WeChatTopLevelWindows | Where-Object { Test-WeChatSearchPopupCandidate -Window $_ -Rect $Rect })
-  if ($windows.Count -eq 0) { return $null }
-  $popup = @($windows | Sort-Object @{ Expression = 'Height'; Descending = $true }, @{ Expression = 'Width'; Descending = $true } | Select-Object -First 1)[0]
-  Write-AutoLog "found WeChat search popup handle=$($popup.Handle) rect=$($popup.Left),$($popup.Top),$($popup.Width)x$($popup.Height)"
-  return $popup
-}
-
-function Wait-WeChatSearchPopupClosed {
-  param([hashtable]$Rect, [int]$Attempts = 8)
-  for ($attempt = 1; $attempt -le $Attempts; $attempt += 1) {
-    $popup = Find-WeChatSearchPopupWindow -Rect $Rect
-    if (-not $popup) {
-      Write-AutoLog "search popup closed attempt=$attempt"
-      return $true
-    }
-    Write-AutoLog "search popup still visible attempt=$attempt handle=$($popup.Handle) rect=$($popup.Left),$($popup.Top),$($popup.Width)x$($popup.Height)"
-    Start-Sleep -Milliseconds 320
-  }
-  return $false
-}
-
-function Set-TrustedRoomContext {
-  param([string]$Room, [string]$Reason)
-  $script:TrustedRoomName = Normalize-RoomText $Room
-  $script:TrustedRoomExpiresAt = (Get-Date).AddSeconds(90)
-  Write-AutoLog "trusted room context set room=$Room reason=$Reason expires=$($script:TrustedRoomExpiresAt.ToString('HH:mm:ss'))"
-}
-
-function Test-TrustedRoomContext {
-  param([string]$Room, [string]$Context)
-  if ([string]::IsNullOrWhiteSpace($script:TrustedRoomName)) { return $false }
-  if ((Get-Date) -gt $script:TrustedRoomExpiresAt) {
-    Write-AutoLog "trusted room context expired context=$Context room=$Room"
-    $script:TrustedRoomName = ''
-    return $false
-  }
-  if ($script:TrustedRoomName -ne (Normalize-RoomText $Room)) { return $false }
-  $visiblePopup = Find-WeChatSearchPopupWindow -Rect $null
-  if ($visiblePopup) { return $false }
-  Write-AutoLog "trusted room context accepted context=$Context room=$Room"
-  return $true
-}
-
-function Get-DebugCaptureDir {
-  if (-not $script:DebugCaptureEnabled) { return '' }
-  if ([string]::IsNullOrWhiteSpace($script:DebugCaptureDir)) {
-    $base = $env:MAO_WECHAT_DEBUG_DIR
-    if ([string]::IsNullOrWhiteSpace($base)) {
-      $base = Join-Path $LogDir ("wechat-debug-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmssfff'))
-    }
-    New-Item -ItemType Directory -Path $base -Force | Out-Null
-    $script:DebugCaptureDir = (Resolve-Path $base).Path
-    Write-AutoLog "debug capture dir=$script:DebugCaptureDir"
-  }
-  return $script:DebugCaptureDir
-}
-
-function Get-SafeDebugName {
-  param([string]$Context)
-  $safe = (($Context -as [string]) -replace '[^A-Za-z0-9._-]+', '-').Trim('-')
-  if ([string]::IsNullOrWhiteSpace($safe)) { return 'step' }
-  if ($safe.Length -gt 80) { return $safe.Substring(0, 80) }
-  return $safe
-}
-
-function New-DebugCapturePrefix {
-  param([string]$Context)
-  $dir = Get-DebugCaptureDir
-  if ([string]::IsNullOrWhiteSpace($dir)) { return '' }
-  $script:DebugCaptureSeq += 1
-  $safe = Get-SafeDebugName -Context $Context
-  return Join-Path $dir ("{0:0000}-{1}" -f $script:DebugCaptureSeq, $safe)
-}
-
-function Format-DebugBounds {
-  param([object]$Item)
-  return "$([int]$Item.Left),$([int]$Item.Top),$([int]$Item.Width)x$([int]$Item.Height)"
-}
-
-function Save-DebugScreen {
-  param([string]$Path)
-  $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
-  if ($bounds.Width -le 0 -or $bounds.Height -le 0) {
-    throw 'Virtual screen has invalid bounds.'
-  }
-  $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-  $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-  try {
-    $graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bitmap.Size)
-    $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
-  } finally {
-    $graphics.Dispose()
-    $bitmap.Dispose()
-  }
-}
-
-function Write-DebugState {
-  param(
-    [string]$Context,
-    [System.Diagnostics.Process]$Process = $script:ActiveWeChatProcess,
-    [hashtable]$Rect = $null,
-    [switch]$IncludeUiA
-  )
-  if (-not $script:DebugCaptureEnabled) { return }
-  $prefix = New-DebugCapturePrefix -Context $Context
-  if ([string]::IsNullOrWhiteSpace($prefix)) { return }
-
-  $lines = New-Object System.Collections.Generic.List[string]
-  $lines.Add("context=$Context")
-  $lines.Add("time=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')")
-  $lines.Add("cwd=$(Get-Location)")
-  $lines.Add("logPath=$LogPath")
-  $lines.Add("topmostActivate=$script:UseTopmostActivate")
-  $lines.Add("renderSettleMs=$script:RenderSettleMs")
-
-  try {
-    if (Get-Command Get-ForegroundWindowInfo -ErrorAction SilentlyContinue) {
-      $foreground = Get-ForegroundWindowInfo
-      $lines.Add("foreground=$(Format-ForegroundInfo $foreground) handle=$($foreground.Handle)")
-    }
-  } catch {
-    $lines.Add("foregroundError=$($_.Exception.Message)")
-  }
-
-  if ($script:ActiveWeChatHandle -ne [IntPtr]::Zero) {
-    $lines.Add("activeHandle=$script:ActiveWeChatHandle")
-  }
-  if ($Rect) {
-    $lines.Add("activeRect=$($Rect.Left),$($Rect.Top),$($Rect.Width)x$($Rect.Height)")
-  }
-  if ($Process) {
-    try { $Process.Refresh() } catch {}
-    $lines.Add("process pid=$($Process.Id) name=$($Process.ProcessName) title=$($Process.MainWindowTitle) mainHandle=$($Process.MainWindowHandle)")
-  }
-
-  try {
-    $windows = @(Get-WeChatTopLevelWindows)
-    $lines.Add("wechatTopLevelWindows=$($windows.Count)")
-    foreach ($window in @($windows | Sort-Object @{ Expression = 'Score'; Descending = $true } | Select-Object -First 12)) {
-      $lines.Add("window pid=$($window.ProcessId) process=$($window.ProcessName) visible=$($window.Visible) title=$($window.Title) handle=$($window.Handle) rect=$($window.Left),$($window.Top),$($window.Width)x$($window.Height)")
-    }
-  } catch {
-    $lines.Add("windowDumpError=$($_.Exception.Message)")
-  }
-
-  if ($IncludeUiA -and $Process -and (Get-Command Get-AutomationElements -ErrorAction SilentlyContinue)) {
-    try {
-      $elements = @(Get-AutomationElements -Process $Process)
-      $lines.Add("uiaElementsSampled=$($elements.Count)")
-      foreach ($item in @($elements | Sort-Object @{ Expression = 'Top'; Ascending = $true }, @{ Expression = 'Left'; Ascending = $true } | Select-Object -First $script:DebugUiALimit)) {
-        $name = (($item.Name -as [string]) -replace "`r", '\r' -replace "`n", '\n').Trim()
-        if ($name.Length -gt 160) { $name = $name.Substring(0, 160) + '...' }
-        $lines.Add("uia type=$($item.ControlType) focusable=$($item.IsKeyboardFocusable) id=$($item.AutomationId) bounds=$(Format-DebugBounds $item) name=$name")
-      }
-    } catch {
-      $lines.Add("uiaDumpError=$($_.Exception.Message)")
-    }
-  }
-
-  $screenPath = "$prefix.png"
-  $statePath = "$prefix.txt"
-  try {
-    Save-DebugScreen -Path $screenPath
-  } catch {
-    $lines.Add("screenshotError=$($_.Exception.Message)")
-  }
-  try {
-    Set-Content -Path $statePath -Value $lines -Encoding UTF8
-  } catch {
-    Write-AutoLog "debug state write failed context=$Context error=$($_.Exception.Message)"
-  }
-  Write-AutoLog "debug capture context=$Context screenshot=$screenPath state=$statePath"
-}
-
 function Find-WeChatTopLevelWindow {
   param([int]$ProcessId = 0)
   $windows = @(Get-WeChatTopLevelWindows)
@@ -517,12 +241,6 @@ function Find-WeChatTopLevelWindow {
     if ($mainWindows.Count -gt 0) {
       return @($mainWindows | Sort-Object @{ Expression = 'Score'; Descending = $true } | Select-Object -First 1)[0]
     }
-    $preferredWindows = @($windows | Where-Object { Test-WeChatPreferredWindowCandidate -Window $_ })
-    if ($preferredWindows.Count -gt 0) {
-      $preferred = @($preferredWindows | Sort-Object @{ Expression = 'Visible'; Descending = $true }, @{ Expression = 'Score'; Descending = $true } | Select-Object -First 1)[0]
-      Write-AutoLog "using preferred non-AppEx WeChat window pid=$($preferred.ProcessId) process=$($preferred.ProcessName) visible=$($preferred.Visible) title=$($preferred.Title) handle=$($preferred.Handle) rect=$($preferred.Left),$($preferred.Top),$($preferred.Width)x$($preferred.Height)"
-      return $preferred
-    }
     return @($windows | Sort-Object @{ Expression = 'Score'; Descending = $true } | Select-Object -First 1)[0]
   }
   Write-AutoLog "no WeChat top-level windows found processId=$ProcessId"
@@ -532,11 +250,11 @@ function Find-WeChatTopLevelWindow {
 function Get-WeChatMainWindowHandle {
   param([System.Diagnostics.Process]$Process)
   if (-not $Process) { return [IntPtr]::Zero }
-  if ($script:ActiveWeChatProcess -and $script:ActiveWeChatProcess.Id -eq $Process.Id -and (Test-WindowHandleUsable -Handle $script:ActiveWeChatHandle -ExpectedProcessId $Process.Id)) {
+  if ($script:ActiveWeChatProcess -and $script:ActiveWeChatProcess.Id -eq $Process.Id -and $script:ActiveWeChatHandle -ne [IntPtr]::Zero) {
     return $script:ActiveWeChatHandle
   }
   try { $Process.Refresh() } catch {}
-  if (Test-WindowHandleUsable -Handle $Process.MainWindowHandle -ExpectedProcessId $Process.Id) {
+  if ($Process.MainWindowHandle -ne [IntPtr]::Zero) {
     $script:ActiveWeChatProcess = $Process
     $script:ActiveWeChatHandle = $Process.MainWindowHandle
     return $Process.MainWindowHandle
@@ -717,8 +435,7 @@ function Test-WeChatForeground {
     $script:ActiveWeChatHandle = $info.Handle
     return $true
   }
-  $foregroundProcessName = $info.ProcessName -as [string]
-  if ($foregroundProcessName -match '^(WeChat|Weixin)$') {
+  if (($info.ProcessName -as [string]) -match '^(WeChat|Weixin|WeChatAppEx)$') {
     $script:ActiveWeChatHandle = $info.Handle
     return $true
   }
@@ -773,13 +490,9 @@ function Invoke-WeChatForeground {
       $shell.AppActivate($Process.Id) | Out-Null
     } catch {}
     [MaoWin32]::BringWindowToTop($handle) | Out-Null
-    if ($script:UseTopmostActivate) {
-      [MaoWin32]::SetWindowPos($handle, $script:HWND_TOPMOST, 0, 0, 0, 0, $flags) | Out-Null
-      [MaoWin32]::SetWindowPos($handle, $script:HWND_NOTOPMOST, 0, 0, 0, 0, $flags) | Out-Null
-    }
-    if ($attempt -gt 1) {
-      Invoke-AltPulse
-    }
+    [MaoWin32]::SetWindowPos($handle, $script:HWND_TOPMOST, 0, 0, 0, 0, $flags) | Out-Null
+    [MaoWin32]::SetWindowPos($handle, $script:HWND_NOTOPMOST, 0, 0, 0, 0, $flags) | Out-Null
+    Invoke-AltPulse
     $setResult = [MaoWin32]::SetForegroundWindow($handle)
     [MaoWin32]::SetActiveWindow($handle) | Out-Null
     if ($attachedTarget) {
@@ -790,7 +503,7 @@ function Invoke-WeChatForeground {
     }
     Start-Sleep -Milliseconds (220 + ($attempt * 80))
     if (Test-WeChatForeground -Process $Process) {
-      Write-AutoLog "foreground verified reason=$Reason attempt=$attempt pid=$($Process.Id) topmostActivate=$($script:UseTopmostActivate)"
+      Write-AutoLog "foreground verified reason=$Reason attempt=$attempt pid=$($Process.Id)"
       return $true
     }
     $foreground = Format-ForegroundInfo (Get-ForegroundWindowInfo)
@@ -851,8 +564,6 @@ function Activate-WeChat {
   $script:ActiveWeChatProcess = $process
   $script:ActiveWeChatHandle = $handle
   Write-AutoLog "activated WeChat pid=$($process.Id) process=$($process.ProcessName) title=$($process.MainWindowTitle) handle=$handle rect=$($rect.Left),$($rect.Top),$($rect.Width)x$($rect.Height)"
-  Wait-WeChatRenderSettle -Context 'activate'
-  Write-DebugState -Context 'activate' -Process $process -Rect $rect -IncludeUiA
   return @{ Process = $process; Rect = $rect }
 }
 
@@ -869,7 +580,6 @@ function Click-Point {
   $after = Format-ForegroundInfo (Get-ForegroundWindowInfo)
   Write-AutoLog "clicked $Name at $X,$Y foregroundAfter=$after"
   Start-Sleep -Milliseconds 220
-  Write-DebugState -Context "after-click-$Name" -Process $script:ActiveWeChatProcess -IncludeUiA
 }
 
 function Set-ClipboardTextSafe {
@@ -1089,9 +799,6 @@ function Wait-ActiveRoom {
   for ($attempt = 1; $attempt -le $Attempts; $attempt += 1) {
     if (Test-ActiveRoom -Process $Process -Rect $Rect -Room $Room) { return $true }
     Write-AutoLog "active room verify attempt $attempt failed room=$Room"
-    if ($attempt -eq 1 -or $attempt -eq $Attempts) {
-      Write-DebugState -Context "active-room-check-$attempt-$Room" -Process $Process -Rect $Rect -IncludeUiA
-    }
     Start-Sleep -Milliseconds 420
   }
   return $false
@@ -1187,20 +894,12 @@ function Get-SearchResultCandidates {
   $seen = @{}
 
   function Add-Candidate {
-    param([int]$X, [int]$Y, [string]$Reason, [double]$Score = 0.0, [string]$Text = '', [string]$TrustMode = '', [string]$Key = '')
+    param([int]$X, [int]$Y, [string]$Reason, [double]$Score = 0.0, [string]$Text = '')
     if ($Y -gt $maxY) { $Y = [int]$maxY }
-    $candidateKey = if ([string]::IsNullOrWhiteSpace($Key)) { "$X,$Y" } else { $Key }
-    if ($seen.ContainsKey($candidateKey)) { return }
-    $seen[$candidateKey] = $true
-    $candidates.Add([pscustomobject]@{
-      X = $X
-      Y = $Y
-      Reason = $Reason
-      Score = $Score
-      Text = $Text
-      TrustMode = $TrustMode
-      Key = $candidateKey
-    })
+    $key = "$X,$Y"
+    if ($seen.ContainsKey($key)) { return }
+    $seen[$key] = $true
+    $candidates.Add([pscustomobject]@{ X = $X; Y = $Y; Reason = $Reason; Score = $Score; Text = $Text })
   }
 
   $rowHits = Get-SearchResultRowHits -Process $Process -Rect $Rect
@@ -1220,32 +919,8 @@ function Get-SearchResultCandidates {
     Add-Candidate -X ([int]$rowHit.X) -Y ([int]$rowHit.Y) -Reason $reason -Score $score -Text $rowHit.Text
   }
 
-  $popup = Find-WeChatSearchPopupWindow -Rect $Rect
-  if ($popup) {
-    $popupWidth = [double]$popup.Width
-    $popupHeight = [double]$popup.Height
-    $popupXCap = [double]([int]$popup.Width - 92)
-    $popupYCap = [double]([int]$popup.Height - 42)
-    $popupXScaled = $popupWidth * 0.38
-    $popupYScaled = $popupHeight * 0.16
-    $popupXBase = [Math]::Max(170.0, $popupXScaled)
-    $popupYBase = [Math]::Max(106.0, $popupYScaled)
-    $popupXOffset = [int]([Math]::Min($popupXCap, $popupXBase))
-    $popupYOffset = [int]([Math]::Min($popupYCap, $popupYBase))
-    $popupX = [int]([int]$popup.Left + $popupXOffset)
-    $popupY = [int]([int]$popup.Top + $popupYOffset)
-    Add-Candidate -X $popupX -Y $popupY -Reason "search-popup-first-room" -Score 900.0 -Text $Room -TrustMode 'popup-first-room' -Key "popup:$($popup.Handle):$popupX,$popupY"
-  }
-
-  $rectHeightForFallback = [double]$Rect.Height
-  $fallbackFirstScaled = $rectHeightForFallback * 0.07
-  $fallbackStepScaled = $rectHeightForFallback * 0.075
-  $fallbackFirstOffset = [Math]::Max(54.0, $fallbackFirstScaled)
-  $fallbackFirstOffset = [Math]::Min(72.0, $fallbackFirstOffset)
-  $fallbackStepValue = [Math]::Max(48.0, $fallbackStepScaled)
-  $fallbackStepValue = [Math]::Min(82.0, $fallbackStepValue)
-  $firstFallbackY = [int]($searchCenterY + $fallbackFirstOffset)
-  $fallbackStep = [int]$fallbackStepValue
+  $firstFallbackY = [int]($searchCenterY + [Math]::Min(72, [Math]::Max(54, $Rect.Height * 0.07)))
+  $fallbackStep = [int][Math]::Min(82, [Math]::Max(48, $Rect.Height * 0.075))
   $fallbackY = $firstFallbackY
   while ($fallbackY -le $maxY) {
     $fallbackScore = 1.0 - (($fallbackY - $firstFallbackY) / [Math]::Max(1.0, ($maxY - $firstFallbackY + 1.0)))
@@ -1265,8 +940,6 @@ function Get-SearchResultCandidates {
 
 function Get-SearchCandidateKey {
   param([object]$Candidate)
-  $candidateKey = $Candidate.Key -as [string]
-  if (-not [string]::IsNullOrWhiteSpace($candidateKey)) { return $candidateKey }
   $text = Normalize-RoomText ($Candidate.Text -as [string])
   if ($text) { return "text:$text" }
   return "point:$($Candidate.X),$($Candidate.Y)"
@@ -1291,21 +964,10 @@ function Click-SearchResult {
   $candidateKey = Get-SearchCandidateKey -Candidate $candidate
   $Tried[$candidateKey] = $true
   Write-AutoLog "click search result candidate room=$Room key=$candidateKey reason=$($candidate.Reason) score=$($candidate.Score) point=$($candidate.X),$($candidate.Y)"
-  Write-DebugState -Context "before-click-search-result-$Room" -Process $Process -Rect $Rect -IncludeUiA
   Click-Point -X $candidate.X -Y $candidate.Y -Name "search result candidate"
-  Wait-WeChatRenderSettle -Context 'after-search-result-click' -ExtraMs 2600
-  Write-DebugState -Context "after-click-search-result-$Room" -Process $Process -Rect $Rect -IncludeUiA
-  if (Wait-ActiveRoom -Process $Process -Rect $Rect -Room $Room -Attempts 10) {
-    Set-TrustedRoomContext -Room $Room -Reason "verified-active-room-$($candidate.Reason)"
+  Start-Sleep -Milliseconds 900
+  if (Wait-ActiveRoom -Process $Process -Rect $Rect -Room $Room -Attempts 3) {
     return $candidate.Reason
-  }
-  if (($candidate.TrustMode -as [string]) -eq 'popup-first-room') {
-    if (Wait-WeChatSearchPopupClosed -Rect $Rect -Attempts 8) {
-      Set-TrustedRoomContext -Room $Room -Reason $candidate.Reason
-      Write-AutoLog "accepted search popup first room selection without UIAutomation header room=$Room reason=$($candidate.Reason)"
-      return $candidate.Reason
-    }
-    Write-AutoLog "search popup first room selection was not accepted because popup remained visible room=$Room"
   }
   throw "WeChat search probe rows were not confirmed for room: $Room"
 }
@@ -1314,7 +976,6 @@ function Focus-SearchField {
   param([hashtable]$Rect)
   $searchX = $Rect.Left + 240
   $searchY = $Rect.Top + 55
-  Write-DebugState -Context 'before-focus-search' -Process $script:ActiveWeChatProcess -Rect $Rect -IncludeUiA
   Click-Point -X $searchX -Y $searchY -Name 'search'
 }
 
@@ -1338,7 +999,7 @@ function Reset-ToMessageHomeForSearch {
 function Open-Room {
   param([System.Diagnostics.Process]$Process, [hashtable]$Rect, [string]$Room)
   Write-AutoLog "rpa step=open-room start room=$Room rect=$($Rect.Left),$($Rect.Top),$($Rect.Width)x$($Rect.Height)"
-  if (Wait-ActiveRoom -Process $Process -Rect $Rect -Room $Room -Attempts 6) {
+  if (Wait-ActiveRoom -Process $Process -Rect $Rect -Room $Room -Attempts 2) {
     Write-AutoLog "active room already open; skip search room=$Room"
     return 'already-open'
   }
@@ -1352,17 +1013,15 @@ function Open-Room {
     Set-ClipboardTextSafe -Text $Room
     Paste-Clipboard
     Start-Sleep -Milliseconds (850 + ($attempt * 250))
-    Write-DebugState -Context "after-search-paste-$attempt-$Room" -Process $Process -Rect $Rect -IncludeUiA
     try {
       $selection = Click-SearchResult -Process $Process -Rect $Rect -Room $Room -Tried $triedCandidates
-      if ((Wait-ActiveRoom -Process $Process -Rect $Rect -Room $Room -Attempts 10) -or (Test-TrustedRoomContext -Room $Room -Context "open-room-$attempt")) {
+      if (Wait-ActiveRoom -Process $Process -Rect $Rect -Room $Room -Attempts 3) {
         Send-WeChatKeys -Keys '{ESC}' -Context 'search-room-dismiss' -AfterDelayMs 180
         Write-AutoLog "search room verified room=$Room attempt=$attempt selection=$selection"
         return $selection
       }
     } catch {
       Write-AutoLog "search room attempt $attempt/3 failed room=$Room error=$($_.Exception.Message)"
-      Write-DebugState -Context "search-room-attempt-$attempt-error-$Room" -Process $Process -Rect $Rect -IncludeUiA
       Reset-ToMessageHomeForSearch -Rect $Rect
     }
   }
@@ -1374,12 +1033,8 @@ function Assert-TargetRoom {
   param([System.Diagnostics.Process]$Process, [hashtable]$Rect, [string]$Room, [string]$Context)
   if ([string]::IsNullOrWhiteSpace($Room)) { return }
   Assert-WeChatForeground -Process $Process -Context "verify-room-$Context"
-  if (Wait-ActiveRoom -Process $Process -Rect $Rect -Room $Room -Attempts 8) {
+  if (Wait-ActiveRoom -Process $Process -Rect $Rect -Room $Room -Attempts 3) {
     Write-AutoLog "rpa step=verify-room context=$Context room=$Room ok"
-    return
-  }
-  if (Test-TrustedRoomContext -Room $Room -Context $Context) {
-    Write-AutoLog "rpa step=verify-room context=$Context room=$Room ok via trusted search selection"
     return
   }
   throw "Target WeChat room was not verified before ${Context}: $Room. Stop to avoid sending to the wrong chat."

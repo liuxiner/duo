@@ -6,6 +6,12 @@ import process from 'node:process';
 
 function parseArgs(argv) {
   const options = {
+    checkPermission: false,
+    keyboardEnterTest: false,
+    keyboardTest: false,
+    openRetryTest: false,
+    pressReturnOnly: false,
+    prompt: false,
     mentionNames: [],
     imagePaths: [],
     roomName: '',
@@ -19,6 +25,18 @@ function parseArgs(argv) {
       options.send = true;
     } else if (arg === '--no-send' || arg === '--dry-run') {
       options.send = false;
+    } else if (arg === '--check-permission') {
+      options.checkPermission = true;
+    } else if (arg === '--prompt') {
+      options.prompt = true;
+    } else if (arg === '--keyboard-test') {
+      options.keyboardTest = true;
+    } else if (arg === '--keyboard-enter-test') {
+      options.keyboardEnterTest = true;
+    } else if (arg === '--open-retry-test') {
+      options.openRetryTest = true;
+    } else if (arg === '--press-return-only') {
+      options.pressReturnOnly = true;
     } else if (arg.startsWith('--room=')) {
       options.roomName = arg.slice('--room='.length).trim();
     } else if (arg.startsWith('--mention=')) {
@@ -42,7 +60,10 @@ function parseArgs(argv) {
 
   options.mentionNames = options.mentionNames.filter(Boolean);
   options.imagePaths = options.imagePaths.filter(Boolean);
-  if (!options.roomName) throw new Error('Missing --room=微信群名');
+  if (!options.roomName && !options.checkPermission && !options.keyboardTest && !options.keyboardEnterTest && !options.pressReturnOnly) {
+    throw new Error('Missing --room=微信群名');
+  }
+  if (options.openRetryTest && !options.roomName) throw new Error('Missing --room=微信群名 for --open-retry-test');
   if (!options.text) options.text = `桌面微信自动化@测试 ${new Date().toLocaleString('zh-CN', { hour12: false })}，请忽略`;
   if (!['click-first', 'enter', 'none'].includes(options.selectMethod)) {
     throw new Error('--select-method must be one of: click-first, enter, none');
@@ -82,13 +103,20 @@ async function runNativeHelper(options) {
   if (!fs.existsSync(helperPath)) {
     throw new Error(`桌面微信自动化 helper 不存在：${helperPath}。请重新打包或运行 pnpm desktop:prepare。`);
   }
-  const args = [
-    `--room=${options.roomName}`,
+  const args = [];
+  if (options.checkPermission) args.push('--check-permission');
+  if (options.prompt) args.push('--prompt');
+  if (options.keyboardTest) args.push('--keyboard-test');
+  if (options.keyboardEnterTest) args.push('--keyboard-enter-test');
+  if (options.openRetryTest) args.push('--open-retry-test');
+  if (options.pressReturnOnly) args.push('--press-return-only');
+  if (options.roomName) args.push(`--room=${options.roomName}`);
+  args.push(
     `--mentions=${options.mentionNames.join(',')}`,
     `--text=${options.text}`,
     options.send ? '--send' : '--dry-run',
     `--select-method=${options.selectMethod}`,
-  ];
+  );
   for (const imagePath of options.imagePaths) args.push(`--image=${imagePath}`);
   if (process.platform === 'win32') {
     return run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helperPath, ...args]);
